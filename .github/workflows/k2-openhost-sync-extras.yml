@@ -1,0 +1,96 @@
+name: K2 OpenHost - sync validated extras
+
+on:
+  push:
+    branches:
+      - k2-pro-openhost
+    paths:
+      - .github/workflows/k2-openhost-sync-extras.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-extras:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Kalico K2 Pro branch
+        uses: actions/checkout@v4
+        with:
+          ref: k2-pro-openhost
+          fetch-depth: 0
+
+      - name: Checkout validated K2 extras
+        uses: actions/checkout@v4
+        with:
+          repository: MzTechnology97/k2-pro-custom-firmware
+          ref: k2-openhost
+          path: .k2-openhost-source
+          fetch-depth: 1
+
+      - name: Sync manifest extras into Kalico
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import shutil
+
+          root = pathlib.Path('.')
+          source = root / '.k2-openhost-source' / 'extras'
+          target = root / 'klippy' / 'extras'
+
+          manifest = json.loads((source / 'manifest.json').read_text())
+          names = sorted(manifest['files'])
+
+          for name in names:
+              src = source / name
+              dst = target / name
+              if not src.is_file():
+                  raise SystemExit(f'manifest file missing: {src}')
+              dst.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(src, dst)
+              print(f'synced {name}')
+          PY
+
+      - name: Verify K2-OpenHost patched CFS files
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'K2-OpenHost observation mode' klippy/extras/box.py
+          grep -Fq 'K2-OpenHost: K2 Pro 4-byte BOX_STATE compatibility' klippy/extras/box_protocol.py
+
+      - name: Compile synced Python extras
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import py_compile
+
+          source = pathlib.Path('.k2-openhost-source/extras')
+          target = pathlib.Path('klippy/extras')
+          manifest = json.loads((source / 'manifest.json').read_text())
+          for name in sorted(manifest['files']):
+              if name.endswith('.py'):
+                  path = target / name
+                  py_compile.compile(str(path), doraise=True)
+                  print(f'compiled {path}')
+          PY
+
+      - name: Commit synced extras
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .k2-openhost-source
+          git config user.name 'MzTechnology97'
+          git config user.email '86824210+MzTechnology97@users.noreply.github.com'
+          git add klippy/extras
+          if git diff --cached --quiet; then
+            echo 'No extra changes required.'
+            exit 0
+          fi
+          git commit -m 'k2-openhost: sync validated Jacobean K2 extras'
+          git push origin HEAD:k2-pro-openhost
