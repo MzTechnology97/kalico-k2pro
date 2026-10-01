@@ -1,20 +1,19 @@
 # Copyright (C) 2026 MzTechnology97 and contributors
 # Protocol references: grant0013/K2-OpenKlipper, Lamar1007/CFSTool,
-# and Creality K2 interoperability research.
+# fake-name/cfs-reverse-engineering, and Creality's published K2 CFS firmware.
 # This file is distributed under the terms of the GNU GPLv3 license.
 """K2 Pro CFS environment/protocol diagnostics.
 
-The K2 Pro CFS returns the four-byte 0x0A state variant, so the legacy Jacob
-six-byte BOX_STATE temperature/humidity fields are unavailable on this unit.
+The K2 Pro CFS 1.1.3 four-byte command-0x0A response carries temperature and
+humidity in its first two bytes.  ``box_k2pro`` adapts that payload into the
+canonical Box state before this module sees it.
 
-Command 0x15 is a confirmed read-only GET_HARDWARE_STATUS request on this CFS
-family, but its payload is *not* assumed to contain temperature/humidity.  The
-module keeps that response raw until offsets are proven.  Command 0x14 is also
-queried read-only to identify the connected CFS firmware before selecting any
-future environment decoder.
+Command 0x15 is a separate read-only GET_HARDWARE_STATUS request.  Firmware
+analysis shows that its 16-byte payload is a hardware self-test/status vector,
+not environment telemetry, so it remains exposed only as raw diagnostics.
+Command 0x14 identifies the connected CFS firmware and serial.
 
-This module intentionally never guesses plausible-looking bytes into user
-facing temperature/humidity values.
+Unknown layouts are never guessed into user-facing temperature/humidity.
 """
 
 import logging
@@ -56,8 +55,6 @@ class BoxEnvironment:
 
         self.poll_interval = config.getfloat(
             "poll_interval", DEFAULT_POLL, minval=1.0)
-        self.temp_c = None
-        self.humidity_pct = None
         self.samples = {}
         self.versions = {}
         self.last_error = None
@@ -72,7 +69,7 @@ class BoxEnvironment:
         self.printer.register_event_handler("klippy:shutdown", self._disconnect)
         self.gcode.register_command(
             "BOX_ENV_DEBUG", self.cmd_env_debug,
-            desc="Show K2 Pro CFS version and raw environment diagnostics")
+            desc="Show K2 Pro CFS environment and protocol diagnostics")
 
     def _box_ready(self, *args):
         self.ready = True
@@ -106,16 +103,8 @@ class BoxEnvironment:
         return self._query(
             address, driver, CMD_HARDWARE_STATUS, "hardware_status", timeout=0.75)
 
-    @staticmethod
-    def _decode_environment(_payload, _version=None):
-        """Return (temperature, humidity, source) only for proven layouts."""
-        # No K2 Pro environment frame layout has been validated yet.
-        # Keep temperature/humidity null rather than deriving values from 0x15.
-        return None
-
     def _sample(self, refresh_version=False):
         samples = {}
-        environment = None
         for address, driver in sorted(self.box.drivers.items()):
             key = str(address)
             if refresh_version or key not in self.versions:
@@ -132,17 +121,8 @@ class BoxEnvironment:
                 "payload": reply.payload.hex(),
                 "raw": reply.raw.hex(),
             }
-            decoded = self._decode_environment(
-                reply.payload, self.versions.get(key))
-            if decoded is not None and environment is None:
-                environment = decoded
 
         self.samples = samples
-        self.temp_c = None
-        self.humidity_pct = None
-        self.environment_source = None
-        if environment is not None:
-            self.temp_c, self.humidity_pct, self.environment_source = environment
         self.last_error = None
 
     def _poll(self, eventtime):
@@ -157,11 +137,12 @@ class BoxEnvironment:
 
     def _box_get_status(self, eventtime):
         status = dict(self._base_get_status(eventtime))
-        if self.temp_c is not None:
-            status["temp_c"] = self.temp_c
-        if self.humidity_pct is not None:
-            status["humidity_pct"] = self.humidity_pct
-        status["environment_source"] = getattr(self, "environment_source", None)
+        status["environment_source"] = (
+            "box_state_0x0a"
+            if status.get("temp_c") is not None
+            and status.get("humidity_pct") is not None
+            else None
+        )
         status["environment_raw"] = dict(self.samples)
         status["cfs_versions"] = dict(self.versions)
         status["environment_error"] = self.last_error
@@ -172,10 +153,17 @@ class BoxEnvironment:
             self._sample(refresh_version=True)
         except Exception as exc:
             raise gcmd.error("[BOX]: CFS diagnostics failed: %s" % exc)
+        status = self._base_get_status(self.reactor.monotonic())
+        source = (
+            "box_state_0x0a"
+            if status.get("temp_c") is not None
+            and status.get("humidity_pct") is not None
+            else None
+        )
         gcmd.respond_info(
             "[BOX]: versions=%s hardware=%s temp=%sC humidity=%s%% source=%s"
-            % (self.versions, self.samples, self.temp_c,
-               self.humidity_pct, getattr(self, "environment_source", None)))
+            % (self.versions, self.samples, status.get("temp_c"),
+               status.get("humidity_pct"), source))
 
 
 def load_config(config):
