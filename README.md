@@ -7,7 +7,7 @@ It is not a replacement for the original Kalico project identity. Upstream linea
 1. **[Klipper3d/klipper](https://github.com/Klipper3d/klipper)** — original Klipper project and contributors;
 2. **[KalicoCrew/kalico](https://github.com/KalicoCrew/kalico)** — Kalico community fork and contributors;
 3. **[Jacob10383/kalico](https://github.com/Jacob10383/kalico)** — Jacob's K2-oriented Kalico work and the direct upstream of this fork;
-4. **MzTechnology97/kalico-k2pro** — K2 Pro/OpenHost integration and validation branch.
+4. **MzTechnology97/kalico-k2pro** — K2 Pro/OpenHost integration and validation work.
 
 All upstream licenses, authorship and project references remain applicable.
 
@@ -15,7 +15,7 @@ All upstream licenses, authorship and project references remain applicable.
 
 This fork is the integrated Kalico tree used by **[K2-OpenHost](https://github.com/MzTechnology97/K2-OpenHost)**, a project that moves the main Kalico/Klipper workload of a Creality K2 Pro to an external Linux host/CM5 while retaining the original K2 electronics and using the T113 as a hardware/UI bridge.
 
-The active development branch is:
+The active hardware-validation branch is:
 
 ```text
 k2-pro-openhost
@@ -29,32 +29,58 @@ Tracks the Jacob-derived Kalico base as closely as practical. Fork-specific docu
 
 ### `k2-pro-openhost`
 
-Current K2 Pro integration branch. It contains:
-
-- the Kalico core inherited from Jacob/Kalico;
-- a K2 Pro `.cfg` baseline based on the public work in **luketot/kalico-for-K2-Pro**;
-- K2-specific Jacobean extras synchronized from **MzTechnology97/k2-pro-custom-firmware:k2-openhost**;
-- the K2 Pro CFS compatibility/observation changes already validated through K2-OpenHost.
-
-The final tuned `.cfg` files will later be migrated from the already-working K2 Pro. The Luke configuration is currently a structural baseline, not the final calibration source.
+Current K2 Pro integration branch. It contains the real OpenHost runtime work, including K2-specific extras, motor-control integration and the current machine configuration/test documentation.
 
 ## Current OpenHost transport
 
-The validated external-host mapping is:
+The stable external-host mapping is:
 
 ```text
 /dev/ttyUSB0 -> T113 ttyGS0 -> ttyS2 -> Main MCU
 /dev/ttyUSB1 -> T113 ttyGS1 -> ttyS3 -> Nozzle MCU
-/dev/ttyUSB2 -> T113 ttyGS2 -> ttyS5 -> RS-485 / CFS
-/dev/ttyUSB3 -> planned Cartographer bridge
+/dev/ttyUSB2 -> T113 ttyGS2 -> ttyS5 -> RS-485 / CFS / closed-loop
+Cartographer -> direct USB on CM5, preferably /dev/serial/by-id/...
 ```
 
-Main and Nozzle MCU sessions have already been established simultaneously from external Kalico without reflashing the Creality MCUs. CFS observation mode has also been validated end-to-end.
+A fourth multiplexed T113 gadget channel for Cartographer was prototyped and carried real Cartographer MCU traffic, but it is no longer the preferred architecture. Direct USB handles Cartographer reset/re-enumeration more naturally and keeps the three K2 gadget channels dedicated to the original hardware buses.
+
+## Current hardware milestone — 2026-10-01
+
+On the real K2 Pro, branch `k2-pro-openhost` has now validated:
+
+- native AArch64 Kalico runtime and C helper;
+- simultaneous Main MCU + Nozzle MCU sessions;
+- RS-485 closed-loop motor communication;
+- normal CoreXY movement;
+- X/Y sensorless/stall homing;
+- correct Z direction;
+- complete homing with the original PRTouch stack;
+- bed/nozzle/chamber heater operation and PID tuning;
+- emergency shutdown of active heater loads;
+- successful Klippain-ShakeTune resonance measurement;
+- protected CFS observation mode and K2 Pro 4-byte steady state support.
+
+The next major hardware milestone is Cartographer connected directly to the CM5 USB host, followed by controlled probing/mesh and the first complete supervised print path.
+
+## Cartographer integration
+
+Cartographer is maintained in:
+
+- **[MzTechnology97/cartographer3d-plugin-k2openhost](https://github.com/MzTechnology97/cartographer3d-plugin-k2openhost)**
+
+The plugin supports:
+
+- `register_as_probe: true` — standalone Cartographer-as-probe mode;
+- `register_as_probe: false` — optional mixed mode where PRTouch remains the canonical Z-reference probe and Cartographer is used for scanning/mesh functions.
+
+The current known-good homing baseline is PRTouch-only; mixed mode is still pending hardware validation.
 
 ## Documentation
 
-- [K2 Pro / OpenHost integration notes](docs/K2_PRO_OPENHOST.md)
-- [K2 configuration context](config/k2/README.md)
+On the active branch:
+
+- [K2 Pro / OpenHost integration notes](https://github.com/MzTechnology97/kalico-k2pro/blob/k2-pro-openhost/docs/K2_PRO_OPENHOST.md)
+- [K2 configuration context](https://github.com/MzTechnology97/kalico-k2pro/blob/k2-pro-openhost/config/k2/README.md)
 - [Canonical K2-OpenHost documentation](https://github.com/MzTechnology97/K2-OpenHost)
 
 For **generic Kalico documentation**, use the upstream project documentation:
@@ -69,9 +95,11 @@ For Jacob's upstream K2 Kalico work:
 ## Related K2-OpenHost repositories
 
 - **MzTechnology97/K2-OpenHost** — architecture, validation evidence and roadmap;
-- **MzTechnology97/k2-pro-custom-firmware** — fork of Jacob's K2 custom firmware used as the source/history for K2 extras and validated K2 Pro patches;
-- **MzTechnology97/k2-improvements** — reference fork in the jamincollins/Jacob K2-improvements lineage.
+- **MzTechnology97/k2-pro-custom-firmware** — source/history for Jacobean K2 extras and validated K2 Pro patches;
+- **MzTechnology97/cartographer3d-plugin-k2openhost** — Cartographer K2/OpenHost integration;
+- **MzTechnology97/k2-improvements** — reference fork in the jamincollins/Jacob K2-improvements lineage;
+- **MzTechnology97/mainsail-k2openhost** — Mainsail fork reserved for OpenHost UI integration.
 
 ## Project status
 
-Experimental / pre-production. The architecture and several protocol layers are hardware-validated, but the complete production print workflow has not yet been declared ready.
+Experimental / pre-production. The architecture now supports real homing, heaters and resonance testing from the external host. Direct-USB Cartographer and the complete production print workflow are the next major validation stages.
