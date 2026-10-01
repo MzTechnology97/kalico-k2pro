@@ -14,6 +14,7 @@ The code base is inherited from `Jacob10383/kalico`, itself based on `KalicoCrew
 - Jacobean K2 extras used by the real K2 hardware;
 - K2 Pro CFS four-byte `BOX_STATE` compatibility;
 - protected CFS `observation_mode` with a CFS-layer guard;
+- Jacob-compatible CFS print metadata/mapping API for Mainsail;
 - K2 Pro closed-loop motor-control topology and tuned configuration;
 - startup delay/retry handling for external-host boot timing;
 - tracked loader modules for Cartographer and G-code shell command support;
@@ -46,7 +47,8 @@ The real K2 Pro has now been run from this external Kalico branch with the follo
 - heater PID tuning;
 - emergency shutdown with active heater loads removed correctly;
 - successful Klippain-ShakeTune resonance test;
-- protected CFS observation stack on the shared RS-485 bus.
+- protected CFS observation stack on the shared RS-485 bus;
+- Moonraker visibility of normalized Box/CFS slot and filament-path state.
 
 ## CFS observation mode
 
@@ -65,6 +67,40 @@ A hardware-backed reference run of the Jacobean `Box()` class completed:
 ```
 
 A deliberate `0x0D` mutation was blocked before TX.
+
+## CFS print mapping API
+
+Jacob's current CFS workflow separates slicer logical tools from physical CFS slots. K2-OpenHost now carries an additive compatibility layer rather than replacing the hardware-validated Box transport/engine wholesale.
+
+Enable it after `[box]`:
+
+```ini
+[box_print_mapping]
+```
+
+The helper adds:
+
+```text
+BOX_PRINT_INFO FILENAME="path/file.gcode"
+BOX_PRINT_START FILENAME="path/file.gcode" MAP="0:1,1:3"
+```
+
+and extends `printer.objects.box` with:
+
+```text
+print_mapping_version: 1
+print_mapping_enabled: true|false
+print_info
+print_mapping
+```
+
+`BOX_PRINT_INFO` is metadata-only. It reads the Orca G-code footer and reports used logical tools plus material/color/profile information. `BOX_PRINT_START` validates an exact logical-tool -> slot map, validates CFS slot availability, loads the Virtual SD file, installs the mapping and then starts it.
+
+The compatibility layer also translates Orca purge-matrix and nozzle-temperature arrays from logical tool indices into the physical-slot indices consumed by the current OpenHost `BoxChangeEngine`. It wraps `PARSE_FLUSH_VOLUMES` so the normal K2 `START_PRINT` macro does not overwrite the translated mapping metadata.
+
+When `observation_mode: true`, the mapping/status API remains visible and `BOX_PRINT_INFO` can be tested, but `BOX_PRINT_START` deliberately refuses to execute CFS mutations.
+
+The companion `mainsail-k2openhost` fork uses this API in the normal Print dialog to present a Jacob/Fluidd-style filament mapping step. This mapped-print path is implemented but still requires staged hardware validation.
 
 ## Motor-control startup policy
 
@@ -89,11 +125,12 @@ Moonraker/Mainsail update management expects this repository to remain clean. Fi
 
 ## Next milestones
 
-1. direct-USB Cartographer cold boot, reset/reconnect and persistent by-id path;
-2. controlled Cartographer probe/touch/scan and bed mesh;
-3. first complete supervised print path;
-4. optional mixed PRTouch + Cartographer validation;
-5. real CFS loaded-path semantics and later controlled load/unload mutations.
+1. metadata-only `BOX_PRINT_INFO` validation on real sliced files;
+2. staged CFS operational-mode validation of `BOX_PRINT_START` and logical tool mapping;
+3. direct-USB Cartographer cold boot, reset/reconnect and persistent by-id path;
+4. controlled Cartographer probe/touch/scan and bed mesh;
+5. first complete supervised print path;
+6. optional mixed PRTouch + Cartographer validation.
 
 ## Canonical project documentation
 
