@@ -55,6 +55,17 @@ class BoxPrintMapping:
             "BOX_PRINT_START", self.cmd_print_start,
             desc="Start a print with a CFS tool-to-slot map")
 
+        # START_PRINT in the current K2 profile calls PARSE_FLUSH_VOLUMES. The
+        # older OpenHost BoxChangeEngine parses that metadata by physical slot,
+        # while the new UI mapping is logical-tool -> physical-slot. Wrap the
+        # command so an active mapped print keeps the translated metadata.
+        self._base_parse_flush = self.gcode.register_command(
+            "PARSE_FLUSH_VOLUMES", None)
+        if self._base_parse_flush is not None:
+            self.gcode.register_command(
+                "PARSE_FLUSH_VOLUMES", self.cmd_parse_flush_volumes,
+                desc="Parse slicer flush metadata with CFS tool mapping")
+
         self.printer.register_event_handler("box:ready", self._box_ready)
         for event in (
                 "print_stats:complete_printing",
@@ -122,10 +133,6 @@ class BoxPrintMapping:
                     self.change_engine.block_resume(reason)
                 except Exception:
                     pass
-                try:
-                    self.box._warn(reason)
-                except Exception:
-                    pass
                 self.box.pause_print()
                 return False
             raise gcmd.error("[BOX]: " + reason)
@@ -187,6 +194,15 @@ class BoxPrintMapping:
             return None
         return values[tool]
 
+    def _fallback_slot_temp(self, slot):
+        try:
+            value = self.box.slot_target_temp(slot)
+        except Exception:
+            value = None
+        if value is None:
+            value = self.change_engine.default_temp
+        return int(value)
+
     def _install_engine_metadata(self, source_tool=None, target_tool=None):
         """Translate logical-tool metadata to physical-slot indices.
 
@@ -200,8 +216,8 @@ class BoxPrintMapping:
 
         size = max([self.box.external_slot] + list(self.tool_map.values())) + 1
         matrix = [[None for _ in range(size)] for _ in range(size)]
-        temp_print = [None for _ in range(size)]
-        temp_initial = [None for _ in range(size)]
+        temp_print = [self._fallback_slot_temp(slot) for slot in range(size)]
+        temp_initial = [self._fallback_slot_temp(slot) for slot in range(size)]
 
         logical_matrix = self.metadata.get("matrix")
         logical_print = self.metadata.get("temp_print")
@@ -210,10 +226,10 @@ class BoxPrintMapping:
         for logical, slot in self.tool_map.items():
             value = self._logical_value(logical_print, logical)
             if value is not None:
-                temp_print[slot] = value
+                temp_print[slot] = int(value)
             value = self._logical_value(logical_initial, logical)
             if value is not None:
-                temp_initial[slot] = value
+                temp_initial[slot] = int(value)
 
         if logical_matrix:
             for source_logical, source_slot in self.tool_map.items():
@@ -231,10 +247,10 @@ class BoxPrintMapping:
             target_slot = self.tool_map[target_tool]
             value = self._logical_value(logical_print, target_tool)
             if value is not None:
-                temp_print[target_slot] = value
+                temp_print[target_slot] = int(value)
             value = self._logical_value(logical_initial, target_tool)
             if value is not None:
-                temp_initial[target_slot] = value
+                temp_initial[target_slot] = int(value)
         if (source_tool in self.tool_map and target_tool in self.tool_map
                 and logical_matrix and source_tool < len(logical_matrix)):
             row = logical_matrix[source_tool]
@@ -255,6 +271,14 @@ class BoxPrintMapping:
 
     def cmd_print_info(self, gcmd):
         self._inspect_print(gcmd, self._print_idle(gcmd))
+
+    def cmd_parse_flush_volumes(self, gcmd):
+        if self.mapping_filename is not None and self.metadata is not None:
+            self._install_engine_metadata(self.active_tool, self.active_tool)
+            return
+        if self._base_parse_flush is None:
+            raise gcmd.error("[BOX]: PARSE_FLUSH_VOLUMES is unavailable")
+        return self._base_parse_flush(gcmd)
 
     def cmd_print_start(self, gcmd):
         if getattr(self.box, "observation_mode", False):
