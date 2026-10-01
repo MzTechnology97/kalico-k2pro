@@ -1,6 +1,7 @@
 name: K2 OpenHost - sync validated extras
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - k2-pro-openhost
@@ -54,12 +55,14 @@ jobs:
               print(f'synced {name}')
           PY
 
-      - name: Verify K2-OpenHost patched CFS files
+      - name: Verify K2-OpenHost patched extras
         shell: bash
         run: |
           set -euo pipefail
           grep -Fq 'K2-OpenHost observation mode' klippy/extras/box.py
           grep -Fq 'K2-OpenHost: K2 Pro 4-byte BOX_STATE compatibility' klippy/extras/box_protocol.py
+          grep -Fq 'K2_PRO_CLOSED_LOOP_AXES = ("x", "y", "e")' klippy/extras/motor_control.py
+          grep -Fq 'STARTUP_PROBE_ADDRS = (0x81, 0x82)' klippy/extras/motor_control.py
 
       - name: Compile synced Python extras
         shell: bash
@@ -92,5 +95,5 @@ jobs:
             echo 'No extra changes required.'
             exit 0
           fi
-          git commit -m 'k2-openhost: sync validated Jacobean K2 extras'
+          git commit -m 'k2-openhost: sync validated K2 Pro extras'
           git push origin HEAD:k2-pro-openhost
