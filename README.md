@@ -11,24 +11,23 @@ Upstream lineage is deliberately preserved:
 
 ## Active branch
 
-You are looking at:
-
 ```text
 k2-pro-openhost
 ```
 
-This is the branch currently assembled for CM5/OpenHost testing.
+This is the branch currently used on the external CM5/OpenHost machine.
 
-It contains:
+## What is integrated
 
-- the Jacob/Kalico core;
-- K2 Pro `.cfg` baseline files adapted from the public work in **luketot/kalico-for-K2-Pro**;
-- K2-specific Jacobean extras synchronized from **MzTechnology97/k2-pro-custom-firmware:k2-openhost**;
-- the validated K2 Pro CFS four-byte state compatibility;
-- the validated CFS `observation_mode` safety layer;
-- an automated sync/compile workflow for the K2 extras.
-
-No unrelated Kalico core module has been modified for the current K2 Pro/OpenHost integration.
+- Jacob/Kalico core lineage;
+- K2 Pro configuration baseline;
+- K2-specific Jacobean extras synchronized from the K2/OpenHost source history;
+- K2 Pro CFS four-byte state compatibility;
+- protected CFS `observation_mode` safety layer;
+- K2 Pro closed-loop motor-control topology and tuned configuration;
+- external-host motor-control startup delay/retry handling;
+- tracked `gcode_shell_command.py` and Cartographer loader modules needed by the current host setup;
+- CI/sync checks for K2-specific extras.
 
 ## K2-OpenHost architecture
 
@@ -40,35 +39,62 @@ Allwinner T113
     |-- USB ConfigFS gadget
     |-- ttyGS0 -> ttyS2 -> Main MCU
     |-- ttyGS1 -> ttyS3 -> Nozzle MCU
-    `-- ttyGS2 -> ttyS5 -> RS-485/CFS
+    `-- ttyGS2 -> ttyS5 -> RS-485/CFS/closed-loop
            |
            | service Micro-USB
            v
-Raspberry Pi CM5
+Raspberry Pi CM5 / external Linux host
     |-- this Kalico branch
     |-- Moonraker
-    `-- Mainsail / Fluidd
+    |-- Mainsail / Fluidd
+    `-- direct USB -> Cartographer
 ```
 
-Validated external paths currently map to `/dev/ttyUSB0`, `/dev/ttyUSB1` and `/dev/ttyUSB2`. A fourth channel for Cartographer is planned.
+The three K2 gadget channels map to `/dev/ttyUSB0`, `/dev/ttyUSB1` and `/dev/ttyUSB2`. Cartographer is now intended to connect directly to the CM5 USB host through a persistent `/dev/serial/by-id/...` path rather than sharing the K2 gadget serial transport.
 
-## Current verified milestone
+## Hardware-validated milestone — 2026-10-01
 
-The external-host path has already been validated for:
+This branch has now been exercised as a real Klippy/Kalico service on the K2 Pro hardware.
 
-- simultaneous Main MCU + Nozzle MCU Kalico sessions;
-- RS-485 traffic;
-- closed-loop X/Y read queries;
-- CFS discovery/address/read queries;
-- the real Jacobean `Box()` class in observation mode;
-- 35 TX / 35 RX with zero transport errors;
-- deliberate CFS mutation `0x0D` blocked before TX.
+Validated from the external host:
 
-## Configuration status
+- native AArch64 C helper build and runtime;
+- simultaneous Main MCU + Nozzle MCU sessions at 230400 baud;
+- RS-485 transport on `/dev/ttyUSB2`;
+- closed-loop X/Y controller startup and runtime communication;
+- automatic recovery from transient motor-controller discovery failures through startup delay/retry logic;
+- normal CoreXY motion;
+- X/Y sensorless/stall homing;
+- correct Z direction;
+- **complete homing using the original PRTouch stack** with Cartographer disabled;
+- nozzle, bed and chamber heater operation;
+- PID tuning from the external host;
+- emergency shutdown while heater loads were active, with the measured load removed correctly;
+- successful **Klippain-ShakeTune** resonance test;
+- CFS/Box protected observation mode and K2 Pro 4-byte steady-state support.
 
-The K2 Pro `.cfg` files currently in this branch are a structural baseline. They are **not yet the final tuned configuration** for the project machine.
+The earlier experimental Cartographer MUX/DEMUX path reached live Cartographer MCU streaming, but it is no longer the target architecture. Cartographer will be finalized using direct USB on the CM5.
 
-After the transport/control stack is stable, the project will migrate the already-working K2 Pro settings, including the real Cartographer configuration and tuned `motor_control.cfg` values.
+## Probe strategy
+
+Two Cartographer roles are supported by the companion repository `MzTechnology97/cartographer3d-plugin-k2openhost`:
+
+- `register_as_probe: true` — Cartographer becomes the canonical Klipper/Kalico probe;
+- `register_as_probe: false` — optional mixed mode where PRTouch remains the primary Z-reference probe while Cartographer stays available for scan/mesh functions.
+
+The current known-good homing baseline is **PRTouch-only**. Mixed mode remains optional and pending hardware validation after direct-USB Cartographer is stable.
+
+## Configuration policy
+
+The project has moved from a structural baseline to hardware-backed machine integration. Values that have been proven on the working K2 Pro can now be migrated into the OpenHost configuration, but host-specific serial paths and startup ordering must remain explicit.
+
+Do not treat an experimental Cartographer bridge or unvalidated mixed-probe setting as production-ready merely because the parser accepts it.
+
+## Local plugin hygiene / Moonraker updates
+
+Moonraker expects the Kalico Git working tree to remain clean. Files that belong to this fork, including `klippy/extras/cartographer.py` and `klippy/extras/gcode_shell_command.py`, should stay tracked from Git rather than being overwritten by third-party installers.
+
+Locally installed extras such as ShakeTune can be kept outside Git tracking (for example through `.git/info/exclude`) so the `k2-pro-openhost` branch remains updateable from Mainsail.
 
 ## Documentation
 
@@ -76,6 +102,7 @@ After the transport/control stack is stable, the project will migrate the alread
 - [K2 configuration context](config/k2/README.md)
 - [Canonical K2-OpenHost documentation](https://github.com/MzTechnology97/K2-OpenHost)
 - [K2 extra source/patch history](https://github.com/MzTechnology97/k2-pro-custom-firmware/tree/k2-openhost)
+- [Cartographer K2/OpenHost plugin](https://github.com/MzTechnology97/cartographer3d-plugin-k2openhost)
 
 For generic Kalico documentation and original project information, use:
 
@@ -85,4 +112,4 @@ For generic Kalico documentation and original project information, use:
 
 ## Status
 
-Experimental / pre-production. This branch is for controlled K2 Pro validation and should not yet be treated as a finished drop-in production firmware.
+Experimental / pre-production. Core machine control now reaches full PRTouch homing, thermal tests and resonance measurement from the external host. Remaining major milestones are direct-USB Cartographer validation, a complete supervised print path and later controlled CFS mutation/load-unload tests.
