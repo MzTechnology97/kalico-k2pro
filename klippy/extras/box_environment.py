@@ -4,19 +4,24 @@
 # This file is distributed under the terms of the GNU GPLv3 license.
 """K2 Pro CFS environment/protocol diagnostics.
 
-The K2 Pro CFS 1.1.3 four-byte command-0x0A response carries temperature and
-humidity in its first two bytes.  ``box_k2pro`` adapts that payload into the
-canonical Box state before this module sees it.
+K2 Pro CFS firmware 1.1.3 answers command 0x0A with a compact four-byte
+BOX_STATE payload.  The first two bytes preserve the same environment layout
+used by the six-byte CFS response: signed temperature in degrees Celsius and
+relative humidity percent.  The remaining bytes are K2-Pro-specific state
+flags and are intentionally not reinterpreted here.
 
-Command 0x15 is a separate read-only GET_HARDWARE_STATUS request.  Firmware
-analysis shows that its 16-byte payload is a hardware self-test/status vector,
-not environment telemetry, so it remains exposed only as raw diagnostics.
-Command 0x14 identifies the connected CFS firmware and serial.
+Command 0x15 is a separate read-only GET_HARDWARE_STATUS request.  The live
+K2 Pro returns a 16-byte hardware diagnostic vector; it is retained as raw
+telemetry and is not guessed into temperature/humidity.  Command 0x14 provides
+firmware/version identity.
 
-Unknown layouts are never guessed into user-facing temperature/humidity.
+This module temporarily adapts the compact K2 Pro response at the integration
+boundary so the interpretation can be hardware-validated before the generic
+Box protocol decoder is changed.
 """
 
 import logging
+import struct
 
 from extras import box_protocol
 
@@ -44,6 +49,20 @@ def _decode_version(payload):
     return {"text": text, "firmware": firmware, "serial": serial}
 
 
+def _decode_compact_environment(reply):
+    """Return (temp_c, humidity_pct) for the K2 Pro four-byte BOX_STATE."""
+    if reply is None or reply.status != box_protocol.STATUS_OK:
+        return None
+    payload = bytes(reply.payload)
+    if len(payload) != 4:
+        return None
+    temp_c = struct.unpack("b", payload[:1])[0]
+    humidity_pct = payload[1]
+    if not -40 <= temp_c <= 85 or not 0 <= humidity_pct <= 100:
+        return None
+    return temp_c, humidity_pct
+
+
 class BoxEnvironment:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -57,6 +76,7 @@ class BoxEnvironment:
             "poll_interval", DEFAULT_POLL, minval=1.0)
         self.samples = {}
         self.versions = {}
+        self.environment = {}
         self.last_error = None
         self.ready = False
 
@@ -105,12 +125,23 @@ class BoxEnvironment:
 
     def _sample(self, refresh_version=False):
         samples = {}
+        environment = {}
         for address, driver in sorted(self.box.drivers.items()):
             key = str(address)
             if refresh_version or key not in self.versions:
                 version = self._query_version(address, driver)
                 if version is not None:
                     self.versions[key] = version
+
+            state_reply = driver.query_box_state(timeout=0.5)
+            decoded = _decode_compact_environment(state_reply)
+            if decoded is not None:
+                environment[key] = {
+                    "temp_c": decoded[0],
+                    "humidity_pct": decoded[1],
+                    "payload": state_reply.payload.hex(),
+                    "raw": state_reply.raw.hex(),
+                }
 
             reply = self._query_hardware(address, driver)
             if reply is None:
@@ -123,6 +154,7 @@ class BoxEnvironment:
             }
 
         self.samples = samples
+        self.environment = environment
         self.last_error = None
 
     def _poll(self, eventtime):
@@ -137,12 +169,17 @@ class BoxEnvironment:
 
     def _box_get_status(self, eventtime):
         status = dict(self._base_get_status(eventtime))
-        status["environment_source"] = (
-            "box_state_0x0a"
-            if status.get("temp_c") is not None
-            and status.get("humidity_pct") is not None
-            else None
-        )
+        source = None
+        if status.get("temp_c") is None or status.get("humidity_pct") is None:
+            if self.environment:
+                first = self.environment[sorted(self.environment)[0]]
+                status["temp_c"] = first["temp_c"]
+                status["humidity_pct"] = first["humidity_pct"]
+                source = "box_state_0x0a_compact"
+        else:
+            source = "box_state_0x0a"
+        status["environment_source"] = source
+        status["environment_units"] = dict(self.environment)
         status["environment_raw"] = dict(self.samples)
         status["cfs_versions"] = dict(self.versions)
         status["environment_error"] = self.last_error
@@ -153,17 +190,13 @@ class BoxEnvironment:
             self._sample(refresh_version=True)
         except Exception as exc:
             raise gcmd.error("[BOX]: CFS diagnostics failed: %s" % exc)
-        status = self._base_get_status(self.reactor.monotonic())
-        source = (
-            "box_state_0x0a"
-            if status.get("temp_c") is not None
-            and status.get("humidity_pct") is not None
-            else None
-        )
+        status = self._box_get_status(self.reactor.monotonic())
         gcmd.respond_info(
-            "[BOX]: versions=%s hardware=%s temp=%sC humidity=%s%% source=%s"
-            % (self.versions, self.samples, status.get("temp_c"),
-               status.get("humidity_pct"), source))
+            "[BOX]: versions=%s environment=%s hardware=%s temp=%sC "
+            "humidity=%s%% source=%s"
+            % (self.versions, self.environment, self.samples,
+               status.get("temp_c"), status.get("humidity_pct"),
+               status.get("environment_source")))
 
 
 def load_config(config):
