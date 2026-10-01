@@ -57,6 +57,8 @@ CONTROL_OPTIONS = (
     "overcurrent_switch",
     "switch",
     "retries",
+    "startup_delay",
+    "retry_delay",
     "motor_closed_loop",
 )
 
@@ -75,6 +77,8 @@ class MotorControlConfigModel:
     pins: dict[str, MotorPinConfig]
     closed_loop_axes: tuple[str, ...]
     startup_retries: int
+    startup_delay: float
+    retry_delay: float
     switch: int
     overcurrent_switch: int
 
@@ -153,7 +157,11 @@ class MotorControlConfigModel:
             cut_pos_offset=config.getfloat("cut_pos_offset", 0.4),
             pins=pins,
             closed_loop_axes=cls._parse_closed_loop_axes(config),
-            startup_retries=config.getint("retries", 3, minval=0, maxval=10),
+            startup_retries=config.getint("retries", 8, minval=0, maxval=20),
+            startup_delay=config.getfloat(
+                "startup_delay", 5.0, minval=0.0, maxval=120.0),
+            retry_delay=config.getfloat(
+                "retry_delay", 3.0, minval=0.0, maxval=60.0),
             switch=config.getint("switch", 1, minval=0, maxval=1),
             overcurrent_switch=config.getint(
                 "overcurrent_switch", 0, minval=0, maxval=1),
@@ -2614,7 +2622,8 @@ def _klog(msg, *args, level=logging.info):
 
 
 DEFAULT_REGISTRY_PATH = Path(__file__).parent / "motor_map.json"
-STARTUP_AUTO_RETRY_DELAY = 2.0
+DEFAULT_STARTUP_DELAY = 5.0
+DEFAULT_RETRY_DELAY = 3.0
 STARTUP_AUTO_RETRY_LIMIT = 3
 PROTECTION_QUERY_DATA = 11
 STALL_EVENT_MIN_INTERVAL = 0.100
@@ -2688,9 +2697,11 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 len(self._runtime_cfg_overrides),
             )
         _klog(
-            "K2 Pro topology closed_loop=%s retries=%d switch=%d overcurrent_switch=%d",
+            "K2 Pro topology closed_loop=%s retries=%d startup_delay=%.1fs retry_delay=%.1fs switch=%d overcurrent_switch=%d",
             ",".join(self.config_model.closed_loop_axes),
             self.config_model.startup_retries,
+            self.config_model.startup_delay,
+            self.config_model.retry_delay,
             self.config_model.switch,
             self.config_model.overcurrent_switch,
         )
@@ -2700,6 +2711,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self.motor_params_init = False
         self.auto_retry = True
         self.startup_retry_limit = self.config_model.startup_retries
+        self.startup_delay = self.config_model.startup_delay
+        self.retry_delay = self.config_model.retry_delay
         self.cut_pos_offset = self.config_model.cut_pos_offset
         self.position_min_cut_x = -10.0
         self.cut_state = False
@@ -3551,7 +3564,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                         % (
                             attempt_label,
                             failure,
-                            STARTUP_AUTO_RETRY_DELAY,
+                            self.retry_delay,
                             next_retry,
                             self.startup_retry_limit,
                         ))
@@ -3561,7 +3574,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                         level=logging.exception)
                 self._startup_auto_retry_count = next_retry
                 self._reset_startup_state(reset_retry_state=False)
-                return self.reactor.monotonic() + STARTUP_AUTO_RETRY_DELAY
+                return self.reactor.monotonic() + self.retry_delay
             self._startup_complete = True
             self.is_ready = False
             self.motor_params_init = False
@@ -3633,8 +3646,11 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             return
         self._reset_startup_state(reset_retry_state=True)
         self._startup_allow_auto_retry = allow_auto_retry
-        when = self.reactor.monotonic()
-        _klog("scheduling startup sequence at %.3f", when)
+        now = self.reactor.monotonic()
+        when = now + self.startup_delay
+        _klog(
+            "scheduling startup sequence at %.3f (delay %.1fs)",
+            when, self.startup_delay)
         self.reactor.update_timer(self._startup_timer, when)
 
     def _handle_serial485_ready(self):
