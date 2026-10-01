@@ -32,6 +32,8 @@ overrides used by startup, fault handling, and command execution.
 
 
 
+K2_PRO_CLOSED_LOOP_AXES = ("x", "y", "e")
+
 K2_PIN_LAYOUT = {
     "motor_x_dir": ("PB9", 0),
     "motor_x_step": ("PB10", 0),
@@ -39,12 +41,6 @@ K2_PIN_LAYOUT = {
     "motor_y_dir": ("!PB7", 0),
     "motor_y_step": ("PB8", 0),
     "motor_y_stall": ("PB12", None),
-    "motor_z_dir": ("PB5", 0),
-    "motor_z_step": ("PB6", 1),
-    "motor_z_stall": ("PB13", None),
-    "motor_z1_dir": ("PA1", 1),
-    "motor_z1_step": ("PB15", 1),
-    "motor_z1_stall": ("PA10", None),
     "motor_e_stall": ("nozzle_mcu:PB12", None),
 }
 
@@ -55,10 +51,13 @@ OUTPUT_PIN_OPTIONS = (
     "motor_x_step",
     "motor_y_dir",
     "motor_y_step",
-    "motor_z_dir",
-    "motor_z_step",
-    "motor_z1_dir",
-    "motor_z1_step",
+)
+
+CONTROL_OPTIONS = (
+    "overcurrent_switch",
+    "switch",
+    "retries",
+    "motor_closed_loop",
 )
 
 
@@ -74,11 +73,69 @@ class MotorControlConfigModel:
     raw_options: dict[str, str | None]
     cut_pos_offset: float
     pins: dict[str, MotorPinConfig]
+    closed_loop_axes: tuple[str, ...]
+    startup_retries: int
+    switch: int
+    overcurrent_switch: int
+
+    @staticmethod
+    def _parse_pin(config, option, default_desc, default_startup):
+        raw_value = config.get(option, None)
+        if raw_value is None:
+            return MotorPinConfig(
+                raw=default_desc,
+                pin_desc=default_desc,
+                startup_value=default_startup,
+            )
+        parts = [part.strip() for part in str(raw_value).split(",")]
+        if not parts or not parts[0] or len(parts) > 2:
+            raise config.error(
+                "Invalid %s=%r; expected PIN or PIN,0|1"
+                % (option, raw_value))
+        startup = default_startup
+        if len(parts) == 2:
+            try:
+                startup = int(parts[1])
+            except ValueError as exc:
+                raise config.error(
+                    "Invalid startup value in %s=%r" % (option, raw_value)) from exc
+            if startup not in (0, 1):
+                raise config.error(
+                    "Invalid startup value in %s=%r; expected 0 or 1"
+                    % (option, raw_value))
+        return MotorPinConfig(
+            raw=parts[0],
+            pin_desc=parts[0],
+            startup_value=startup,
+        )
+
+    @staticmethod
+    def _parse_closed_loop_axes(config):
+        raw_value = config.get(
+            "motor_closed_loop", ",".join(K2_PRO_CLOSED_LOOP_AXES))
+        requested = tuple(dict.fromkeys(
+            part.strip().lower()
+            for part in str(raw_value).split(",")
+            if part.strip()
+        ))
+        unknown = [axis for axis in requested if axis not in K2_PRO_CLOSED_LOOP_AXES]
+        if unknown:
+            raise config.error(
+                "K2 Pro motor_closed_loop contains unsupported axes: %s"
+                % (",".join(unknown),))
+        normalized = tuple(
+            axis for axis in K2_PRO_CLOSED_LOOP_AXES if axis in requested)
+        if normalized != K2_PRO_CLOSED_LOOP_AXES:
+            raise config.error(
+                "K2 Pro motor_closed_loop must select x,y,e; got %r"
+                % (raw_value,))
+        return normalized
 
     @classmethod
     def from_config(cls, config, param_options=()):
         accepted = {
             "cut_pos_offset",
+            *(option.lower() for option in CONTROL_OPTIONS),
             *(option.lower() for option in PIN_OPTIONS),
             *(str(option).lower() for option in param_options),
         }
@@ -88,17 +145,18 @@ class MotorControlConfigModel:
             if option.lower() in accepted
         }
         pins = {
-            option: MotorPinConfig(
-                raw=pin_desc,
-                pin_desc=pin_desc,
-                startup_value=startup_value,
-            )
+            option: cls._parse_pin(config, option, pin_desc, startup_value)
             for option, (pin_desc, startup_value) in K2_PIN_LAYOUT.items()
         }
         return cls(
             raw_options=raw,
             cut_pos_offset=config.getfloat("cut_pos_offset", 0.4),
             pins=pins,
+            closed_loop_axes=cls._parse_closed_loop_axes(config),
+            startup_retries=config.getint("retries", 3, minval=0, maxval=10),
+            switch=config.getint("switch", 1, minval=0, maxval=1),
+            overcurrent_switch=config.getint(
+                "overcurrent_switch", 0, minval=0, maxval=1),
         )
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -751,10 +809,6 @@ PIN_DIR_SEQUENCE = (
     ("motor_x_step", 0),
     ("motor_y_dir", 0),
     ("motor_y_step", 0),
-    ("motor_z_dir", 0),
-    ("motor_z_step", 1),
-    ("motor_z1_dir", 1),
-    ("motor_z1_step", 1),
 )
 
 PIN_NORMAL_SEQUENCE = (
@@ -762,12 +816,7 @@ PIN_NORMAL_SEQUENCE = (
     ("motor_x_step", 0),
     ("motor_y_dir", 1),
     ("motor_y_step", 0),
-    ("motor_z_dir", 0),
-    ("motor_z_step", 0),
-    ("motor_z1_dir", 0),
-    ("motor_z1_step", 0),
 )
-
 
 def _shareable_pin_desc(pin_desc: str) -> str:
     desc = pin_desc.strip()
@@ -1735,19 +1784,17 @@ class Serial485TransportAdapter:
 
 
 
-KINEMATIC_AXES = ("x", "y", "z", "z1")
+KINEMATIC_AXES = ("x", "y")
 EXTRUDER_AXIS = "e"
 ALL_AXES = KINEMATIC_AXES + (EXTRUDER_AXIS,)
 EXTRUDER_AXES = (EXTRUDER_AXIS,)
 AXIS_NUM_MAP = {
     1: "x",
     2: "y",
-    3: "z",
-    4: "z1",
     5: EXTRUDER_AXIS,
 }
 AXIS_TO_NUM_MAP = {axis: num for num, axis in AXIS_NUM_MAP.items()}
-STARTUP_PROBE_ADDRS = tuple(0x80 + i for i in range(1, 5))
+STARTUP_PROBE_ADDRS = (0x81, 0x82)
 EXTRUDER_BOOTSTRAP_ADDR = 0x81
 EXTRUDER_MIN_RUNTIME_ADDR = 0x81
 EXTRUDER_MAX_RUNTIME_ADDR = 0x8F
@@ -1758,7 +1805,6 @@ RUNTIME_FAULT_ACTION_BY_AXIS = {
     **{axis: RUNTIME_FAULT_ACTION_SHUTDOWN for axis in KINEMATIC_AXES},
     EXTRUDER_AXIS: RUNTIME_FAULT_ACTION_RECOVER,
 }
-
 
 @dataclass(frozen=True)
 class MotorAxisTarget:
@@ -2091,11 +2137,8 @@ state changes to the motor-control runtime.
 STALL_AXIS_PINS = (
     ("x", "motor_x_stall"),
     ("y", "motor_y_stall"),
-    ("z", "motor_z_stall"),
-    ("z1", "motor_z1_stall"),
     (EXTRUDER_AXIS, "motor_e_stall"),
 )
-
 
 class MotorStallMonitor:
     def __init__(self, config, replacement, config_model):
@@ -2607,8 +2650,6 @@ STARTUP_STEP_FUNCTIONS = {
 STARTUP_SERIAL_AXIS_BY_ADDR = {
     0x81: "X",
     0x82: "Y",
-    0x83: "Z",
-    0x84: "Z1",
 }
 STARTUP_PROTOCOL_ERROR_RE = re.compile(
     r"^(no response|empty response) for addr=0x([0-9a-fA-F]{2}) "
@@ -2646,11 +2687,19 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 "loaded %d live cfg param override(s) into runtime registry",
                 len(self._runtime_cfg_overrides),
             )
+        _klog(
+            "K2 Pro topology closed_loop=%s retries=%d switch=%d overcurrent_switch=%d",
+            ",".join(self.config_model.closed_loop_axes),
+            self.config_model.startup_retries,
+            self.config_model.switch,
+            self.config_model.overcurrent_switch,
+        )
 
         self.is_homing = False
         self.is_ready = False
         self.motor_params_init = False
         self.auto_retry = True
+        self.startup_retry_limit = self.config_model.startup_retries
         self.cut_pos_offset = self.config_model.cut_pos_offset
         self.position_min_cut_x = -10.0
         self.cut_state = False
@@ -2734,7 +2783,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             ("CALIBRATE_CUT_POS", self.cmd_CALIBRATE_CUT_POS,
              "CALIBRATE_CUT_POS"),
             ("MOTOR_CALIBRATE", self.cmd_MOTOR_CALIBRATE,
-             "MOTOR_CALIBRATE AXIS=XYZZ1 [DETAIL=raw] | MOTOR_CALIBRATE AXIS=E STAGE=encoder|offset|1|2 [DETAIL=raw]"),
+             "MOTOR_CALIBRATE AXIS=XY [DETAIL=raw] | MOTOR_CALIBRATE AXIS=E STAGE=encoder|offset|1|2 [DETAIL=raw]"),
         ))
 
     def _register_debug_commands(self):
@@ -2744,7 +2793,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             ("MOTOR_QUERY_FAULTS", self.cmd_MOTOR_QUERY_FAULTS,
              "MOTOR_QUERY_FAULTS Live query and print error/warning/status codes for all axes with elapsed time"),
             ("MOTOR_CFG_OVERRIDE_STATUS", self.cmd_MOTOR_CFG_OVERRIDE_STATUS,
-             "MOTOR_CFG_OVERRIDE_STATUS [AXIS=XYZZ1E] [DETAIL=raw] Report live cfg-backed targets and current board values"),
+             "MOTOR_CFG_OVERRIDE_STATUS [AXIS=XYE] [DETAIL=raw] Report live cfg-backed targets and current board values"),
             ("MOTOR_RETRY_STARTUP", self.cmd_MOTOR_RETRY_STARTUP,
              "MOTOR_RETRY_STARTUP Restart motor-control startup"),
         ))
@@ -2781,7 +2830,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 i += 1
             if axis not in AXIS_TO_NUM_MAP:
                 raise RuntimeError(
-                    f"unsupported AXIS={raw_value!r}; use X,Y,Z,Z1,E")
+                    f"unsupported AXIS={raw_value!r}; use X,Y,E")
             if axis not in axes:
                 axes.append(axis)
         return tuple(axes)
@@ -2793,7 +2842,6 @@ class MotorControl(MotorControlDebugSurfaceMixin):
     def _calibration_usage_examples(self) -> tuple[str, ...]:
         return (
             "MOTOR_CALIBRATE AXIS=X",
-            "MOTOR_CALIBRATE AXIS=XYZZ1",
             "MOTOR_CALIBRATE AXIS=E STAGE=encoder",
             "MOTOR_CALIBRATE AXIS=E STAGE=1",
             "MOTOR_CALIBRATE AXIS=E STAGE=offset",
@@ -3494,7 +3542,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 step_name, level=logging.exception)
             attempt_label = self._startup_attempt_label()
             if (self.auto_retry and self._startup_allow_auto_retry
-                    and self._startup_auto_retry_count < STARTUP_AUTO_RETRY_LIMIT):
+                    and self._startup_auto_retry_count < self.startup_retry_limit):
                 next_retry = self._startup_auto_retry_count + 1
                 try:
                     self.gcode.respond_info(
@@ -3505,7 +3553,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                             failure,
                             STARTUP_AUTO_RETRY_DELAY,
                             next_retry,
-                            STARTUP_AUTO_RETRY_LIMIT,
+                            self.startup_retry_limit,
                         ))
                 except Exception:
                     _klog(
@@ -3556,7 +3604,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         if self._startup_auto_retry_count <= 0:
             return "startup"
         return "retry %d/%d" % (
-            self._startup_auto_retry_count, STARTUP_AUTO_RETRY_LIMIT)
+            self._startup_auto_retry_count, self.startup_retry_limit)
 
     def _reset_startup_state(self, reset_retry_state: bool = True):
         self._startup_started = True
