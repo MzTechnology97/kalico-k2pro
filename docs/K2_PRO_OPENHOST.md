@@ -126,6 +126,18 @@ RFID remaining filament is tracked in two layers. The CFS-reported percentage is
 
 Runout groups are formed from present slots with the same material and colour. When RFID percentages are known, both automatic print mapping between otherwise equal candidates and runout replacement chains prefer the lowest remaining percentage first; slots without a known percentage are used after known RFID spools. Manual slot selection still remains authoritative for the currently loaded source.
 
+## HelixScreen compatibility
+
+K2-OpenHost deliberately stays inside HelixScreen's published CFS **Flat** schema and **Fork** command dialect so a separate HelixScreen fork is not required. The compatibility contract is:
+
+- `box.api_version` stays exactly `1`; HelixScreen uses this value to select the high-level `T<n>` / `BOX_UNLOAD` command dialect.
+- `box.slots[]` remains the canonical flat slot list with `index`, `present`, `loaded`, `material`, `color`, `brand`, `name`, `spoolman_id`, and `external`. K2-OpenHost fields such as `filament_id`, RFID percentage and inventory metadata are additive and may be ignored by readers that do not know them.
+- `runout_swap_enabled`, `temp_c`, `humidity_pct`, `loaded_slot`, `filament_detected`, `materials`, `load_path`, `driver_ready`, and the external-spool entry retain their existing meanings.
+- Manual slot edits continue to use `_BOX_SLOT_SET`, and explicit clears use `_BOX_SLOT_CLEAR`, matching HelixScreen's existing CFS backend. K2-OpenHost's library-only commands (`_BOX_FILAMENT_SET`, `_BOX_SLOT_ASSIGN`, and related helpers) are optional extensions used by Mainsail and are not required by HelixScreen.
+- The runout object keeps the established `{"loaded_slot": n, "chain": [...]}` shape. Additional sequence/detail fields are additive.
+
+Because metadata-only slot/library commands are safe local state changes, they remain usable even when hardware mutation is restricted. Load, unload, tool-change and forced hardware operations still obey the CFS operational/read-only safety state.
+
 ## OrcaSlicer direct CFS printing
 
 Jacob10383's OrcaSlicer fork detects `box.print_mapping_version == 1`, queries `printer.objects.box`, uploads without auto-start, asks the printer to inspect the stored G-code with `BOX_PRINT_INFO`, and starts it with `BOX_PRINT_START` plus the selected logical-tool to physical-slot map. K2-OpenHost deliberately keeps `print_mapping_version: 1`, so this path is protocol-compatible without a stock Creality mapping endpoint.
