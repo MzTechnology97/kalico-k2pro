@@ -357,6 +357,9 @@ class BoxChangeEngine:
         if recovery is None:
             return self._pause_runout(gcmd, "automatic runout swap disabled")
         if not recovery.get("recoverable"):
+            source = recovery.get("loaded_slot")
+            if self.box.runout_active and self.box.is_physical_slot(source):
+                self.box.mark_slot_depleted(source)
             return self._pause_runout(gcmd, recovery.get("reason", "no replacement"))
 
         source = recovery["loaded_slot"]
@@ -401,6 +404,7 @@ class BoxChangeEngine:
                 gcmd, str(exc), feed_tail=False,
                 skip_retract_wipe=wiped)
 
+        self.box.mark_slot_depleted(source)
         self.pending = None
         self.clear_resume_recovery()
         self._info(gcmd, "Auto runout swap complete: T%d active" % target)

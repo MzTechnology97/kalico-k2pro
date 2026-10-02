@@ -271,6 +271,7 @@ class BoxStore:
     def _load(self):
         if not os.path.exists(self.path):
             return {
+                "schema_version": FILAMENT_INVENTORY_VERSION,
                 "materials": {name: dict(value) for name, value in DEFAULT_MATERIALS.items()},
                 "filaments": {},
                 "slots": {},
@@ -297,6 +298,7 @@ class BoxStore:
         sections["rfid_mappings"] = self._rfid_mappings(
             sections["rfid_mappings"])
         sections["addresses"] = self._addresses(sections["addresses"])
+        sections["schema_version"] = FILAMENT_INVENTORY_VERSION
         return sections
 
     @staticmethod
@@ -671,14 +673,19 @@ class Box:
             "box_count", MAX_ADDRESSES,
             minval=1, maxval=MAX_ADDRESSES)
 
+        persistent_root = (
+            "/mnt/UDISK/printer_data"
+            if os.path.isdir("/mnt/UDISK/printer_data")
+            else os.path.expanduser("~/printer_data")
+        )
         default_state_path = (
             "/dev/shm/k2-openhost-filament_box.json"
             if self.observation_mode
-            else "/mnt/UDISK/printer_data/filament_box.json"
+            else os.path.join(persistent_root, "filament_box.json")
         )
 
         self.store = BoxStore(
-            config.get("state_path", default_state_path)
+            os.path.expanduser(config.get("state_path", default_state_path))
         )
         repo_root = os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.realpath(__file__))))
@@ -762,6 +769,7 @@ class Box:
         self.last_rfid_estimate_save = 0.0
         self.unknown_rfid = {}
         self.rfid_presence = {}
+        self.rfid_absent_confirm = {}
         self.rfid_pending = set()
         self.rfid_snapshot = {}
         self.rfid_seen_invalid = set()
@@ -1299,6 +1307,28 @@ class Box:
     def clear_profile(self, slot):
         self.store.clear_profile(self._runtime_slot_key(slot))
 
+    def mark_slot_depleted(self, slot):
+        """Persist a confirmed empty spool and clear its live slot assignment.
+
+        RFID remaining estimates are kept by spool identity at 0 mm, so a
+        later explicit reread cannot restore already-consumed filament.  The
+        bay itself is left unassigned until a new insertion event, explicit
+        RFID reread, or manual profile assignment repopulates it.
+        """
+        if not self.is_physical_slot(slot):
+            return
+        spool = self.rfid_spools.get(slot)
+        if spool and spool.get("total_mm"):
+            spool["remaining_mm"] = 0.0
+            self.rfid_percent[slot] = 0.0
+            self.rfid_estimate_dirty = True
+            self._persist_rfid_estimates(force=True)
+        self.rfid_live_slots.discard(slot)
+        self.rfid_reported_percent.pop(slot, None)
+        self.unknown_rfid.pop(self._runtime_slot_key(slot), None)
+        self._clear_rfid_slot_key(slot)
+        self.clear_profile(slot)
+
     def _runtime_slot_key(self, slot):
         if slot == EXTERNAL_PROFILE_KEY or slot == self.external_slot:
             return EXTERNAL_PROFILE_KEY
@@ -1412,7 +1442,10 @@ class Box:
 
     @property
     def rfid_startup_reading_enabled(self):
-        return bool(self.store.setting("rfid_startup_reading_enabled", True))
+        # Presence is established with one lightweight slot-mask query per CFS.
+        # Full tag scans at every boot are deliberately opt-in: persisted slot
+        # metadata and remaining estimates are restored from filament_box.json.
+        return bool(self.store.setting("rfid_startup_reading_enabled", False))
 
     def slot_target_temp(self, slot):
         profile = self.profile(slot)
@@ -2210,6 +2243,20 @@ class Box:
                     "box %d RFID presence baseline" % address)
                 local_mask = slots.value & 0x0F
                 self.rfid_presence[address] = local_mask
+
+                # Restore persisted slot state without scanning every tag.
+                # One slot-mask query is enough to know which bays are still
+                # occupied. Occupied RFID bays reuse their saved profile and
+                # remaining estimate until an insertion event or explicit
+                # reread supplies fresh tag data. Empty bays are only cleaned
+                # after repeated topology confirmation below, never from one
+                # potentially transient startup sample.
+                for local in range(SLOTS_PER_BOX):
+                    bit = 1 << local
+                    slot = self._global_slot(address, local)
+                    if local_mask & bit:
+                        self._restore_cached_rfid_slot(slot)
+
                 if self.rfid_startup_reading_enabled and local_mask:
                     cached = self._require_reply(
                         driver.query_rfid_records(
@@ -2293,6 +2340,12 @@ class Box:
         self.rfid_reported_percent.pop(slot, None)
         self.rfid_spools.pop(slot, None)
         self.unknown_rfid.pop(self._runtime_slot_key(slot), None)
+        self._clear_rfid_slot_key(slot)
+        # Slot assignments describe the spool currently occupying that bay.
+        # When the bay becomes empty (manual or RFID, including runout), clear
+        # only the slot assignment. The reusable filament library and the RFID
+        # estimate keyed by spool identity remain persisted for later reuse.
+        self.clear_profile(slot)
         self._invalidate_spoolman(slot)
 
     def _reconcile_presence(self, address, current):
@@ -2302,9 +2355,29 @@ class Box:
         changed = previous ^ current
         for local in range(SLOTS_PER_BOX):
             bit = 1 << local
+            slot = self._global_slot(address, local)
+
+            if current & bit:
+                self.rfid_absent_confirm.pop(slot, None)
+            elif changed & bit:
+                # A live present->absent transition is authoritative and may
+                # be cleared immediately.
+                self.rfid_absent_confirm.pop(slot, None)
+            else:
+                # A printer can occasionally report an empty mask while the
+                # CFS/RS485 bus is still settling after boot. Never erase a
+                # persisted manual/RFID slot from one such sample. Require
+                # three consecutive topology observations (~30 s idle) before
+                # cleaning a slot that was already absent at startup.
+                count = self.rfid_absent_confirm.get(slot, 0) + 1
+                self.rfid_absent_confirm[slot] = count
+                if count >= 3:
+                    self._clear_rfid_slot_key(slot)
+                    self.clear_profile(slot)
+                    self.rfid_absent_confirm.pop(slot, None)
+
             if not changed & bit:
                 continue
-            slot = self._global_slot(address, local)
             if current & bit:
                 self._rfid_inserted(slot)
             else:
@@ -2437,11 +2510,56 @@ class Box:
             "%s:slot:%d" % (fingerprint, int(slot))
             if duplicate else fingerprint)
 
+    def _rfid_slot_keys(self):
+        value = self.store.setting("rfid_slot_keys", {}) or {}
+        return dict(value) if isinstance(value, dict) else {}
+
+    def _set_rfid_slot_key(self, slot, key):
+        keys = self._rfid_slot_keys()
+        slot_key = str(self._runtime_slot_key(slot))
+        if keys.get(slot_key) == key:
+            return
+        keys[slot_key] = key
+        self.store.set_setting("rfid_slot_keys", keys)
+
+    def _clear_rfid_slot_key(self, slot):
+        keys = self._rfid_slot_keys()
+        slot_key = str(self._runtime_slot_key(slot))
+        if keys.pop(slot_key, None) is not None:
+            self.store.set_setting("rfid_slot_keys", keys)
+
+    def _restore_cached_rfid_slot(self, slot):
+        profile = self.profile(slot)
+        if profile.get("source") != "rfid":
+            return False
+        key = self._rfid_slot_keys().get(str(self._runtime_slot_key(slot)))
+        if not key:
+            return False
+        estimates = self.store.setting("rfid_estimates", {}) or {}
+        saved = estimates.get(key, {}) if isinstance(estimates, dict) else {}
+        try:
+            total_mm = float(saved.get("total_mm"))
+            remaining_mm = float(saved.get("remaining_mm"))
+        except (TypeError, ValueError):
+            return False
+        if total_mm <= 0.0:
+            return False
+        remaining_mm = max(0.0, min(total_mm, remaining_mm))
+        self.rfid_spools[slot] = {
+            "key": key,
+            "fingerprint": None,
+            "total_mm": total_mm,
+            "remaining_mm": remaining_mm,
+        }
+        self.rfid_percent[slot] = 100.0 * remaining_mm / total_mm
+        return True
+
     def _remember_rfid_spool(self, slot, fields):
         fingerprint = self._rfid_spool_fingerprint(fields)
         key = self._rfid_spool_key(fields, slot)
         if key is None:
             return
+        self._set_rfid_slot_key(slot, key)
         try:
             total_m = int(self._clean_rfid(fields.get("len")))
         except (TypeError, ValueError):
@@ -2792,6 +2910,10 @@ class Box:
             return
         value = reply.values.get(box_protocol.RFID_SLOT_NAMES[local])
         self._apply_reported_remaining(slot, value)
+        # A tag read establishes the spool identity for this bay. Persist the
+        # first remaining estimate immediately so a reboot does not require a
+        # second RFID scan just to restore the gauge.
+        self._persist_rfid_estimates(force=True)
 
     def _query_rfid_sample(self, slot):
         address, local = self._address_slot(slot)
@@ -2900,6 +3022,10 @@ class Box:
                     continue
                 value = reply.values.get(name)
                 self._apply_reported_remaining(slot, value)
+        # The periodic CFS remaining query is also the idle-time persistence
+        # path. This avoids losing a hardware-reported decrease when no print
+        # is currently active.
+        self._persist_rfid_estimates()
 
     def _external_rfid_record(self, event):
         self._apply_rfid_record(

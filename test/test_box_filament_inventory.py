@@ -156,3 +156,74 @@ def test_unique_k2rfid_serial_is_stable_across_slots():
 
     assert box._rfid_spool_key(fields, 0) == box._rfid_spool_key(fields, 3)
     assert box._rfid_spool_key(fields, 0).endswith(":483921")
+
+def test_store_persists_schema_and_manual_slot_assignment(tmp_path):
+    path = tmp_path / "filament_box.json"
+    store = BoxStore(str(path))
+    store.set_filament("00014", filament())
+    store.set_profile(2, {
+        "material": "PETG-CF",
+        "color": "#6C4E43",
+        "brand": "Generic",
+        "name": "Generic PETG-CF",
+        "target_temp": 250,
+        "pressure_advance": 0.045,
+        "spoolman_id": None,
+        "filament_id": "00014",
+        "source": "library",
+        "rfid_code": "",
+    })
+
+    reloaded = BoxStore(str(path))
+    assert reloaded.data["schema_version"] == FILAMENT_INVENTORY_VERSION
+    assert reloaded.profile(2)["filament_id"] == "00014"
+    assert reloaded.profile(2)["color"] == "#6C4E43"
+
+    reloaded.clear_profile(2)
+    assert BoxStore(str(path)).profile(2)["material"] == ""
+
+
+def test_mark_slot_depleted_zeroes_estimate_and_clears_assignment(tmp_path):
+    store = BoxStore(str(tmp_path / "filament_box.json"))
+    store.set_profile(1, {
+        "material": "PLA",
+        "color": "#B1BEC6",
+        "brand": "Bambulab",
+        "name": "Bambulab PLA Basic",
+        "target_temp": 215,
+        "pressure_advance": None,
+        "spoolman_id": None,
+        "filament_id": "05628",
+        "source": "rfid",
+        "rfid_code": "105628",
+    })
+    store.set_setting("rfid_slot_keys", {"1": "tag:example"})
+    store.set_setting("rfid_estimates", {
+        "tag:example": {"total_mm": 330000.0, "remaining_mm": 33000.0}
+    })
+
+    box = Box.__new__(Box)
+    box.store = store
+    box.drivers = {1: object()}
+    box.rfid_spools = {
+        1: {
+            "key": "tag:example",
+            "fingerprint": "tag:example",
+            "total_mm": 330000.0,
+            "remaining_mm": 33000.0,
+        }
+    }
+    box.rfid_percent = {1: 10.0}
+    box.rfid_reported_percent = {1: 12}
+    box.rfid_live_slots = {1}
+    box.unknown_rfid = {}
+    box.rfid_estimate_dirty = False
+
+    box.mark_slot_depleted(1)
+
+    reloaded = BoxStore(store.path)
+    assert reloaded.profile(1)["material"] == ""
+    assert reloaded.setting("rfid_estimates")["tag:example"]["remaining_mm"] == 0.0
+    assert "1" not in reloaded.setting("rfid_slot_keys", {})
+    assert box.rfid_percent[1] == 0.0
+    assert 1 not in box.rfid_live_slots
