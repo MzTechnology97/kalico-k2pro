@@ -24,6 +24,28 @@ def _temperature(item, base):
         return None
 
 
+def _profile_signature(item, base):
+    """Return a color-insensitive signature for a full Creality material entry."""
+    kv = dict(item.get("kvParam") or {})
+    # Color and free-form notes describe the spool/preset presentation, not the
+    # filament formulation. A K2-RFID database may duplicate one material for
+    # several colors; those entries should become aliases of one library item.
+    for key in ("default_filament_colour", "filament_notes"):
+        kv.pop(key, None)
+    base_profile = {
+        key: value for key, value in base.items()
+        if key not in ("id", "name", "colors", "rank")
+    }
+    if not kv and not base_profile:
+        return ""
+    try:
+        return json.dumps(
+            {"kv": kv, "base": base_profile},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except (TypeError, ValueError):
+        return ""
+
+
 def _codes(material_id, aliases=(), explicit=()):
     values = []
     for value in [material_id] + list(aliases) + list(explicit):
@@ -99,6 +121,7 @@ class K2RfidMaterialCatalog:
                     "target_temp": _temperature(item, base),
                     "aliases": [],
                     "rfid_codes": [],
+                    "_profile_signature": _profile_signature(item, base),
                 }
             else:
                 entry = {
@@ -113,7 +136,14 @@ class K2RfidMaterialCatalog:
             if not entry["id"] or not entry["material"]:
                 continue
 
+            signature = entry.get("_profile_signature") or ""
             identity = (
+                "profile",
+                entry["brand"].casefold(),
+                entry["material"],
+                signature,
+            ) if signature else (
+                "name",
                 entry["brand"].casefold(),
                 entry["name"].casefold(),
                 entry["material"],
