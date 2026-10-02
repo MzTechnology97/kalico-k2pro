@@ -70,12 +70,24 @@ def suggest_mapping(tools, slots):
                 score = 0.20 + material
             else:
                 continue
-            candidates.append((score, slot.get("index") != tool_id,
-                               bool(slot.get("external")), int(slot["index"]), tool_id))
+            remaining = slot.get("rfid_percent")
+            try:
+                remaining = float(remaining)
+            except (TypeError, ValueError):
+                remaining = None
+            candidates.append((
+                score,
+                remaining is None,
+                101.0 if remaining is None else max(0.0, min(100.0, remaining)),
+                slot.get("index") != tool_id,
+                bool(slot.get("external")),
+                int(slot["index"]),
+                tool_id,
+            ))
     candidates.sort()
     mapping, used = {}, set()
     for shared in (False, True):
-        for _score, _own, _external, slot, tool in candidates:
+        for _score, _remaining_unknown, _remaining, _own, _external, slot, tool in candidates:
             if tool in mapping or (not shared and slot in used):
                 continue
             mapping[tool] = slot

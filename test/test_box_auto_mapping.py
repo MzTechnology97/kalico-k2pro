@@ -14,7 +14,7 @@ def tool(tool_id, material, color, name=""):
     }
 
 
-def slot(index, material, color, name="", external=False, loaded=False):
+def slot(index, material, color, name="", external=False, loaded=False, rfid_percent=None):
     return {
         "index": index,
         "material": material,
@@ -22,6 +22,7 @@ def slot(index, material, color, name="", external=False, loaded=False):
         "name": name,
         "external": external,
         "loaded": loaded,
+        "rfid_percent": rfid_percent,
     }
 
 
@@ -77,3 +78,16 @@ def test_multicolor_unresolved_tool_is_reported():
     )
     assert mapping == {0: 1}
     assert unresolved == [1]
+
+
+def test_equal_matches_prefer_lowest_known_rfid_remaining():
+    mapping, unresolved = suggest_mapping(
+        [tool(0, "PETG", "#000000", "Generic PETG")],
+        [
+            slot(1, "PETG", "#000000", "Generic PETG", rfid_percent=72),
+            slot(2, "PETG", "#000000", "Generic PETG", rfid_percent=18),
+            slot(3, "PETG", "#000000", "Generic PETG"),
+        ],
+    )
+    assert mapping == {0: 2}
+    assert unresolved == []
