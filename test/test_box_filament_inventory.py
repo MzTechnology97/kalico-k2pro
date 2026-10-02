@@ -227,3 +227,59 @@ def test_mark_slot_depleted_zeroes_estimate_and_clears_assignment(tmp_path):
     assert "1" not in reloaded.setting("rfid_slot_keys", {})
     assert box.rfid_percent[1] == 0.0
     assert 1 not in box.rfid_live_slots
+
+def test_rfid_startup_scanning_defaults_off_and_is_opt_in(tmp_path):
+    store = BoxStore(str(tmp_path / "filament_box.json"))
+    box = Box.__new__(Box)
+    box.store = store
+
+    assert box.rfid_startup_reading_enabled is False
+
+    store.set_setting("rfid_startup_reading_enabled", True)
+    assert box.rfid_startup_reading_enabled is True
+
+
+def test_rfid_removal_clears_slot_assignment_but_keeps_spool_estimate(tmp_path):
+    store = BoxStore(str(tmp_path / "filament_box.json"))
+    store.set_profile(1, {
+        "material": "PLA",
+        "color": "#6C4E43",
+        "brand": "Bambulab",
+        "name": "Bambulab PLA Basic",
+        "target_temp": 215,
+        "pressure_advance": None,
+        "spoolman_id": None,
+        "filament_id": "05628",
+        "source": "rfid",
+        "rfid_code": "105628",
+    })
+    store.set_setting("rfid_slot_keys", {"1": "tag:example"})
+    store.set_setting("rfid_estimates", {
+        "tag:example": {"total_mm": 330000.0, "remaining_mm": 49500.0}
+    })
+
+    box = Box.__new__(Box)
+    box.store = store
+    box.drivers = {1: object()}
+    box.rfid_live_slots = {1}
+    box.rfid_percent = {1: 15.0}
+    box.rfid_reported_percent = {1: 15.0}
+    box.rfid_spools = {}
+    box.unknown_rfid = {}
+    box.spoolman_tokens = {}
+    box.spoolman_generation = 0
+    box.rfid_pending = set()
+    box.rfid_snapshot = {}
+    box.rfid_seen_invalid = set()
+    box.rfid_estimate_dirty = False
+    box._persist_rfid_estimates = lambda force=False: None
+    box._invalidate_spoolman = lambda slot: None
+
+    box._rfid_removed(1)
+
+    reloaded = BoxStore(store.path)
+    assert reloaded.profile(1)["material"] == ""
+    assert reloaded.setting("rfid_estimates")["tag:example"]["remaining_mm"] == 49500.0
+    assert "1" not in reloaded.setting("rfid_slot_keys", {})
+    assert 1 not in box.rfid_live_slots
+    assert 1 not in box.rfid_percent
