@@ -134,7 +134,7 @@ Runout groups are formed from present slots with the same material and colour. W
 
 ## HelixScreen compatibility
 
-K2-OpenHost is intentionally compatible with the current upstream `Jacob10383/helixscreen` CFS backend so a separate HelixScreen fork is not required. HelixScreen presently parses the stock Creality nested `box` object, while Mainsail and Jacob's Orca integration use the richer K2-OpenHost flat API. The backend therefore publishes both representations at the same time.
+K2-OpenHost deliberately keeps compatibility with **both** the original/upstream HelixScreen CFS implementation and Jacob10383's experimental `feat/k2-box-fork-support` branch, without requiring a K2-OpenHost-specific HelixScreen fork. The original implementation expects the stock Creality nested `box` schema, while the experimental branch can also understand the Flat/API-v1 Box contract. Mainsail and Jacob's Orca integration use the richer K2-OpenHost flat API. The backend therefore publishes both representations and accepts both command dialects at the same time.
 
 - `box.api_version` stays exactly `1`; K2-OpenHost extensions use separate version fields.
 - `box.slots[]` remains the canonical K2-OpenHost flat slot list for Mainsail/Orca, including inventory, RFID percentage and estimated remaining length.
@@ -142,6 +142,7 @@ K2-OpenHost is intentionally compatible with the current upstream `Jacob10383/he
 - Manual K2-OpenHost slot metadata is projected into the stock-compatible nested fields as well. This means an untagged slot manually assigned in Mainsail remains visible to HelixScreen without a Helix-specific database or fork.
 - HelixScreen's `BOX_MODIFY_TN` and `BOX_MODIFY_TN_DATA ... PART=color_value` commands are accepted. Tool mapping is persisted in K2-OpenHost and the T0..T15 fallbacks honor that map when no per-print `BOX_PRINT_START` map is active.
 - The stock K2 command envelope emitted by HelixScreen (`BOX_SAVE_FAN`, `BOX_MODE_WAIT`, `CR_BOX_*`, etc.) is accepted. OpenHost deliberately collapses those steps onto the already validated high-level change/unload engine so the stock envelope does not duplicate purge, cut or RS-485 operations.
+- The current `feat/k2-box-fork-support` branch deliberately gives the nested `T1` stock schema precedence if a payload contains both nested and flat representations. With K2-OpenHost's dual payload this means that branch currently follows the same stock-compatible path as original HelixScreen. If upstream later prefers the Flat/API-v1 path, the native Fork commands (`T<n>`, `BOX_UNLOAD`, `_BOX_SLOT_SET`, `_BOX_SLOT_CLEAR`) remain available as well.
 - HelixScreen's `lane_data` convention remains its own standard Moonraker persistence layer. K2-OpenHost does not require HelixScreen-specific fields in `filament_box.json`, so upstream HelixScreen can keep using `lane_data` and its own override merge logic unchanged.
 
 This compatibility layer is additive: current Mainsail, Orca and the K2-OpenHost filament inventory continue to use the flat API, while HelixScreen sees the stock K2 contract it already supports.
