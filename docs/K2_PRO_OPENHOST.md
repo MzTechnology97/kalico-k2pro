@@ -134,15 +134,17 @@ Runout groups are formed from present slots with the same material and colour. W
 
 ## HelixScreen compatibility
 
-K2-OpenHost deliberately stays inside HelixScreen's published CFS **Flat** schema and **Fork** command dialect so a separate HelixScreen fork is not required. The compatibility contract is:
+K2-OpenHost is intentionally compatible with the current upstream `Jacob10383/helixscreen` CFS backend so a separate HelixScreen fork is not required. HelixScreen presently parses the stock Creality nested `box` object, while Mainsail and Jacob's Orca integration use the richer K2-OpenHost flat API. The backend therefore publishes both representations at the same time.
 
-- `box.api_version` stays exactly `1`; HelixScreen uses this value to select the high-level `T<n>` / `BOX_UNLOAD` command dialect.
-- `box.slots[]` remains the canonical flat slot list with `index`, `present`, `loaded`, `material`, `color`, `brand`, `name`, `spoolman_id`, and `external`. K2-OpenHost fields such as `filament_id`, RFID percentage and inventory metadata are additive and may be ignored by readers that do not know them.
-- `runout_swap_enabled`, `temp_c`, `humidity_pct`, `loaded_slot`, `filament_detected`, `materials`, `load_path`, `driver_ready`, and the external-spool entry retain their existing meanings.
-- Manual slot edits continue to use `_BOX_SLOT_SET`, and explicit clears use `_BOX_SLOT_CLEAR`, matching HelixScreen's existing CFS backend. K2-OpenHost's library-only commands (`_BOX_FILAMENT_SET`, `_BOX_SLOT_ASSIGN`, and related helpers) are optional extensions used by Mainsail and are not required by HelixScreen.
-- The runout object keeps the established `{"loaded_slot": n, "chain": [...]}` shape. Additional sequence/detail fields are additive.
+- `box.api_version` stays exactly `1`; K2-OpenHost extensions use separate version fields.
+- `box.slots[]` remains the canonical K2-OpenHost flat slot list for Mainsail/Orca, including inventory, RFID percentage and estimated remaining length.
+- In parallel, `box.T1`..`box.T4`, `map`, `same_material`, `auto_refill`, `filament_useup` and `filament` mirror the stock K2 shape consumed by upstream HelixScreen. Each unit exposes `color_value`, `material_type`, `remain_len`, `vender`, environment values and the active A/B/C/D lane.
+- Manual K2-OpenHost slot metadata is projected into the stock-compatible nested fields as well. This means an untagged slot manually assigned in Mainsail remains visible to HelixScreen without a Helix-specific database or fork.
+- HelixScreen's `BOX_MODIFY_TN` and `BOX_MODIFY_TN_DATA ... PART=color_value` commands are accepted. Tool mapping is persisted in K2-OpenHost and the T0..T15 fallbacks honor that map when no per-print `BOX_PRINT_START` map is active.
+- The stock K2 command envelope emitted by HelixScreen (`BOX_SAVE_FAN`, `BOX_MODE_WAIT`, `CR_BOX_*`, etc.) is accepted. OpenHost deliberately collapses those steps onto the already validated high-level change/unload engine so the stock envelope does not duplicate purge, cut or RS-485 operations.
+- HelixScreen's `lane_data` convention remains its own standard Moonraker persistence layer. K2-OpenHost does not require HelixScreen-specific fields in `filament_box.json`, so upstream HelixScreen can keep using `lane_data` and its own override merge logic unchanged.
 
-Because metadata-only slot/library commands are safe local state changes, they remain usable even when hardware mutation is restricted. Load, unload, tool-change and forced hardware operations still obey the CFS operational/read-only safety state.
+This compatibility layer is additive: current Mainsail, Orca and the K2-OpenHost filament inventory continue to use the flat API, while HelixScreen sees the stock K2 contract it already supports.
 
 ## OrcaSlicer direct CFS printing
 
