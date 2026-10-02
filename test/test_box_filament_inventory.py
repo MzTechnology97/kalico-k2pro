@@ -283,3 +283,74 @@ def test_rfid_removal_clears_slot_assignment_but_keeps_spool_estimate(tmp_path):
     assert "1" not in reloaded.setting("rfid_slot_keys", {})
     assert 1 not in box.rfid_live_slots
     assert 1 not in box.rfid_percent
+
+
+def test_restore_cached_rfid_slot_restores_remaining_without_tag_scan(tmp_path):
+    store = BoxStore(str(tmp_path / "filament_box.json"))
+    store.set_profile(1, {
+        "material": "PLA",
+        "color": "#6C4E43",
+        "brand": "Bambulab",
+        "name": "Bambulab PLA Basic",
+        "target_temp": 215,
+        "pressure_advance": None,
+        "spoolman_id": None,
+        "filament_id": "05628",
+        "source": "rfid",
+        "rfid_code": "105628",
+    })
+    store.set_setting("rfid_slot_keys", {"1": "tag:persisted"})
+    store.set_setting("rfid_estimates", {
+        "tag:persisted": {"total_mm": 330000.0, "remaining_mm": 52800.0}
+    })
+
+    box = Box.__new__(Box)
+    box.store = store
+    box.drivers = {1: object()}
+    box.rfid_spools = {}
+    box.rfid_percent = {}
+
+    assert box._restore_cached_rfid_slot(1) is True
+    assert box.rfid_spools[1]["key"] == "tag:persisted"
+    assert box.rfid_spools[1]["remaining_mm"] == 52800.0
+    assert box.rfid_percent[1] == 16.0
+
+
+def test_absent_startup_slot_requires_three_confirmations_before_cleanup(tmp_path):
+    store = BoxStore(str(tmp_path / "filament_box.json"))
+    store.set_profile(1, {
+        "material": "PETG",
+        "color": "#112233",
+        "brand": "Generic",
+        "name": "Generic PETG",
+        "target_temp": 245,
+        "pressure_advance": 0.05,
+        "spoolman_id": None,
+        "filament_id": "00003",
+        "source": "library",
+        "rfid_code": "",
+    })
+
+    box = Box.__new__(Box)
+    box.store = store
+    box.drivers = {1: object()}
+    box.rfid_presence = {1: 0}
+    box.rfid_absent_confirm = {}
+    box.rfid_live_slots = set()
+    box.rfid_percent = {}
+    box.rfid_reported_percent = {}
+    box.rfid_spools = {}
+    box.unknown_rfid = {}
+    box.spoolman_tokens = {}
+    box.spoolman_generation = 0
+    box.rfid_pending = set()
+    box.rfid_snapshot = {}
+    box.rfid_seen_invalid = set()
+    box.rfid_estimate_dirty = False
+
+    box._reconcile_presence(1, 0)
+    assert BoxStore(store.path).profile(1)["material"] == "PETG"
+    box._reconcile_presence(1, 0)
+    assert BoxStore(store.path).profile(1)["material"] == "PETG"
+    box._reconcile_presence(1, 0)
+    assert BoxStore(store.path).profile(1)["material"] == ""
