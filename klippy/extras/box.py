@@ -40,7 +40,9 @@ SAFE_WIDGET_COMMANDS = frozenset((
     "_BOX_FILAMENT_DELETE",
     "_BOX_SLOT_ASSIGN",
     "_BOX_RFID_READ_SLOT",
+    "BOX_INFO_REFRESH",
     "_BOX_SET_RUNOUT_SWAP",
+    "BOX_ENABLE_AUTO_REFILL",
     "_BOX_SET_UNLOAD_AFTER_PRINT",
     "_BOX_SET_RFID_INSERT_READING",
     "_BOX_SET_RFID_STARTUP_READING",
@@ -774,6 +776,8 @@ class Box:
              "Run the CFS buffer retract phase"),
             ("BOX_CUT", self.cmd_cut, "Cut the active filament"),
             ("NOZZLE_CLEAN", self.cmd_nozzle_clean, "Clean the nozzle"),
+            ("BOX_NOZZLE_CLEAN", self.cmd_nozzle_clean,
+             "HelixScreen-compatible nozzle clean alias"),
             ("BOX_GO_TO_WASTEBIN", self.cmd_wastebin, "Move to the wastebin"),
             ("PARSE_FLUSH_VOLUMES", self.change_engine.parse_flush_volumes,
              "Parse slicer flush metadata"),
@@ -790,8 +794,12 @@ class Box:
             ("_BOX_FILAMENT_DELETE", self.cmd_filament_delete, "Delete a reusable filament profile"),
             ("_BOX_SLOT_ASSIGN", self.cmd_slot_assign, "Assign a saved filament profile to a slot"),
             ("_BOX_RFID_READ_SLOT", self.cmd_rfid_read_slot, "Force an RFID reread for one CFS slot"),
+            ("BOX_INFO_REFRESH", self.cmd_info_refresh,
+             "HelixScreen/Creality-compatible RFID refresh"),
             ("_BOX_SET_RUNOUT_SWAP", self.cmd_runout_swap,
              "Set automatic runout swapping"),
+            ("BOX_ENABLE_AUTO_REFILL", self.cmd_runout_swap,
+             "HelixScreen/Creality-compatible runout swap setter"),
             ("_BOX_SET_UNLOAD_AFTER_PRINT", self.cmd_unload_after_print,
              "Set automatic unload after printing"),
             ("_BOX_SET_RFID_INSERT_READING", self.cmd_rfid_insert,
@@ -1677,6 +1685,29 @@ class Box:
                 "[BOX]: RFID reread for T%d did not return a valid tag record; retry the slot read" % slot)
         self._read_rfid_remaining(slot)
         self._info(gcmd, "RFID reread complete for T%d" % slot)
+
+    def cmd_info_refresh(self, gcmd):
+        address = gcmd.get_int(
+            "ADDR", None, minval=1, maxval=MAX_ADDRESSES)
+        mask = gcmd.get_int(
+            "NUM", 0x0F, minval=1, maxval=(1 << SLOTS_PER_BOX) - 1)
+        if address is None:
+            raise gcmd.error("[BOX]: ADDR is required")
+        driver = self.drivers.get(address)
+        if driver is None:
+            raise gcmd.error("[BOX]: CFS box %d is not online" % address)
+        presence = self._require_reply(
+            driver.query_slot_mask(timeout=0.5),
+            "box %d RFID refresh slot mask" % address)
+        mask &= int(presence.value) & ((1 << SLOTS_PER_BOX) - 1)
+        if not mask:
+            self._info(gcmd, "CFS box %d RFID refresh: no populated slots" % address)
+            return
+        applied = self._force_rfid_results(
+            address, driver, mask, "BOX_INFO_REFRESH")
+        self._info(
+            gcmd, "CFS box %d RFID refresh complete: %d/%d slots"
+            % (address, len(applied), bin(mask).count("1")))
 
     def cmd_runout_swap(self, gcmd):
         enabled = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
