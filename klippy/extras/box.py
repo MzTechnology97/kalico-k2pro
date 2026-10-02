@@ -778,6 +778,30 @@ class Box:
             ("NOZZLE_CLEAN", self.cmd_nozzle_clean, "Clean the nozzle"),
             ("BOX_NOZZLE_CLEAN", self.cmd_nozzle_clean,
              "HelixScreen-compatible nozzle clean alias"),
+            ("BOX_SAVE_FAN", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility envelope"),
+            ("BOX_RESTORE_FAN", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility envelope"),
+            ("BOX_GO_TO_EXTRUDE_POS", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility envelope"),
+            ("BOX_MOVE_TO_SAFE_POS", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility envelope"),
+            ("BOX_MODE_WAIT", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility envelope"),
+            ("CR_BOX_PRE_OPT", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility pre-operation"),
+            ("CR_BOX_CUT", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility cut stage"),
+            ("CR_BOX_RETRUDE", self.cmd_helix_retrude,
+             "HelixScreen K2 compatibility unload stage"),
+            ("CR_BOX_EXTRUDE", self.cmd_helix_extrude,
+             "HelixScreen K2 compatibility load stage"),
+            ("CR_BOX_WASTE", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility purge stage"),
+            ("CR_BOX_FLUSH", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility flush stage"),
+            ("CR_BOX_END_OPT", self.cmd_helix_noop,
+             "HelixScreen K2 compatibility end-operation"),
             ("BOX_GO_TO_WASTEBIN", self.cmd_wastebin, "Move to the wastebin"),
             ("PARSE_FLUSH_VOLUMES", self.change_engine.parse_flush_volumes,
              "Parse slicer flush metadata"),
@@ -796,6 +820,10 @@ class Box:
             ("_BOX_RFID_READ_SLOT", self.cmd_rfid_read_slot, "Force an RFID reread for one CFS slot"),
             ("BOX_INFO_REFRESH", self.cmd_info_refresh,
              "HelixScreen/Creality-compatible RFID refresh"),
+            ("BOX_MODIFY_TN", self.cmd_modify_tn,
+             "HelixScreen/Creality-compatible tool-to-slot mapping"),
+            ("BOX_MODIFY_TN_DATA", self.cmd_modify_tn_data,
+             "HelixScreen/Creality-compatible slot metadata update"),
             ("_BOX_SET_RUNOUT_SWAP", self.cmd_runout_swap,
              "Set automatic runout swapping"),
             ("BOX_ENABLE_AUTO_REFILL", self.cmd_runout_swap,
@@ -877,7 +905,8 @@ class Box:
             self.gcode.register_command(
                 name,
                 lambda gcmd, target=slot: self.change_engine.change(
-                    gcmd, target, bool(gcmd.get_int("FLUSH", 1))),
+                    gcmd, self._mapped_slot(target),
+                    bool(gcmd.get_int("FLUSH", 1))),
                 desc="Change to box slot T%d" % slot,
             )
         self.tx_registered = True
@@ -964,7 +993,7 @@ class Box:
         snap = self.snapshot
         physical = self._slot_statuses(snap)
         slots = physical + [self._external_status(snap)]
-        return {
+        status = {
             "api_version": API_VERSION,
             "filament_inventory_version": FILAMENT_INVENTORY_VERSION,
             "fluidd_widget_version": LEGACY_WIDGET_VERSION,
@@ -994,6 +1023,113 @@ class Box:
             "recovery": self.change_engine.recovery_status(),
             "driver_ready": self.drivers_ready,
         }
+        status.update(self._helix_compat_status(physical, snap))
+        return status
+
+    def _helix_compat_status(self, physical, snap):
+        """Expose stock K2-style box fields consumed by upstream HelixScreen.
+
+        K2-OpenHost keeps its richer flat slots API, but HelixScreen currently
+        parses the stock nested T1..T4 unit objects. Publishing both shapes is
+        additive and avoids maintaining a separate HelixScreen fork.
+        """
+        by_slot = {item["index"]: item for item in physical}
+        mapping = self._helix_tool_map()
+        compat_map = {}
+        same_groups = {}
+        units = {}
+
+        for slot in self.physical_slots:
+            source = self._slot_to_tnn(slot)
+            target = self._slot_to_tnn(mapping.get(slot, slot))
+            if source and target:
+                compat_map[source] = target
+
+        for address in sorted(self.drivers):
+            colors = []
+            materials = []
+            remain = []
+            vendors = []
+            for local in range(SLOTS_PER_BOX):
+                slot = self._global_slot(address, local)
+                item = by_slot.get(slot, {})
+                present = bool(item.get("present"))
+
+                color = str(item.get("color") or "").strip().upper()
+                if present and len(color) == 7 and color.startswith("#"):
+                    legacy_color = "0" + color[1:]
+                elif present:
+                    legacy_color = "unknown"
+                else:
+                    legacy_color = "-1"
+                colors.append(legacy_color)
+
+                raw_code = str(item.get("rfid_code") or "").strip().upper()
+                filament_id = str(item.get("filament_id") or "").strip().upper()
+                material = str(item.get("material") or "").strip().upper()
+                if not present:
+                    legacy_material = "-1"
+                elif raw_code:
+                    legacy_material = raw_code
+                elif filament_id:
+                    legacy_material = ("1" + filament_id
+                                       if len(filament_id) == 5 else filament_id)
+                elif material:
+                    legacy_material = "K2O%02d" % slot
+                else:
+                    legacy_material = "unknown"
+                materials.append(legacy_material)
+
+                if present and material and legacy_material not in ("-1", "unknown"):
+                    tnn = self._slot_to_tnn(slot)
+                    group = same_groups.setdefault(
+                        legacy_material,
+                        {"material": material, "slots": [], "color": legacy_color})
+                    if tnn:
+                        group["slots"].append(tnn)
+
+                remaining = item.get("rfid_remaining_m")
+                remain.append(
+                    "-1" if remaining is None
+                    else ("%.3f" % float(remaining)).rstrip("0").rstrip("."))
+                vendor = str(item.get("brand") or "").strip()
+                vendors.append(vendor if vendor else "unknown")
+
+            active = "None"
+            if self.is_physical_slot(snap.loaded_slot):
+                active_address, active_local = self._address_slot(snap.loaded_slot)
+                if active_address == address:
+                    active = chr(ord("A") + active_local)
+
+            known_uid = self.store.known_addresses.get(address)
+            units["T%d" % address] = {
+                "state": str(snap.state_code if snap.state_code is not None else 0),
+                "version": "K2-OpenHost",
+                "sn": known_uid.hex() if known_uid else "-1",
+                "temperature": ("None" if snap.temp_c is None else str(snap.temp_c)),
+                "dry_and_humidity": (
+                    "None" if snap.humidity_pct is None else str(snap.humidity_pct)),
+                "color_value": colors,
+                "material_type": materials,
+                "remain_len": remain,
+                "vender": vendors,
+                "filament": active,
+            }
+
+        same_material = [
+            [code, group["color"], group["slots"], group["material"]]
+            for code, group in sorted(same_groups.items())
+        ]
+        result = {
+            "helix_compat_version": 1,
+            "auto_refill": 1 if self.runout_swap_enabled else 0,
+            "filament_useup": 1 if self.runout_active else 0,
+            "filament": snap.loaded_slot,
+            "map": compat_map,
+            "same_material": same_material,
+        }
+        result.update(units)
+        return result
 
     def _slot_statuses(self, snap):
         return [self._slot_status(slot, snap) for slot in self.physical_slots]
@@ -1154,6 +1290,50 @@ class Box:
     def clear_hotend_feed_pending(self, slot=None):
         if slot is None or self.hotend_feed_pending(slot):
             self.store.clear_settings("hotend_feed_pending")
+
+    def _helix_tool_map(self):
+        raw = self.store.setting("helix_tool_map", {}) or {}
+        if not isinstance(raw, dict):
+            return {}
+        result = {}
+        for tool, slot in raw.items():
+            try:
+                tool = int(tool)
+                slot = int(slot)
+            except (TypeError, ValueError):
+                continue
+            if self.is_physical_slot(tool) and self.is_physical_slot(slot):
+                result[tool] = slot
+        return result
+
+    @staticmethod
+    def _slot_to_tnn(slot):
+        try:
+            slot = int(slot)
+        except (TypeError, ValueError):
+            return None
+        if slot < 0 or slot >= MAX_ADDRESSES * SLOTS_PER_BOX:
+            return None
+        address = slot // SLOTS_PER_BOX + 1
+        local = slot % SLOTS_PER_BOX
+        return "T%d%s" % (address, chr(ord("A") + local))
+
+    @staticmethod
+    def _tnn_to_slot(value):
+        text = str(value or "").strip().upper()
+        if len(text) != 3 or text[0] != "T":
+            return None
+        try:
+            address = int(text[1])
+        except ValueError:
+            return None
+        local = ord(text[2]) - ord("A")
+        if not 1 <= address <= MAX_ADDRESSES or not 0 <= local < SLOTS_PER_BOX:
+            return None
+        return (address - 1) * SLOTS_PER_BOX + local
+
+    def _mapped_slot(self, tool):
+        return self._helix_tool_map().get(int(tool), int(tool))
 
     @property
     def runout_swap_enabled(self):
@@ -1378,6 +1558,29 @@ class Box:
     # ------------------------------------------------------------------
     # G-code command wrappers
     # ------------------------------------------------------------------
+
+    def cmd_helix_noop(self, gcmd):
+        # Upstream HelixScreen emits the stock K2 CR_BOX_* envelope.  The
+        # OpenHost change engine already owns fan, parking, purge and cleanup,
+        # so the stock envelope stages that would duplicate those operations
+        # are deliberately accepted as no-ops.
+        return
+
+    def cmd_helix_extrude(self, gcmd):
+        tnn = self._param(gcmd, "TNN")
+        slot = self._tnn_to_slot(tnn)
+        if slot is None or not self.is_physical_slot(slot):
+            raise gcmd.error("[BOX]: CR_BOX_EXTRUDE requires an online TNN slot")
+        # A HelixScreen load/swap arrives as several stock CR_BOX_* commands.
+        # Run the complete validated OpenHost change here; following WASTE /
+        # FLUSH / END stages are compatibility no-ops to avoid double purge.
+        return self.change_engine.change(gcmd, slot, True)
+
+    def cmd_helix_retrude(self, gcmd):
+        # For stock K2 unload/swap sequences, RETRUDE is the point at which
+        # OpenHost performs the complete validated unload.  A later EXTRUDE
+        # in the same HelixScreen script will then load the requested slot.
+        return self.change_engine.unload(gcmd, manual=False)
 
     def cmd_load(self, gcmd):
         slot = gcmd.get_int(
@@ -1691,26 +1894,79 @@ class Box:
             "ADDR", None, minval=1, maxval=MAX_ADDRESSES)
         mask = gcmd.get_int(
             "NUM", 0x0F, minval=1, maxval=(1 << SLOTS_PER_BOX) - 1)
-        if address is None:
-            raise gcmd.error("[BOX]: ADDR is required")
-        driver = self.drivers.get(address)
-        if driver is None:
-            raise gcmd.error("[BOX]: CFS box %d is not online" % address)
-        presence = self._require_reply(
-            driver.query_slot_mask(timeout=0.5),
-            "box %d RFID refresh slot mask" % address)
-        mask &= int(presence.value) & ((1 << SLOTS_PER_BOX) - 1)
-        if not mask:
-            self._info(gcmd, "CFS box %d RFID refresh: no populated slots" % address)
-            return
-        applied = self._force_rfid_results(
-            address, driver, mask, "BOX_INFO_REFRESH")
+        addresses = [address] if address is not None else sorted(self.drivers)
+        if not addresses:
+            raise gcmd.error("[BOX]: No CFS box is online")
+        total_applied = 0
+        total_selected = 0
+        for current in addresses:
+            driver = self.drivers.get(current)
+            if driver is None:
+                if address is not None:
+                    raise gcmd.error("[BOX]: CFS box %d is not online" % current)
+                continue
+            presence = self._require_reply(
+                driver.query_slot_mask(timeout=0.5),
+                "box %d RFID refresh slot mask" % current)
+            selected = mask & int(presence.value) & ((1 << SLOTS_PER_BOX) - 1)
+            if not selected:
+                continue
+            applied = self._force_rfid_results(
+                current, driver, selected, "BOX_INFO_REFRESH")
+            total_applied += len(applied)
+            total_selected += bin(selected).count("1")
         self._info(
-            gcmd, "CFS box %d RFID refresh complete: %d/%d slots"
-            % (address, len(applied), bin(mask).count("1")))
+            gcmd, "CFS RFID refresh complete: %d/%d populated slots"
+            % (total_applied, total_selected))
+
+    def cmd_modify_tn(self, gcmd):
+        params = gcmd.get_command_parameters()
+        if not params:
+            raise gcmd.error("[BOX]: BOX_MODIFY_TN requires T1A=T1A style mappings")
+        mapping = self._helix_tool_map()
+        changed = []
+        for source, target in params.items():
+            source_slot = self._tnn_to_slot(source)
+            target_slot = self._tnn_to_slot(target)
+            if source_slot is None or target_slot is None:
+                raise gcmd.error(
+                    "[BOX]: invalid CFS mapping %s=%s" % (source, target))
+            mapping[source_slot] = target_slot
+            changed.append("%s=%s" % (
+                self._slot_to_tnn(source_slot), self._slot_to_tnn(target_slot)))
+        self.store.set_setting(
+            "helix_tool_map",
+            {str(tool): slot for tool, slot in sorted(mapping.items())})
+        self._info(gcmd, "Tool mapping updated: %s" % ", ".join(changed))
+
+    def cmd_modify_tn_data(self, gcmd):
+        address = gcmd.get_int("ADDR", None, minval=1, maxval=MAX_ADDRESSES)
+        num = str(self._param(gcmd, "NUM") or "").strip().upper()
+        part = str(self._param(gcmd, "PART") or "").strip().lower()
+        data = str(self._param(gcmd, "DATA") or "").strip()
+        if address is None or num not in ("A", "B", "C", "D"):
+            raise gcmd.error("[BOX]: ADDR=1..4 and NUM=A..D are required")
+        slot = self._global_slot(address, ord(num) - ord("A"))
+        if not self.is_physical_slot(slot):
+            raise gcmd.error("[BOX]: selected CFS slot is offline")
+        if part != "color_value":
+            raise gcmd.error(
+                "[BOX]: only PART=color_value is supported by K2-OpenHost")
+        color = self._normal_color(data)
+        if color is None:
+            raise gcmd.error("[BOX]: DATA must be 0RRGGBB or #RRGGBB")
+        profile = self.profile(slot)
+        profile["color"] = color
+        self.set_profile(slot, profile)
+        self._info(gcmd, "Updated %s color to %s" % (
+            self._slot_to_tnn(slot), color))
 
     def cmd_runout_swap(self, gcmd):
-        enabled = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
+        params = gcmd.get_command_parameters()
+        if "ENABLE" in params:
+            enabled = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
+        else:
+            enabled = not self.runout_swap_enabled
         self.store.set_setting("runout_swap_enabled", enabled)
         self._info(gcmd, "Runout swap %s" % ("enabled" if enabled else "disabled"))
 
