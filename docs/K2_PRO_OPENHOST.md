@@ -102,6 +102,12 @@ When `observation_mode: true`, the mapping/status API remains visible and `BOX_P
 
 The companion `mainsail-k2openhost` fork uses this API in the normal Print dialog to present a Jacob/Fluidd-style filament mapping step. This mapped-print path is implemented but still requires staged hardware validation.
 
+### HelixScreen compatibility
+
+K2-OpenHost deliberately keeps the public Flat/Fork CFS contract used by upstream HelixScreen so a HelixScreen fork is not required. The base `box.api_version` remains `1`; K2-OpenHost extensions such as the reusable filament inventory are additive and versioned separately.
+
+The compatibility surface includes the flat `slots[]` payload, `external: true` spool entry, `runout_swap_enabled`, `_BOX_SLOT_SET`, `_BOX_SLOT_CLEAR`, high-level `T<n>` / `BOX_UNLOAD`, plus aliases used by upstream HelixScreen: `BOX_INFO_REFRESH ADDR=<n> NUM=<mask>`, `BOX_ENABLE_AUTO_REFILL ENABLE=0|1`, and `BOX_NOZZLE_CLEAN`. Unknown additive slot fields such as RFID remaining estimates may be ignored by older clients.
+
 ## CFS filament inventory and K2-RFID interoperability
 
 K2-OpenHost keeps Jacob's `box.api_version: 1` contract for OrcaSlicer compatibility and advertises the additive library separately as `filament_inventory_version: 1`. The inventory layer adds a persistent filament library on top of the existing slot profiles. The library and slot assignments live in the configured `state_path` (normally `~/printer_data/filament_box.json`) and are published through `printer.objects.box.filaments` and `printer.objects.box.slots`.
