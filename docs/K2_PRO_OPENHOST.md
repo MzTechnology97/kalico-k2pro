@@ -2,7 +2,7 @@
 
 This branch is the current integrated Kalico target for the K2-OpenHost project.
 
-Last updated: **2026-10-01**.
+Last updated: **2026-10-02**.
 
 ## Upstream attribution
 
@@ -101,6 +101,40 @@ The compatibility layer also translates Orca purge-matrix and nozzle-temperature
 When `observation_mode: true`, the mapping/status API remains visible and `BOX_PRINT_INFO` can be tested, but `BOX_PRINT_START` deliberately refuses to execute CFS mutations.
 
 The companion `mainsail-k2openhost` fork uses this API in the normal Print dialog to present a Jacob/Fluidd-style filament mapping step. This mapped-print path is implemented but still requires staged hardware validation.
+
+## CFS filament inventory and K2-RFID interoperability
+
+K2-OpenHost keeps Jacob's `box.api_version: 1` contract for OrcaSlicer compatibility and advertises the additive library separately as `filament_inventory_version: 1`. The inventory layer adds a persistent filament library on top of the existing slot profiles. The library and slot assignments live in the configured `state_path` (normally `~/printer_data/filament_box.json`) and are published through `printer.objects.box.filaments` and `printer.objects.box.slots`.
+
+Reusable filament profiles contain an ID, material, default color, brand, name, flush/target temperature, optional RFID material code and optional Spoolman ID. The target temperature is copied into each assigned slot, so two saved profiles using the same material family may still keep different purge/fallback temperatures. They can be created from the Mainsail **CFS filament library** or from G-code:
+
+```text
+_BOX_FILAMENT_SET ID=00014 MATERIAL=PETG-CF COLOR="#202020" BRAND=Generic NAME="Generic PETG-CF" TARGET_TEMP=250 RFID_CODE=00014
+_BOX_SLOT_ASSIGN SLOT=1 FILAMENT_ID=00014
+_BOX_FILAMENT_DELETE ID=00014
+```
+
+A non-RFID slot may also be edited directly with `_BOX_SLOT_SET`. A physical slot with a live RFID record is treated as RFID-managed and manual assignment is rejected until the live tag is no longer controlling that slot. Unknown RFID records are exposed per slot to Mainsail; **Map RFID** opens the filament-library editor prefilled with the tag code and color. Saving a matching custom filament immediately re-resolves the pending RFID record without requiring another scan. The external reader uses the same pending-resolution path. The external spool is a first-class slot and can use the same saved library.
+
+The ID model is intentionally compatible with DnG-Crafts/K2-RFID and Creality's catalog convention. K2-RFID stores a five-character material ID in its database and writes the RFID `filamentId` as a six-character value prefixed with `1`. K2-OpenHost therefore resolves both the saved five-character ID and the corresponding `1xxxxx` RFID value to the same custom filament profile. The color still comes from the RFID record, so one material profile can be used for multiple spool colors. The printer remains read-only for RFID media; writing tags is left to a dedicated writer such as K2-RFID.
+
+RFID resolution order is: Spoolman ID in `reserve` when present, K2-OpenHost custom filament library, saved RFID mapping, then the built-in Creality-compatible catalog. Successful RFID resolution populates the slot automatically and marks its source as `rfid` or `spoolman`.
+
+## OrcaSlicer direct CFS printing
+
+Jacob10383's OrcaSlicer fork detects `box.print_mapping_version == 1`, queries `printer.objects.box`, uploads without auto-start, asks the printer to inspect the stored G-code with `BOX_PRINT_INFO`, and starts it with `BOX_PRINT_START` plus the selected logical-tool to physical-slot map. K2-OpenHost deliberately keeps `print_mapping_version: 1`, so this path is protocol-compatible without a stock Creality mapping endpoint.
+
+For an ordinary Moonraker print start, K2-OpenHost also has an optional backend auto-mapper:
+
+```ini
+[box_print_mapping]
+auto_map_prints: false
+auto_map_block_unresolved: true
+```
+
+The auto-mapper uses material family plus perceptual OKLab color matching derived from Jacob's Orca mapping logic. The same suggestion is published in `box.auto_mapping` when `BOX_PRINT_INFO` inspects a file, so Mainsail and the firmware share one mapping decision path. It is disabled by default because a printer with an empty slot inventory cannot safely infer physical filament sources. After real slot metadata has been populated, set `auto_map_prints: true` to allow a normal Orca/Moonraker print start to install the mapping before the first `T` command. If any used tool cannot be resolved, the start is rejected rather than silently printing from the wrong spool. Explicit `BOX_PRINT_START` mappings always take precedence.
+
+Hardware-backed metadata validation on `cubo.gcode` detected PETG tools T0/T1. With a temporary black PETG profile on physical slot 1 and cyan PETG profile on slot 2, `BOX_PRINT_INFO` produced `auto_mapping: {0:1, 1:2}`; after the temporary profiles were removed the same file returned both tools unresolved, confirming the fail-safe behavior without starting a print.
 
 ## Motor-control startup policy
 

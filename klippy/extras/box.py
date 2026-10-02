@@ -25,11 +25,15 @@ from extras.motion_limits import restore_motion_limits, save_motion_limits
 SLOTS_PER_BOX = 4
 EXTERNAL_PROFILE_KEY = "external"
 API_VERSION = 1
+FILAMENT_INVENTORY_VERSION = 1
 LEGACY_WIDGET_VERSION = 2
 SAFE_WIDGET_COMMANDS = frozenset((
     "_BOX_SLOT_SET",
     "_BOX_SLOT_CLEAR",
     "_BOX_MATERIAL_SET",
+    "_BOX_FILAMENT_SET",
+    "_BOX_FILAMENT_DELETE",
+    "_BOX_SLOT_ASSIGN",
     "_BOX_SET_RUNOUT_SWAP",
     "_BOX_SET_UNLOAD_AFTER_PRINT",
     "_BOX_SET_RFID_INSERT_READING",
@@ -260,6 +264,7 @@ class BoxStore:
         if not os.path.exists(self.path):
             return {
                 "materials": {name: dict(value) for name, value in DEFAULT_MATERIALS.items()},
+                "filaments": {},
                 "slots": {},
                 "rfid_mappings": {},
                 "runtime": {},
@@ -274,12 +279,13 @@ class BoxStore:
             raise BoxError("%s must contain a JSON object" % self.path)
         sections = {
             name: data.get(name, {})
-            for name in ("materials", "slots", "rfid_mappings", "runtime", "addresses")
+            for name in ("materials", "filaments", "slots", "rfid_mappings", "runtime", "addresses")
         }
         for name, value in sections.items():
             if not isinstance(value, dict):
                 raise BoxError("%s.%s must be an object" % (self.path, name))
         sections["materials"] = self._materials(sections["materials"])
+        sections["filaments"] = self._filaments(sections["filaments"])
         sections["rfid_mappings"] = self._rfid_mappings(
             sections["rfid_mappings"])
         sections["addresses"] = self._addresses(sections["addresses"])
@@ -297,6 +303,47 @@ class BoxStore:
                     isinstance(target, bool) or not isinstance(target, int)):
                 raise BoxError("Invalid target temperature for %s" % name)
             result[name] = {"target_temp": target}
+        return result
+
+    @staticmethod
+    def _filaments(values):
+        result = {}
+        for key, value in values.items():
+            if not isinstance(value, dict):
+                raise BoxError("Invalid filament entry %r" % key)
+            filament_id = str(value.get("id", key)).strip().upper()
+            if not filament_id or len(filament_id) > 64:
+                raise BoxError("Invalid filament ID %r" % key)
+            material = str(value.get("material", "")).strip().upper()
+            if not material:
+                raise BoxError("Filament %s has no material" % filament_id)
+            color = str(value.get("color", "")).strip().upper()
+            if color and (len(color) != 7 or color[0] != "#"
+                          or any(c not in "0123456789ABCDEF" for c in color[1:])):
+                raise BoxError("Invalid color for filament %s" % filament_id)
+            target = value.get("target_temp")
+            if target is not None and (isinstance(target, bool)
+                                       or not isinstance(target, int)
+                                       or not 170 <= target <= 350):
+                raise BoxError("Invalid target temperature for filament %s" % filament_id)
+            spoolman_id = value.get("spoolman_id")
+            if spoolman_id is not None:
+                try:
+                    spoolman_id = int(spoolman_id)
+                except (TypeError, ValueError):
+                    raise BoxError("Invalid Spoolman ID for filament %s" % filament_id)
+                if spoolman_id < 0:
+                    spoolman_id = None
+            result[filament_id] = {
+                "id": filament_id,
+                "material": material,
+                "color": color,
+                "brand": str(value.get("brand", "")).strip(),
+                "name": str(value.get("name", "")).strip(),
+                "target_temp": target,
+                "rfid_code": str(value.get("rfid_code", "")).strip().upper(),
+                "spoolman_id": spoolman_id,
+            }
         return result
 
     @staticmethod
@@ -349,6 +396,66 @@ class BoxStore:
     def materials(self):
         return {name: dict(value) for name, value in self.data["materials"].items()}
 
+    @property
+    def filaments(self):
+        return {key: dict(value) for key, value in self.data["filaments"].items()}
+
+    def filament(self, filament_id):
+        key = str(filament_id or "").strip().upper()
+        value = self.data["filaments"].get(key)
+        return None if value is None else dict(value)
+
+    def set_filament(self, filament_id, value):
+        key = str(filament_id or "").strip().upper()
+        clean = self._filaments({key: dict(value, id=key)})[key]
+        previous = self.data["filaments"].get(key)
+        previous_color = str(
+            (previous or {}).get("color", "")).strip().upper()
+        self.data["filaments"][key] = clean
+        for profile in self.data["slots"].values():
+            if str(profile.get("filament_id", "")).strip().upper() != key:
+                continue
+            source = str(profile.get("source", "manual")).strip().lower()
+            if source not in ("library", "rfid"):
+                continue
+            profile["material"] = clean["material"]
+            profile["brand"] = clean["brand"]
+            profile["name"] = clean["name"]
+            profile["target_temp"] = clean["target_temp"]
+            if source == "library":
+                profile["spoolman_id"] = clean["spoolman_id"]
+                profile["rfid_code"] = clean["rfid_code"]
+                current_color = str(profile.get("color", "")).strip().upper()
+                if not current_color or current_color == previous_color:
+                    profile["color"] = clean["color"]
+        self.save()
+        return dict(clean)
+
+    def delete_filament(self, filament_id):
+        key = str(filament_id or "").strip().upper()
+        if self.data["filaments"].pop(key, None) is None:
+            return False
+        for slot, profile in self.data["slots"].items():
+            if str(profile.get("filament_id", "")).strip().upper() == key:
+                profile.pop("filament_id", None)
+                if profile.get("source") == "library":
+                    profile["source"] = "manual"
+        self.save()
+        return True
+
+    def filament_for_rfid(self, raw_code):
+        raw = str(raw_code or "").strip().upper()
+        normalized, _product = resolve_material(raw)
+        candidates = {value for value in (raw, normalized) if value}
+        if len(raw) == 6 and raw.startswith("1"):
+            candidates.add(raw[1:])
+        for filament in self.data["filaments"].values():
+            filament_id = str(filament.get("id", "")).strip().upper()
+            rfid_code = str(filament.get("rfid_code", "")).strip().upper()
+            if filament_id in candidates or (rfid_code and rfid_code in candidates):
+                return dict(filament)
+        return None
+
     def set_material(self, name, target):
         key = str(name).strip().upper()
         if not key:
@@ -359,23 +466,41 @@ class BoxStore:
 
     def profile(self, slot):
         value = self.data["slots"].get(str(slot), {})
+        target_temp = value.get("target_temp")
+        try:
+            target_temp = None if target_temp is None else int(target_temp)
+        except (TypeError, ValueError):
+            target_temp = None
         return {
             "material": str(value.get("material", "")).strip().upper(),
             "color": str(value.get("color", "")).strip().upper(),
             "brand": str(value.get("brand", "")).strip(),
             "name": str(value.get("name", "")).strip(),
+            "target_temp": target_temp,
             "spoolman_id": value.get("spoolman_id"),
+            "filament_id": str(value.get("filament_id", "")).strip().upper(),
+            "source": str(value.get("source", "manual")).strip().lower() or "manual",
+            "rfid_code": str(value.get("rfid_code", "")).strip().upper(),
             "rfid_reserve": str(value.get(
                 "rfid_reserve", "")).strip().strip("\x00").strip(),
         }
 
     def set_profile(self, slot, profile):
+        target_temp = profile.get("target_temp")
+        if target_temp is not None:
+            target_temp = int(target_temp)
+            if not 170 <= target_temp <= 350:
+                raise ValueError("target_temp must be 170..350")
         clean = {
             "material": str(profile.get("material", "")).strip().upper(),
             "color": str(profile.get("color", "")).strip().upper(),
             "brand": str(profile.get("brand", "")).strip(),
             "name": str(profile.get("name", "")).strip(),
+            "target_temp": target_temp,
             "spoolman_id": profile.get("spoolman_id"),
+            "filament_id": str(profile.get("filament_id", "")).strip().upper(),
+            "source": str(profile.get("source", "manual")).strip().lower() or "manual",
+            "rfid_code": str(profile.get("rfid_code", "")).strip().upper(),
         }
         reserve = str(profile.get(
             "rfid_reserve", "")).strip().strip("\x00").strip()
@@ -606,6 +731,9 @@ class Box:
             ("_BOX_SLOT_SET", self.cmd_slot_set, "Save slot metadata"),
             ("_BOX_SLOT_CLEAR", self.cmd_slot_clear, "Clear slot metadata"),
             ("_BOX_MATERIAL_SET", self.cmd_material_set, "Save material metadata"),
+            ("_BOX_FILAMENT_SET", self.cmd_filament_set, "Save a reusable filament profile"),
+            ("_BOX_FILAMENT_DELETE", self.cmd_filament_delete, "Delete a reusable filament profile"),
+            ("_BOX_SLOT_ASSIGN", self.cmd_slot_assign, "Assign a saved filament profile to a slot"),
             ("_BOX_SET_RUNOUT_SWAP", self.cmd_runout_swap,
              "Set automatic runout swapping"),
             ("_BOX_SET_UNLOAD_AFTER_PRINT", self.cmd_unload_after_print,
@@ -774,6 +902,7 @@ class Box:
         slots = physical + [self._external_status(snap)]
         return {
             "api_version": API_VERSION,
+            "filament_inventory_version": FILAMENT_INVENTORY_VERSION,
             "fluidd_widget_version": LEGACY_WIDGET_VERSION,
             "data_ready": snap.data_ready,
             "status": box_protocol.status_name(snap.status_code),
@@ -787,6 +916,7 @@ class Box:
             "slot_filament_mask": snap.slot_mask,
             "slots": slots,
             "materials": self.store.materials,
+            "filaments": self.store.filaments,
             "runout": self._runout_status(physical, snap),
             "runout_swap_enabled": self.runout_swap_enabled,
             "unload_after_print_enabled": self.unload_after_print_enabled,
@@ -808,6 +938,10 @@ class Box:
 
     def _slot_status(self, slot, snap, external=False):
         profile = self.profile(slot)
+        slot_key = self._runtime_slot_key(slot)
+        unknown = self.unknown_rfid.get(slot_key)
+        unknown_fields = unknown.get("fields", {}) if unknown else {}
+        unknown_color = self._normal_color(unknown_fields.get("color"))
         return {
             "index": slot,
             "present": external or bool(snap.slot_mask & (1 << slot)),
@@ -817,7 +951,15 @@ class Box:
             "color": profile["color"],
             "brand": profile["brand"],
             "name": profile["name"],
+            "target_temp": profile.get("target_temp"),
             "spoolman_id": profile["spoolman_id"],
+            "filament_id": profile.get("filament_id", ""),
+            "source": profile.get("source", "manual"),
+            "rfid_code": profile.get("rfid_code", ""),
+            "rfid_active": False if external else slot in self.rfid_live_slots,
+            "rfid_unknown_code": "" if unknown is None else str(
+                unknown.get("raw_code") or unknown.get("code") or "").strip().upper(),
+            "rfid_unknown_color": unknown_color or "",
             "rfid_percent": None if external else self.rfid_percent.get(slot),
             "rfid_reserve": profile["rfid_reserve"],
             "external": external,
@@ -958,8 +1100,10 @@ class Box:
         return bool(self.store.setting("rfid_startup_reading_enabled", False))
 
     def slot_target_temp(self, slot):
-        material = self.profile(slot)["material"]
-        value = self.store.materials.get(material)
+        profile = self.profile(slot)
+        if profile.get("target_temp") is not None:
+            return profile["target_temp"]
+        value = self.store.materials.get(profile["material"])
         return value.get("target_temp") if value else None
 
     def activate_spool(self, slot):
@@ -1177,6 +1321,9 @@ class Box:
             raise gcmd.error("[BOX]: SLOT is required")
         if not self.is_valid_slot(slot):
             raise gcmd.error("[BOX]: T%d is not an online box slot" % slot)
+        if self.is_physical_slot(slot) and slot in self.rfid_live_slots:
+            raise gcmd.error(
+                "[BOX]: T%d is managed by a live RFID tag; remove the tagged spool before editing it manually" % slot)
         material = self._param(gcmd, "MATERIAL")
         if not material:
             raise gcmd.error("[BOX]: MATERIAL is required")
@@ -1187,6 +1334,15 @@ class Box:
         params = gcmd.get_command_parameters()
         profile["material"] = str(material).strip().upper()
         profile["color"] = color
+        if "TARGET_TEMP" in params:
+            profile["target_temp"] = gcmd.get_int(
+                "TARGET_TEMP", minval=170, maxval=350)
+        else:
+            material_info = self.store.materials.get(profile["material"], {})
+            profile["target_temp"] = material_info.get("target_temp")
+        profile["filament_id"] = ""
+        profile["source"] = "manual"
+        profile["rfid_code"] = ""
         for field in ("BRAND", "NAME"):
             if field in params:
                 profile[field.lower()] = str(self._param(gcmd, field) or "").strip()
@@ -1199,6 +1355,92 @@ class Box:
         self.set_profile(slot, profile)
         self._info(gcmd, "Saved T%d profile" % slot)
 
+    def cmd_filament_set(self, gcmd):
+        filament_id = self._param(gcmd, "ID")
+        material = self._param(gcmd, "MATERIAL")
+        if not filament_id or not material:
+            raise gcmd.error("[BOX]: ID and MATERIAL are required")
+        color_raw = self._param(gcmd, "COLOR")
+        color = "" if color_raw in (None, "") else self._normal_color(color_raw)
+        if color is None:
+            raise gcmd.error("[BOX]: COLOR must be #RRGGBB")
+        target = gcmd.get_int("TARGET_TEMP", None, minval=170, maxval=350)
+        existing = self.store.filament(filament_id) or {}
+        if target is None:
+            material_info = self.store.materials.get(str(material).strip().upper(), {})
+            target = material_info.get("target_temp")
+        if target is None:
+            target = self.change_engine.default_temp
+        spoolman = self._param(gcmd, "SPOOLMAN_ID")
+        if spoolman not in (None, ""):
+            try:
+                spoolman = int(spoolman)
+            except (TypeError, ValueError):
+                raise gcmd.error("[BOX]: SPOOLMAN_ID must be an integer")
+            if spoolman < 0:
+                spoolman = None
+        else:
+            spoolman = existing.get("spoolman_id")
+        value = {
+            "material": str(material).strip().upper(),
+            "color": color if color_raw not in (None, "") else existing.get("color", ""),
+            "brand": str(self._param(gcmd, "BRAND") if "BRAND" in gcmd.get_command_parameters() else existing.get("brand", "") or "").strip(),
+            "name": str(self._param(gcmd, "NAME") if "NAME" in gcmd.get_command_parameters() else existing.get("name", "") or "").strip(),
+            "target_temp": int(target),
+            "rfid_code": str(self._param(gcmd, "RFID_CODE") if "RFID_CODE" in gcmd.get_command_parameters() else existing.get("rfid_code", "") or "").strip().upper(),
+            "spoolman_id": spoolman,
+        }
+        saved = self.store.set_filament(filament_id, value)
+        if saved["material"] not in self.store.materials:
+            self.store.set_material(saved["material"], saved["target_temp"])
+        self._apply_new_filament(saved)
+        self._info(gcmd, "Saved filament %s (%s)" % (saved["id"], saved["material"]))
+
+    def cmd_filament_delete(self, gcmd):
+        filament_id = self._param(gcmd, "ID")
+        if not filament_id:
+            raise gcmd.error("[BOX]: ID is required")
+        if not self.store.delete_filament(filament_id):
+            raise gcmd.error("[BOX]: Filament %s does not exist" % filament_id)
+        self._info(gcmd, "Deleted filament %s" % str(filament_id).strip().upper())
+
+    def cmd_slot_assign(self, gcmd):
+        slot = gcmd.get_int(
+            "SLOT", None, minval=0,
+            maxval=MAX_ADDRESSES * SLOTS_PER_BOX)
+        filament_id = self._param(gcmd, "FILAMENT_ID")
+        if slot is None or not filament_id:
+            raise gcmd.error("[BOX]: SLOT and FILAMENT_ID are required")
+        if not self.is_valid_slot(slot):
+            raise gcmd.error("[BOX]: T%d is not an online box slot" % slot)
+        if self.is_physical_slot(slot) and slot in self.rfid_live_slots:
+            raise gcmd.error("[BOX]: T%d is managed by a live RFID tag; remove the tag or disable RFID assignment first" % slot)
+        filament = self.store.filament(filament_id)
+        if filament is None:
+            raise gcmd.error("[BOX]: Unknown filament %s" % filament_id)
+        color_override = self._param(gcmd, "COLOR")
+        color = filament.get("color", "")
+        if color_override not in (None, ""):
+            color = self._normal_color(color_override)
+            if color is None:
+                raise gcmd.error("[BOX]: COLOR must be #RRGGBB")
+        if not color:
+            color = "#808080"
+        profile = {
+            "material": filament["material"],
+            "color": color,
+            "brand": filament.get("brand", ""),
+            "name": filament.get("name", ""),
+            "target_temp": filament.get("target_temp"),
+            "spoolman_id": filament.get("spoolman_id"),
+            "filament_id": filament["id"],
+            "source": "library",
+            "rfid_code": filament.get("rfid_code", ""),
+        }
+        self.set_profile(slot, profile)
+        self._ensure_material(filament["material"], filament.get("target_temp"))
+        self._info(gcmd, "Assigned filament %s to T%d" % (filament["id"], slot))
+
     def cmd_slot_clear(self, gcmd):
         slot = gcmd.get_int(
             "SLOT", None, minval=0,
@@ -1207,6 +1449,9 @@ class Box:
             raise gcmd.error("[BOX]: SLOT is required")
         if not self.is_valid_slot(slot):
             raise gcmd.error("[BOX]: T%d is not an online box slot" % slot)
+        if self.is_physical_slot(slot) and slot in self.rfid_live_slots:
+            raise gcmd.error(
+                "[BOX]: T%d is managed by a live RFID tag; remove the tagged spool before clearing it" % slot)
         self.clear_profile(slot)
         self._info(gcmd, "Cleared T%d profile" % slot)
 
@@ -1403,6 +1648,7 @@ class Box:
     def _rfid_inserted(self, slot):
         self.rfid_live_slots.discard(slot)
         self.rfid_percent.pop(slot, None)
+        self.unknown_rfid.pop(self._runtime_slot_key(slot), None)
         self._invalidate_spoolman(slot)
         self.rfid_snapshot.pop(slot, None)
         self.rfid_seen_invalid.discard(slot)
@@ -1414,6 +1660,7 @@ class Box:
         self._clear_rfid_watch(slot)
         self.rfid_live_slots.discard(slot)
         self.rfid_percent.pop(slot, None)
+        self.unknown_rfid.pop(self._runtime_slot_key(slot), None)
         self._invalidate_spoolman(slot)
 
     def _reconcile_presence(self, address, current):
@@ -1532,6 +1779,15 @@ class Box:
 
     def _resolve_rfid(self, raw_code):
         code, product = resolve_material(raw_code)
+        filament = self.store.filament_for_rfid(raw_code)
+        if filament:
+            return code, {
+                "filament_id": filament["id"],
+                "material": filament["material"],
+                "brand": filament.get("brand", ""),
+                "name": filament.get("name", ""),
+                "target_temp": filament.get("target_temp"),
+            }
         mapping = self.store.rfid_mapping(code)
         if mapping:
             return code, mapping
@@ -1592,7 +1848,10 @@ class Box:
             target = None
         return ({
             "material": material, "color": color, "brand": brand,
-            "name": name, "spoolman_id": None,
+            "name": name, "target_temp": target, "spoolman_id": None,
+            "filament_id": str(resolved.get("filament_id", "")).strip().upper() if resolved else "",
+            "source": "rfid",
+            "rfid_code": code,
             "rfid_reserve": reserve,
         }, code, raw_code, target, resolved is not None)
 
@@ -1651,6 +1910,24 @@ class Box:
                 continue
             self._invalidate_spoolman(slot)
             self._apply_rfid_profile(slot, fields)
+
+    def _apply_new_filament(self, filament):
+        if not isinstance(filament, dict):
+            return
+        for slot, unknown in list(self.unknown_rfid.items()):
+            fields = unknown.get("fields")
+            if not isinstance(fields, dict):
+                continue
+            raw_code = self._clean_rfid(fields.get("mat_id")).upper()
+            matched = self.store.filament_for_rfid(raw_code)
+            if not matched or matched.get("id") != filament.get("id"):
+                continue
+            self._invalidate_spoolman(slot)
+            if self._apply_rfid_profile(slot, fields):
+                self._info(
+                    self.gcode,
+                    "RFID T%d: custom filament %s applied"
+                    % (self._runtime_slot(slot), filament.get("id")))
 
     def _read_rfid_remaining(self, slot):
         address, local = self._address_slot(slot)
@@ -1820,6 +2097,10 @@ class Box:
                     "color": color,
                     "brand": str(vendor.get("name") or "").strip(),
                     "name": str(filament.get("name") or "").strip(),
+                    "target_temp": None,
+                    "filament_id": "",
+                    "source": "spoolman",
+                    "rfid_code": self._clean_rfid(fields.get("mat_id")).upper(),
                     "rfid_reserve": reserve,
                 }
                 self._ensure_material(material)

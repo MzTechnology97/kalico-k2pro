@@ -19,6 +19,7 @@ Use this together with the native Mainsail K2-OpenHost CFS mapping dialog.
 
 import os
 
+from extras.box_auto_mapping import suggest_mapping
 from extras.box_gcode import read_metadata
 
 
@@ -42,6 +43,10 @@ class BoxPrintMapping:
         self.active_slot = None
         self._fallback_tools = {}
         self._wrapped_tools = set()
+        self.auto_map_prints = config.getboolean("auto_map_prints", False)
+        self.auto_map_block_unresolved = config.getboolean("auto_map_block_unresolved", True)
+        self.auto_mapping = {"state": "idle", "map": {}, "unresolved": []}
+        self._explicit_start_in_progress = False
 
         # Extend the canonical box Moonraker object instead of publishing a
         # second competing CFS state object.
@@ -72,9 +77,9 @@ class BoxPrintMapping:
                 "print_stats:error_printing",
                 "print_stats:cancelled_printing",
                 "print_stats:reset",
-                "virtual_sdcard:load_file",
                 "virtual_sdcard:reset_file"):
             self.printer.register_event_handler(event, self._reset_mapping)
+        self.printer.register_event_handler("virtual_sdcard:load_file", self._handle_file_loaded)
 
     # ------------------------------------------------------------------
     # Moonraker status contract
@@ -93,6 +98,7 @@ class BoxPrintMapping:
                 "active_tool": self.active_tool,
                 "active_slot": self.active_slot,
             },
+            "auto_mapping": dict(self.auto_mapping),
         })
         return status
 
@@ -156,6 +162,64 @@ class BoxPrintMapping:
         self.active_tool = None
         self.active_slot = None
         self.metadata = None
+        self.auto_mapping = {"state": "idle", "map": {}, "unresolved": []}
+
+    def _suggest_mapping(self, tools):
+        if not tools:
+            self.auto_mapping = {
+                "state": "no_tools", "map": {}, "unresolved": []}
+            return {}, []
+        status = self._base_get_status(
+            self.printer.get_reactor().monotonic())
+        slots = [
+            slot for slot in status.get("slots", [])
+            if slot.get("external") or slot.get("present")
+        ]
+        mapping, unresolved = suggest_mapping(tools, slots)
+        self.auto_mapping = {
+            "state": "unresolved" if unresolved else "ready",
+            "map": {str(tool): slot for tool, slot in mapping.items()},
+            "unresolved": unresolved,
+        }
+        return mapping, unresolved
+
+    def _handle_file_loaded(self, *args):
+        self._reset_mapping()
+        if (self._explicit_start_in_progress or not self.auto_map_prints
+                or getattr(self.box, "observation_mode", False)):
+            return
+        sd = self.printer.lookup_object("virtual_sdcard", None)
+        if sd is None or sd.current_file is None:
+            return
+        path = os.path.realpath(getattr(sd.current_file, "name", ""))
+        root = os.path.realpath(sd.sdcard_dirname)
+        if not path or os.path.commonpath((root, path)) != root:
+            return
+        filename = os.path.relpath(path, root).replace(os.sep, "/")
+        try:
+            metadata = read_metadata(path)
+        except OSError:
+            return
+        tools = metadata.get("tools", [])
+        self.metadata = metadata
+        self.print_info = {"filename": filename, "tools": tools}
+        mapping, unresolved = self._suggest_mapping(tools)
+        if not tools:
+            return
+        if unresolved:
+            if self.auto_map_block_unresolved:
+                raise self.gcode.error(
+                    "[BOX]: Automatic CFS mapping unresolved for %s"
+                    % ", ".join("T%d" % tool for tool in unresolved))
+            return
+        for tool in mapping:
+            self._wrap_tool(tool)
+        self.tool_map = mapping
+        self.mapping_filename = filename
+        self.active_tool = None
+        self.active_slot = None
+        self._install_engine_metadata()
+        self.auto_mapping["state"] = "active"
 
     def _print_idle(self, gcmd):
         if (self.change_engine._is_print_active()
@@ -186,6 +250,7 @@ class BoxPrintMapping:
             raise gcmd.error("[BOX]: Unable to inspect print: %s" % exc)
         self.metadata = metadata
         self.print_info = {"filename": filename, "tools": metadata["tools"]}
+        self._suggest_mapping(metadata["tools"])
         return self.print_info
 
     @staticmethod
@@ -330,6 +395,7 @@ class BoxPrintMapping:
         # Match Jacob's ordering: reset/load events clear any old map, then the
         # new map is installed before Virtual SD schedules the first G-code.
         sd._reset_file()
+        self._explicit_start_in_progress = True
         try:
             sd._load_file(gcmd, info["filename"], check_subdirs=True)
             self.tool_map = mapping
@@ -345,6 +411,8 @@ class BoxPrintMapping:
                 raise
             raise gcmd.error(
                 "[BOX]: Unable to start %s: %s" % (info["filename"], exc))
+        finally:
+            self._explicit_start_in_progress = False
 
 
 def load_config(config):
