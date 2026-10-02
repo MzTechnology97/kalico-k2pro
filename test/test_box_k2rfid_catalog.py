@@ -1,4 +1,5 @@
 import json
+import pathlib
 
 from klippy.extras.box_k2rfid_catalog import K2RfidMaterialCatalog
 
@@ -77,3 +78,22 @@ def test_compact_database_keeps_explicit_aliases_and_tag_codes(tmp_path):
 
     assert catalog.lookup("142175")["id"] == "42175"
     assert catalog.lookup("124934")["id"] == "42175"
+
+
+def test_shipped_system_catalog_contains_creality_and_generic_profiles():
+    root = pathlib.Path(__file__).resolve().parents[1]
+    catalog = K2RfidMaterialCatalog(
+        str(root / "config" / "k2" / "cfs_system_filaments.json")
+    )
+
+    entries = catalog.entries
+    assert len(entries) == 61
+    assert sum(1 for item in entries if item["brand"] == "Creality") == 30
+    assert sum(1 for item in entries if item["brand"] == "Generic") == 31
+    tpu = catalog.lookup("100005")
+    assert tpu["name"] == "Generic TPU"
+    assert tpu["min_temp"] == 210
+    assert tpu["max_temp"] == 240
+    assert tpu["pressure_advance"] is not None
+    assert all(item["pressure_advance"] is not None for item in entries)
+    assert tpu["system"] is True

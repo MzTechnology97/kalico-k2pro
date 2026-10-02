@@ -30,7 +30,7 @@ EXTERNAL_PROFILE_KEY = "external"
 # Additive K2-OpenHost features must use their own version fields instead of
 # incrementing this value.
 API_VERSION = 1
-FILAMENT_INVENTORY_VERSION = 1
+FILAMENT_INVENTORY_VERSION = 2
 LEGACY_WIDGET_VERSION = 2
 SAFE_WIDGET_COMMANDS = frozenset((
     "_BOX_SLOT_SET",
@@ -314,6 +314,18 @@ class BoxStore:
         return result
 
     @staticmethod
+    def _clean_pressure_advance(value):
+        if value in (None, ""):
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not 0.0 <= value <= 2.0:
+            return None
+        return round(value, 6)
+
+    @staticmethod
     def _filaments(values):
         result = {}
         for key, value in values.items():
@@ -334,6 +346,34 @@ class BoxStore:
                                        or not isinstance(target, int)
                                        or not 170 <= target <= 350):
                 raise BoxError("Invalid target temperature for filament %s" % filament_id)
+            ranges = {}
+            for field in ("min_temp", "max_temp"):
+                raw = value.get(field)
+                if raw in (None, ""):
+                    ranges[field] = None
+                    continue
+                try:
+                    raw = int(round(float(raw)))
+                except (TypeError, ValueError):
+                    raise BoxError(
+                        "Invalid %s for filament %s" % (field, filament_id))
+                if not 0 <= raw <= 500:
+                    raise BoxError(
+                        "Invalid %s for filament %s" % (field, filament_id))
+                ranges[field] = raw
+            pressure_advance = value.get("pressure_advance")
+            if pressure_advance in (None, ""):
+                pressure_advance = None
+            else:
+                try:
+                    pressure_advance = float(pressure_advance)
+                except (TypeError, ValueError):
+                    raise BoxError(
+                        "Invalid pressure_advance for filament %s" % filament_id)
+                if not 0.0 <= pressure_advance <= 2.0:
+                    raise BoxError(
+                        "Invalid pressure_advance for filament %s" % filament_id)
+                pressure_advance = round(pressure_advance, 6)
             spoolman_id = value.get("spoolman_id")
             if spoolman_id is not None:
                 try:
@@ -361,10 +401,14 @@ class BoxStore:
                 "brand": str(value.get("brand", "")).strip(),
                 "name": str(value.get("name", "")).strip(),
                 "target_temp": target,
+                "min_temp": ranges["min_temp"],
+                "max_temp": ranges["max_temp"],
+                "pressure_advance": pressure_advance,
                 "rfid_code": codes[0] if codes else "",
                 "rfid_codes": codes,
                 "aliases": aliases,
                 "spoolman_id": spoolman_id,
+                "system": bool(value.get("system", False)),
             }
         return result
 
@@ -444,6 +488,7 @@ class BoxStore:
             profile["brand"] = clean["brand"]
             profile["name"] = clean["name"]
             profile["target_temp"] = clean["target_temp"]
+            profile["pressure_advance"] = clean.get("pressure_advance")
             if source == "library":
                 profile["spoolman_id"] = clean["spoolman_id"]
                 profile["rfid_code"] = clean["rfid_code"]
@@ -455,6 +500,9 @@ class BoxStore:
 
     def delete_filament(self, filament_id):
         key = str(filament_id or "").strip().upper()
+        current = self.data["filaments"].get(key)
+        if current is None or current.get("system"):
+            return False
         if self.data["filaments"].pop(key, None) is None:
             return False
         for slot, profile in self.data["slots"].items():
@@ -517,6 +565,8 @@ class BoxStore:
             "brand": str(value.get("brand", "")).strip(),
             "name": str(value.get("name", "")).strip(),
             "target_temp": target_temp,
+            "pressure_advance": self._clean_pressure_advance(
+                value.get("pressure_advance")),
             "spoolman_id": value.get("spoolman_id"),
             "filament_id": str(value.get("filament_id", "")).strip().upper(),
             "source": str(value.get("source", "manual")).strip().lower() or "manual",
@@ -537,6 +587,8 @@ class BoxStore:
             "brand": str(profile.get("brand", "")).strip(),
             "name": str(profile.get("name", "")).strip(),
             "target_temp": target_temp,
+            "pressure_advance": self._clean_pressure_advance(
+                profile.get("pressure_advance")),
             "spoolman_id": profile.get("spoolman_id"),
             "filament_id": str(profile.get("filament_id", "")).strip().upper(),
             "source": str(profile.get("source", "manual")).strip().lower() or "manual",
@@ -628,12 +680,22 @@ class Box:
         self.store = BoxStore(
             config.get("state_path", default_state_path)
         )
+        repo_root = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.realpath(__file__))))
+        default_system_catalog = os.path.join(
+            repo_root, "config", "k2", "cfs_system_filaments.json")
+        self.system_material_database_path = os.path.expanduser(
+            config.get(
+                "system_material_database_path",
+                default_system_catalog))
         self.material_database_path = os.path.expanduser(
             config.get("material_database_path", ""))
         self.auto_register_rfid_filaments = config.getboolean(
             "auto_register_rfid_filaments", True)
         self.auto_seed_material_database = config.getboolean(
             "auto_seed_material_database", True)
+        self.system_material_catalog = K2RfidMaterialCatalog(
+            self.system_material_database_path)
         self.material_catalog = K2RfidMaterialCatalog(
             self.material_database_path)
 
@@ -1156,6 +1218,7 @@ class Box:
             "brand": profile["brand"],
             "name": profile["name"],
             "target_temp": profile.get("target_temp"),
+            "pressure_advance": profile.get("pressure_advance"),
             "spoolman_id": profile["spoolman_id"],
             "filament_id": profile.get("filament_id", ""),
             "source": profile.get("source", "manual"),
@@ -1737,9 +1800,24 @@ class Box:
             "brand": brand,
             "name": name,
             "target_temp": target_temp,
+            "min_temp": (
+                (existing or {}).get("min_temp")
+                if (existing or {}).get("min_temp") is not None
+                else entry.get("min_temp")),
+            "max_temp": (
+                (existing or {}).get("max_temp")
+                if (existing or {}).get("max_temp") is not None
+                else entry.get("max_temp")),
+            "pressure_advance": (
+                (existing or {}).get("pressure_advance")
+                if (existing or {}).get("pressure_advance") is not None
+                else entry.get("pressure_advance")),
             "rfid_codes": codes,
             "aliases": aliases,
             "spoolman_id": (existing or {}).get("spoolman_id"),
+            "system": bool(
+                entry.get("system", False)
+                or (existing or {}).get("system", False)),
         }
         saved = self.store.set_filament(key, value)
         if material not in self.store.materials:
@@ -1747,10 +1825,16 @@ class Box:
         return saved
 
     def _seed_material_catalog(self):
+        # System profiles are shipped with K2-OpenHost and intentionally include
+        # Creality/Generic IDs that also exist in the small built-in fallback
+        # table. Seed them first so the UI gets the full DnG-Crafts catalog.
+        for entry in self.system_material_catalog.entries:
+            entry["system"] = True
+            self._ensure_catalog_filament(entry)
+        # The user-imported K2-RFID database extends the system catalog. It is
+        # deduplicated by brand/name/material so color variants remain one
+        # reusable filament identity while slot color stays spool-specific.
         for entry in self.material_catalog.entries:
-            _code, builtin = resolve_material(entry.get("id"))
-            if builtin is not None:
-                continue
             self._ensure_catalog_filament(entry)
 
     def cmd_filament_set(self, gcmd):
@@ -1764,6 +1848,10 @@ class Box:
             raise gcmd.error("[BOX]: COLOR must be #RRGGBB")
         target = gcmd.get_int("TARGET_TEMP", None, minval=170, maxval=350)
         existing = self.store.filament(filament_id) or {}
+        if existing.get("system"):
+            raise gcmd.error(
+                "[BOX]: System filament %s is read only; create a custom profile instead"
+                % str(filament_id).strip().upper())
         if target is None:
             material_info = self.store.materials.get(str(material).strip().upper(), {})
             target = material_info.get("target_temp")
@@ -1779,9 +1867,23 @@ class Box:
                 spoolman = None
         else:
             spoolman = existing.get("spoolman_id")
+        params = gcmd.get_command_parameters()
+        min_temp = (
+            gcmd.get_int("MIN_TEMP", minval=0, maxval=500)
+            if "MIN_TEMP" in params else existing.get("min_temp"))
+        max_temp = (
+            gcmd.get_int("MAX_TEMP", minval=0, maxval=500)
+            if "MAX_TEMP" in params else existing.get("max_temp"))
+        if (min_temp is not None and max_temp is not None
+                and min_temp > max_temp):
+            raise gcmd.error("[BOX]: MIN_TEMP cannot be greater than MAX_TEMP")
+        pressure_advance = (
+            gcmd.get_float("PRESSURE_ADVANCE", minval=0.0, maxval=2.0)
+            if "PRESSURE_ADVANCE" in params
+            else existing.get("pressure_advance"))
         rfid_code = str(
             self._param(gcmd, "RFID_CODE")
-            if "RFID_CODE" in gcmd.get_command_parameters()
+            if "RFID_CODE" in params
             else existing.get("rfid_code", "") or "").strip().upper()
         rfid_codes = list(existing.get("rfid_codes") or [])
         if rfid_code and rfid_code not in rfid_codes:
@@ -1790,11 +1892,15 @@ class Box:
             "material": str(material).strip().upper(),
             "color": color if color_raw not in (None, "") else existing.get("color", ""),
             "brand": str(self._param(gcmd, "BRAND") if "BRAND" in gcmd.get_command_parameters() else existing.get("brand", "") or "").strip(),
-            "name": str(self._param(gcmd, "NAME") if "NAME" in gcmd.get_command_parameters() else existing.get("name", "") or "").strip(),
+            "name": str(self._param(gcmd, "NAME") if "NAME" in params else existing.get("name", "") or "").strip(),
             "target_temp": int(target),
+            "min_temp": min_temp,
+            "max_temp": max_temp,
+            "pressure_advance": pressure_advance,
             "rfid_codes": rfid_codes,
             "aliases": list(existing.get("aliases") or []),
             "spoolman_id": spoolman,
+            "system": False,
         }
         saved = self.store.set_filament(filament_id, value)
         if saved["material"] not in self.store.materials:
@@ -1806,6 +1912,10 @@ class Box:
         filament_id = self._param(gcmd, "ID")
         if not filament_id:
             raise gcmd.error("[BOX]: ID is required")
+        existing = self.store.filament(filament_id)
+        if existing and existing.get("system"):
+            raise gcmd.error(
+                "[BOX]: System filament %s cannot be deleted" % filament_id)
         if not self.store.delete_filament(filament_id):
             raise gcmd.error("[BOX]: Filament %s does not exist" % filament_id)
         self._info(gcmd, "Deleted filament %s" % str(filament_id).strip().upper())
@@ -1838,6 +1948,7 @@ class Box:
             "brand": filament.get("brand", ""),
             "name": filament.get("name", ""),
             "target_temp": filament.get("target_temp"),
+            "pressure_advance": filament.get("pressure_advance"),
             "spoolman_id": filament.get("spoolman_id"),
             "filament_id": filament["id"],
             "source": "library",
@@ -2292,23 +2403,42 @@ class Box:
     def _clean_rfid(value):
         return str(value or "").strip().strip("\x00")
 
-    def _rfid_spool_key(self, fields, slot=None):
+    def _rfid_spool_fingerprint(self, fields):
         supplier = self._clean_rfid(fields.get("supplier")).upper()
         material = self._clean_rfid(fields.get("mat_id")).upper()
         number = self._clean_rfid(fields.get("number")).upper()
         if not material:
             return None
-        # The Windows K2-RFID writer uses serial 000001 for every tag. Such a
-        # serial is not a spool identity, so scope estimates by slot (and color)
-        # to prevent two same-material tags from sharing one remaining value.
-        if number in ("", "000000", "000001"):
-            color = self._normal_color(fields.get("color")) or "?"
-            return "slot:%s:%s:%s:%s:%s" % (
-                supplier or "?", material, number or "?", color,
-                "?" if slot is None else int(slot))
-        return "tag:%s:%s:%s" % (supplier or "?", material, number)
+        if number not in ("", "000000", "000001"):
+            return "tag:%s:%s:%s" % (supplier or "?", material, number)
+        # Windows/Android K2-RFID commonly use serial 000001. Build a portable
+        # fingerprint from stable tag payload fields so a spool keeps its local
+        # estimate when it is moved to another CFS slot. If two active tags are
+        # byte-for-byte equivalent we split them by slot below, because there is
+        # no unique identity available in the CFS record for that case.
+        color = self._normal_color(fields.get("color")) or "?"
+        length = self._clean_rfid(fields.get("len")).upper() or "?"
+        reserve = self._clean_rfid(fields.get("reserve")).upper() or "?"
+        return "fingerprint:%s:%s:%s:%s:%s" % (
+            supplier or "?", material, color, length, reserve)
+
+    def _rfid_spool_key(self, fields, slot=None):
+        fingerprint = self._rfid_spool_fingerprint(fields)
+        if fingerprint is None:
+            return None
+        number = self._clean_rfid(fields.get("number")).upper()
+        if number not in ("", "000000", "000001") or slot is None:
+            return fingerprint
+        duplicate = any(
+            other_slot != slot
+            and spool.get("fingerprint") == fingerprint
+            for other_slot, spool in self.rfid_spools.items())
+        return (
+            "%s:slot:%d" % (fingerprint, int(slot))
+            if duplicate else fingerprint)
 
     def _remember_rfid_spool(self, slot, fields):
+        fingerprint = self._rfid_spool_fingerprint(fields)
         key = self._rfid_spool_key(fields, slot)
         if key is None:
             return
@@ -2319,6 +2449,18 @@ class Box:
         total_mm = float(total_m * 1000) if total_m > 0 else None
         persisted = self.store.setting("rfid_estimates", {}) or {}
         saved = persisted.get(key, {}) if isinstance(persisted, dict) else {}
+        # Migration from the earlier slot-scoped K2-RFID estimate format.
+        # This keeps already tracked spools useful after upgrading.
+        if not saved and isinstance(persisted, dict):
+            supplier = self._clean_rfid(fields.get("supplier")).upper() or "?"
+            material = self._clean_rfid(fields.get("mat_id")).upper()
+            number = self._clean_rfid(fields.get("number")).upper() or "?"
+            color = self._normal_color(fields.get("color")) or "?"
+            legacy = "slot:%s:%s:%s:%s:%d" % (
+                supplier, material, number, color, int(slot))
+            saved = persisted.get(legacy, {})
+            if not saved and fingerprint and key != fingerprint:
+                saved = persisted.get(fingerprint, {})
         remaining_mm = saved.get("remaining_mm")
         try:
             remaining_mm = float(remaining_mm)
@@ -2328,6 +2470,7 @@ class Box:
             remaining_mm = max(0.0, min(total_mm, remaining_mm))
         self.rfid_spools[slot] = {
             "key": key,
+            "fingerprint": fingerprint,
             "total_mm": total_mm,
             "remaining_mm": remaining_mm,
         }
@@ -2450,6 +2593,7 @@ class Box:
                 "brand": filament.get("brand", ""),
                 "name": filament.get("name", ""),
                 "target_temp": filament.get("target_temp"),
+                "pressure_advance": filament.get("pressure_advance"),
             }
 
         mapping = self.store.rfid_mapping(code)
@@ -2478,6 +2622,7 @@ class Box:
                 "brand": catalog.get("brand", ""),
                 "name": catalog.get("name", ""),
                 "target_temp": self._catalog_target(catalog),
+                "pressure_advance": catalog.get("pressure_advance"),
             }
             if saved:
                 resolved["filament_id"] = saved["id"]
@@ -2545,14 +2690,17 @@ class Box:
             brand = str(resolved.get("brand", "")).strip()
             name = str(resolved.get("name", "")).strip()
             target = resolved.get("target_temp")
+            pressure_advance = resolved.get("pressure_advance")
         else:
             material = raw_code
             brand = self._clean_rfid(fields["supplier"])
             name = ""
             target = None
+            pressure_advance = None
         return ({
             "material": material, "color": color, "brand": brand,
-            "name": name, "target_temp": target, "spoolman_id": None,
+            "name": name, "target_temp": target,
+            "pressure_advance": pressure_advance, "spoolman_id": None,
             "filament_id": str(resolved.get("filament_id", "")).strip().upper() if resolved else "",
             "source": "rfid",
             "rfid_code": code,

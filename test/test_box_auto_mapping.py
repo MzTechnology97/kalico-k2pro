@@ -91,3 +91,17 @@ def test_equal_matches_prefer_lowest_known_rfid_remaining():
     )
     assert mapping == {0: 2}
     assert unresolved == []
+
+def test_generic_profile_is_safe_fallback_when_orca_name_does_not_match():
+    tools = [
+        tool(0, "PETG", "#112233", "My tuned PETG"),
+    ]
+    slots = [
+        dict(slot(1, "PETG", "#112233", "Brand X PETG"), brand="Brand X"),
+        dict(slot(2, "PETG", "#112233", "Generic PETG"), brand="Generic"),
+    ]
+
+    mapping, unresolved = suggest_mapping(tools, slots)
+
+    assert mapping == {0: 2}
+    assert unresolved == []

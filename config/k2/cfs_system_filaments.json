@@ -1,0 +1,984 @@
+{
+  "schema_version": 1,
+  "source": "DnG-Crafts/K2-RFID db/k2.json",
+  "source_url": "https://github.com/DnG-Crafts/K2-RFID/blob/main/db/k2.json",
+  "description": "Complete Creality and Generic K2 filament profile catalog imported from DnG-Crafts/K2-RFID for K2-OpenHost. Color is spool metadata and is intentionally not part of profile identity.",
+  "materials": [
+    {
+      "id": "07001",
+      "brand": "Creality",
+      "name": "CR-ABS",
+      "material": "ABS",
+      "target_temp": 260,
+      "min_temp": 240,
+      "max_temp": 280,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "07001",
+        "107001"
+      ],
+      "system": true
+    },
+    {
+      "id": "03001",
+      "brand": "Creality",
+      "name": "Hyper ABS",
+      "material": "ABS",
+      "target_temp": 260,
+      "min_temp": 240,
+      "max_temp": 280,
+      "pressure_advance": 0.03,
+      "aliases": [],
+      "rfid_codes": [
+        "03001",
+        "103001"
+      ],
+      "system": true
+    },
+    {
+      "id": "19001",
+      "brand": "Creality",
+      "name": "HP-ASA",
+      "material": "ASA",
+      "target_temp": 260,
+      "min_temp": 240,
+      "max_temp": 280,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "19001",
+        "119001"
+      ],
+      "system": true
+    },
+    {
+      "id": "11001",
+      "brand": "Creality",
+      "name": "CR-Nylon",
+      "material": "PA",
+      "target_temp": 260,
+      "min_temp": 250,
+      "max_temp": 270,
+      "pressure_advance": 0.064,
+      "aliases": [],
+      "rfid_codes": [
+        "11001",
+        "111001"
+      ],
+      "system": true
+    },
+    {
+      "id": "12003",
+      "brand": "Creality",
+      "name": "Hyper PAHT-CF",
+      "material": "PA-CF",
+      "target_temp": 290,
+      "min_temp": 280,
+      "max_temp": 320,
+      "pressure_advance": 0.036,
+      "aliases": [],
+      "rfid_codes": [
+        "12003",
+        "112003"
+      ],
+      "system": true
+    },
+    {
+      "id": "12002",
+      "brand": "Creality",
+      "name": "Hyper PPA-CF",
+      "material": "PA-CF",
+      "target_temp": 300,
+      "min_temp": 280,
+      "max_temp": 320,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "12002",
+        "112002"
+      ],
+      "system": true
+    },
+    {
+      "id": "12005",
+      "brand": "Creality",
+      "name": "Hyper PA6-CF",
+      "material": "PA6-CF",
+      "target_temp": 300,
+      "min_temp": 290,
+      "max_temp": 320,
+      "pressure_advance": 0.048,
+      "aliases": [],
+      "rfid_codes": [
+        "12005",
+        "112005"
+      ],
+      "system": true
+    },
+    {
+      "id": "12004",
+      "brand": "Creality",
+      "name": "Hyper PA612-CF",
+      "material": "PA612-CF",
+      "target_temp": 290,
+      "min_temp": 290,
+      "max_temp": 320,
+      "pressure_advance": 0.048,
+      "aliases": [],
+      "rfid_codes": [
+        "12004",
+        "112004"
+      ],
+      "system": true
+    },
+    {
+      "id": "07002",
+      "brand": "Creality",
+      "name": "Hyper PC",
+      "material": "PC",
+      "target_temp": 260,
+      "min_temp": 250,
+      "max_temp": 270,
+      "pressure_advance": 0.03,
+      "aliases": [],
+      "rfid_codes": [
+        "07002",
+        "107002"
+      ],
+      "system": true
+    },
+    {
+      "id": "06001",
+      "brand": "Creality",
+      "name": "CR-PETG",
+      "material": "PETG",
+      "target_temp": 240,
+      "min_temp": 220,
+      "max_temp": 270,
+      "pressure_advance": 0.07,
+      "aliases": [],
+      "rfid_codes": [
+        "06001",
+        "106001"
+      ],
+      "system": true
+    },
+    {
+      "id": "06002",
+      "brand": "Creality",
+      "name": "Hyper PETG",
+      "material": "PETG",
+      "target_temp": 250,
+      "min_temp": 220,
+      "max_temp": 270,
+      "pressure_advance": 0.05,
+      "aliases": [],
+      "rfid_codes": [
+        "06002",
+        "106002"
+      ],
+      "system": true
+    },
+    {
+      "id": "06003",
+      "brand": "Creality",
+      "name": "Hyper PETG-CF",
+      "material": "PETG-CF",
+      "target_temp": 250,
+      "min_temp": 240,
+      "max_temp": 260,
+      "pressure_advance": 0.06,
+      "aliases": [],
+      "rfid_codes": [
+        "06003",
+        "106003"
+      ],
+      "system": true
+    },
+    {
+      "id": "04001",
+      "brand": "Creality",
+      "name": "CR-PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "04001",
+        "104001"
+      ],
+      "system": true
+    },
+    {
+      "id": "15001",
+      "brand": "Creality",
+      "name": "CR-PLA Fluo",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.044,
+      "aliases": [],
+      "rfid_codes": [
+        "15001",
+        "115001"
+      ],
+      "system": true
+    },
+    {
+      "id": "14001",
+      "brand": "Creality",
+      "name": "CR-PLA Matte",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "14001",
+        "114001"
+      ],
+      "system": true
+    },
+    {
+      "id": "05001",
+      "brand": "Creality",
+      "name": "CR-Silk",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "05001",
+        "105001"
+      ],
+      "system": true
+    },
+    {
+      "id": "17001",
+      "brand": "Creality",
+      "name": "CR-Wood",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.044,
+      "aliases": [],
+      "rfid_codes": [
+        "17001",
+        "117001"
+      ],
+      "system": true
+    },
+    {
+      "id": "09001",
+      "brand": "Creality",
+      "name": "EN-PLA+",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "09001",
+        "109001"
+      ],
+      "system": true
+    },
+    {
+      "id": "09002",
+      "brand": "Creality",
+      "name": "ENDER FAST PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "09002",
+        "109002"
+      ],
+      "system": true
+    },
+    {
+      "id": "08001",
+      "brand": "Creality",
+      "name": "Ender-PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "08001",
+        "108001"
+      ],
+      "system": true
+    },
+    {
+      "id": "18001",
+      "brand": "Creality",
+      "name": "HP Ultra PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "18001",
+        "118001"
+      ],
+      "system": true
+    },
+    {
+      "id": "01002",
+      "brand": "Creality",
+      "name": "Hyper L-W PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 200,
+      "max_temp": 270,
+      "pressure_advance": 0.1,
+      "aliases": [],
+      "rfid_codes": [
+        "01002",
+        "101002"
+      ],
+      "system": true
+    },
+    {
+      "id": "29001",
+      "brand": "Creality",
+      "name": "Hyper Marble",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.05,
+      "aliases": [],
+      "rfid_codes": [
+        "29001",
+        "129001"
+      ],
+      "system": true
+    },
+    {
+      "id": "01001",
+      "brand": "Creality",
+      "name": "Hyper PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "01001",
+        "101001"
+      ],
+      "system": true
+    },
+    {
+      "id": "01004",
+      "brand": "Creality",
+      "name": "Hyper Stardust",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.05,
+      "aliases": [],
+      "rfid_codes": [
+        "01004",
+        "101004"
+      ],
+      "system": true
+    },
+    {
+      "id": "01601",
+      "brand": "Creality",
+      "name": "Soleyin Ultra PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.06,
+      "aliases": [],
+      "rfid_codes": [
+        "01601",
+        "101601"
+      ],
+      "system": true
+    },
+    {
+      "id": "13001",
+      "brand": "Creality",
+      "name": "CR-PLA Carbon",
+      "material": "PLA-CF",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "13001",
+        "113001"
+      ],
+      "system": true
+    },
+    {
+      "id": "02001",
+      "brand": "Creality",
+      "name": "Hyper PLA-CF",
+      "material": "PLA-CF",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "02001",
+        "102001"
+      ],
+      "system": true
+    },
+    {
+      "id": "16001",
+      "brand": "Creality",
+      "name": "CR-TPU",
+      "material": "TPU",
+      "target_temp": 220,
+      "min_temp": 210,
+      "max_temp": 240,
+      "pressure_advance": 0.34,
+      "aliases": [],
+      "rfid_codes": [
+        "16001",
+        "116001"
+      ],
+      "system": true
+    },
+    {
+      "id": "10001",
+      "brand": "Creality",
+      "name": "HP-TPU",
+      "material": "TPU",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.4,
+      "aliases": [],
+      "rfid_codes": [
+        "10001",
+        "110001"
+      ],
+      "system": true
+    },
+    {
+      "id": "00004",
+      "brand": "Generic",
+      "name": "Generic ABS",
+      "material": "ABS",
+      "target_temp": 260,
+      "min_temp": 240,
+      "max_temp": 280,
+      "pressure_advance": 0.06,
+      "aliases": [],
+      "rfid_codes": [
+        "00004",
+        "100004"
+      ],
+      "system": true
+    },
+    {
+      "id": "00007",
+      "brand": "Generic",
+      "name": "Generic ASA",
+      "material": "ASA",
+      "target_temp": 260,
+      "min_temp": 240,
+      "max_temp": 280,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00007",
+        "100007"
+      ],
+      "system": true
+    },
+    {
+      "id": "00033",
+      "brand": "Generic",
+      "name": "Generic ASA-CF",
+      "material": "ASA-CF",
+      "target_temp": 270,
+      "min_temp": 250,
+      "max_temp": 280,
+      "pressure_advance": 0.036,
+      "aliases": [],
+      "rfid_codes": [
+        "00033",
+        "100033"
+      ],
+      "system": true
+    },
+    {
+      "id": "00010",
+      "brand": "Generic",
+      "name": "Generic BVOH",
+      "material": "BVOH",
+      "target_temp": 220,
+      "min_temp": 200,
+      "max_temp": 220,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00010",
+        "100010"
+      ],
+      "system": true
+    },
+    {
+      "id": "00012",
+      "brand": "Generic",
+      "name": "Generic HIPS",
+      "material": "HIPS",
+      "target_temp": 240,
+      "min_temp": 220,
+      "max_temp": 250,
+      "pressure_advance": 0.05,
+      "aliases": [],
+      "rfid_codes": [
+        "00012",
+        "100012"
+      ],
+      "system": true
+    },
+    {
+      "id": "00008",
+      "brand": "Generic",
+      "name": "Generic PA",
+      "material": "PA",
+      "target_temp": 260,
+      "min_temp": 240,
+      "max_temp": 260,
+      "pressure_advance": 0.06,
+      "aliases": [],
+      "rfid_codes": [
+        "00008",
+        "100008"
+      ],
+      "system": true
+    },
+    {
+      "id": "00023",
+      "brand": "Generic",
+      "name": "Generic Support for PA",
+      "material": "PA",
+      "target_temp": 290,
+      "min_temp": 260,
+      "max_temp": 300,
+      "pressure_advance": 0.034,
+      "aliases": [],
+      "rfid_codes": [
+        "00023",
+        "100023"
+      ],
+      "system": true
+    },
+    {
+      "id": "00009",
+      "brand": "Generic",
+      "name": "Generic PA-CF",
+      "material": "PA-CF",
+      "target_temp": 280,
+      "min_temp": 260,
+      "max_temp": 300,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00009",
+        "100009"
+      ],
+      "system": true
+    },
+    {
+      "id": "00025",
+      "brand": "Generic",
+      "name": "Generic PA12-CF",
+      "material": "PA-CF",
+      "target_temp": 290,
+      "min_temp": 270,
+      "max_temp": 310,
+      "pressure_advance": 0.048,
+      "aliases": [],
+      "rfid_codes": [
+        "00025",
+        "100025"
+      ],
+      "system": true
+    },
+    {
+      "id": "00022",
+      "brand": "Generic",
+      "name": "Generic PA612-CF",
+      "material": "PA-CF",
+      "target_temp": 290,
+      "min_temp": 270,
+      "max_temp": 310,
+      "pressure_advance": 0.048,
+      "aliases": [],
+      "rfid_codes": [
+        "00022",
+        "100022"
+      ],
+      "system": true
+    },
+    {
+      "id": "00034",
+      "brand": "Generic",
+      "name": "Generic PA6-GF",
+      "material": "PA-GF",
+      "target_temp": 270,
+      "min_temp": 250,
+      "max_temp": 290,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00034",
+        "100034"
+      ],
+      "system": true
+    },
+    {
+      "id": "00015",
+      "brand": "Generic",
+      "name": "Generic PA6-CF",
+      "material": "PA6-CF",
+      "target_temp": 300,
+      "min_temp": 280,
+      "max_temp": 300,
+      "pressure_advance": 0.048,
+      "aliases": [],
+      "rfid_codes": [
+        "00015",
+        "100015"
+      ],
+      "system": true
+    },
+    {
+      "id": "00016",
+      "brand": "Generic",
+      "name": "Generic PAHT-CF",
+      "material": "PAHT-CF",
+      "target_temp": 300,
+      "min_temp": 300,
+      "max_temp": 320,
+      "pressure_advance": 0.036,
+      "aliases": [],
+      "rfid_codes": [
+        "00016",
+        "100016"
+      ],
+      "system": true
+    },
+    {
+      "id": "00021",
+      "brand": "Generic",
+      "name": "Generic PC",
+      "material": "PC",
+      "target_temp": 260,
+      "min_temp": 250,
+      "max_temp": 270,
+      "pressure_advance": 0.03,
+      "aliases": [],
+      "rfid_codes": [
+        "00021",
+        "100021"
+      ],
+      "system": true
+    },
+    {
+      "id": "00032",
+      "brand": "Generic",
+      "name": "Generic PCTG",
+      "material": "PCTG",
+      "target_temp": 250,
+      "min_temp": 250,
+      "max_temp": 270,
+      "pressure_advance": 0.13,
+      "aliases": [],
+      "rfid_codes": [
+        "00032",
+        "100032"
+      ],
+      "system": true
+    },
+    {
+      "id": "00020",
+      "brand": "Generic",
+      "name": "Generic PET",
+      "material": "PET",
+      "target_temp": 260,
+      "min_temp": 250,
+      "max_temp": 270,
+      "pressure_advance": 0.1,
+      "aliases": [],
+      "rfid_codes": [
+        "00020",
+        "100020"
+      ],
+      "system": true
+    },
+    {
+      "id": "00013",
+      "brand": "Generic",
+      "name": "Generic PET-CF",
+      "material": "PET-CF",
+      "target_temp": 290,
+      "min_temp": 280,
+      "max_temp": 320,
+      "pressure_advance": 0.034,
+      "aliases": [],
+      "rfid_codes": [
+        "00013",
+        "100013"
+      ],
+      "system": true
+    },
+    {
+      "id": "00003",
+      "brand": "Generic",
+      "name": "Generic PETG",
+      "material": "PETG",
+      "target_temp": 250,
+      "min_temp": 220,
+      "max_temp": 270,
+      "pressure_advance": 0.1,
+      "aliases": [],
+      "rfid_codes": [
+        "00003",
+        "100003"
+      ],
+      "system": true
+    },
+    {
+      "id": "00014",
+      "brand": "Generic",
+      "name": "Generic PETG-CF",
+      "material": "PETG-CF",
+      "target_temp": 250,
+      "min_temp": 240,
+      "max_temp": 260,
+      "pressure_advance": 0.02,
+      "aliases": [],
+      "rfid_codes": [
+        "00014",
+        "100014"
+      ],
+      "system": true
+    },
+    {
+      "id": "00027",
+      "brand": "Generic",
+      "name": "Generic PETG-GF",
+      "material": "PETG-GF",
+      "target_temp": 270,
+      "min_temp": 240,
+      "max_temp": 280,
+      "pressure_advance": 0.08,
+      "aliases": [],
+      "rfid_codes": [
+        "00027",
+        "100027"
+      ],
+      "system": true
+    },
+    {
+      "id": "00001",
+      "brand": "Generic",
+      "name": "Generic PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00001",
+        "100001"
+      ],
+      "system": true
+    },
+    {
+      "id": "00002",
+      "brand": "Generic",
+      "name": "Generic PLA-Silk",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00002",
+        "100002"
+      ],
+      "system": true
+    },
+    {
+      "id": "00024",
+      "brand": "Generic",
+      "name": "Generic Support for PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00024",
+        "100024"
+      ],
+      "system": true
+    },
+    {
+      "id": "00006",
+      "brand": "Generic",
+      "name": "Generic PLA-CF",
+      "material": "PLA-CF",
+      "target_temp": 220,
+      "min_temp": 190,
+      "max_temp": 240,
+      "pressure_advance": 0.05,
+      "aliases": [],
+      "rfid_codes": [
+        "00006",
+        "100006"
+      ],
+      "system": true
+    },
+    {
+      "id": "00019",
+      "brand": "Generic",
+      "name": "Generic PP",
+      "material": "PP",
+      "target_temp": 240,
+      "min_temp": 220,
+      "max_temp": 250,
+      "pressure_advance": 0.08,
+      "aliases": [],
+      "rfid_codes": [
+        "00019",
+        "100019"
+      ],
+      "system": true
+    },
+    {
+      "id": "00031",
+      "brand": "Generic",
+      "name": "Generic PP-CF",
+      "material": "PP-CF",
+      "target_temp": 260,
+      "min_temp": 220,
+      "max_temp": 270,
+      "pressure_advance": 0.02,
+      "aliases": [],
+      "rfid_codes": [
+        "00031",
+        "100031"
+      ],
+      "system": true
+    },
+    {
+      "id": "00017",
+      "brand": "Generic",
+      "name": "Generic PPS",
+      "material": "PPS",
+      "target_temp": 310,
+      "min_temp": 320,
+      "max_temp": 350,
+      "pressure_advance": 0.03,
+      "aliases": [],
+      "rfid_codes": [
+        "00017",
+        "100017"
+      ],
+      "system": true
+    },
+    {
+      "id": "00018",
+      "brand": "Generic",
+      "name": "Generic PPS-CF",
+      "material": "PPS-CF",
+      "target_temp": 310,
+      "min_temp": 300,
+      "max_temp": 350,
+      "pressure_advance": 0.058,
+      "aliases": [],
+      "rfid_codes": [
+        "00018",
+        "100018"
+      ],
+      "system": true
+    },
+    {
+      "id": "00011",
+      "brand": "Generic",
+      "name": "Generic PVA",
+      "material": "PVA",
+      "target_temp": 220,
+      "min_temp": 215,
+      "max_temp": 225,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00011",
+        "100011"
+      ],
+      "system": true
+    },
+    {
+      "id": "00005",
+      "brand": "Generic",
+      "name": "Generic TPU",
+      "material": "TPU",
+      "target_temp": 220,
+      "min_temp": 210,
+      "max_temp": 240,
+      "pressure_advance": 0.3,
+      "aliases": [],
+      "rfid_codes": [
+        "00005",
+        "100005"
+      ],
+      "system": true
+    },
+    {
+      "id": "00026",
+      "brand": "Generic",
+      "name": "Generic TPU 64D",
+      "material": "TPU",
+      "target_temp": 220,
+      "min_temp": 210,
+      "max_temp": 240,
+      "pressure_advance": 0.04,
+      "aliases": [],
+      "rfid_codes": [
+        "00026",
+        "100026"
+      ],
+      "system": true
+    }
+  ]
+}

@@ -64,8 +64,22 @@ def suggest_mapping(tools, slots):
             color = color_cost(tool.get("color"), slot.get("color"))
             name_exact = bool(tool.get("name") and slot.get("name")
                               and _norm(tool.get("name")) == _norm(slot.get("name")))
+            slot_generic = (
+                _norm(slot.get("brand")) == "GENERIC"
+                or _norm(slot.get("name")).startswith("GENERIC"))
             if material is not None and color is not None:
-                score = material + color - (0.02 if name_exact else 0.0)
+                # Exact Orca preset names remain the strongest signal. If the
+                # slicer preset cannot be matched by name, prefer a Generic
+                # material profile over an unrelated vendor profile with the
+                # same material/color. This mirrors Orca's safe generic
+                # fallback without ever ignoring color on multicolor jobs.
+                score = material + color
+                if name_exact:
+                    score -= 0.04
+                elif slot_generic:
+                    score += 0.01
+                else:
+                    score += 0.03
             elif name_exact and material is not None:
                 score = 0.20 + material
             else:

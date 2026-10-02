@@ -24,6 +24,30 @@ def _temperature(item, base):
         return None
 
 
+def _pressure_advance(item):
+    value = (item.get("kvParam") or {}).get("pressure_advance")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if value < 0.0 or value > 2.0:
+        return None
+    return round(value, 6)
+
+
+def _compact_pressure_advance(item):
+    value = item.get("pressure_advance")
+    if value in (None, ""):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if value < 0.0 or value > 2.0:
+        return None
+    return round(value, 6)
+
+
 def _profile_signature(item, base):
     """Return a color-insensitive signature for a full Creality material entry."""
     kv = dict(item.get("kvParam") or {})
@@ -119,8 +143,12 @@ class K2RfidMaterialCatalog:
                     "name": _text(base.get("name")),
                     "material": _text(base.get("meterialType")).upper(),
                     "target_temp": _temperature(item, base),
+                    "min_temp": base.get("minTemp"),
+                    "max_temp": base.get("maxTemp"),
+                    "pressure_advance": _pressure_advance(item),
                     "aliases": [],
                     "rfid_codes": [],
+                    "system": bool(item.get("system", False)),
                     "_profile_signature": _profile_signature(item, base),
                 }
             else:
@@ -130,8 +158,12 @@ class K2RfidMaterialCatalog:
                     "name": _text(item.get("name")),
                     "material": _text(item.get("material")).upper(),
                     "target_temp": item.get("target_temp"),
+                    "min_temp": item.get("min_temp"),
+                    "max_temp": item.get("max_temp"),
+                    "pressure_advance": _compact_pressure_advance(item),
                     "aliases": list(item.get("aliases") or []),
                     "rfid_codes": list(item.get("rfid_codes") or []),
+                    "system": bool(item.get("system", False)),
                 }
             if not entry["id"] or not entry["material"]:
                 continue
