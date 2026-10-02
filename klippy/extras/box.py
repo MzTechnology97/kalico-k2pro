@@ -25,6 +25,10 @@ from extras.motion_limits import restore_motion_limits, save_motion_limits
 
 SLOTS_PER_BOX = 4
 EXTERNAL_PROFILE_KEY = "external"
+# External compatibility contract: Jacob's OrcaSlicer and HelixScreen both
+# identify the community flat CFS command dialect from box.api_version == 1.
+# Additive K2-OpenHost features must use their own version fields instead of
+# incrementing this value.
 API_VERSION = 1
 FILAMENT_INVENTORY_VERSION = 1
 LEGACY_WIDGET_VERSION = 2
@@ -689,6 +693,7 @@ class Box:
         self.rfid_spools = {}
         self.rfid_last_filament_used = None
         self.rfid_last_print_state = None
+        self.rfid_last_usage_slot = None
         self.rfid_estimate_dirty = False
         self.last_rfid_estimate_save = 0.0
         self.unknown_rfid = {}
@@ -2099,10 +2104,24 @@ class Box:
                 self._persist_rfid_estimates(force=True)
             self.rfid_last_filament_used = None
             self.rfid_last_print_state = state
+            self.rfid_last_usage_slot = None
             return
 
+        slot = snap.loaded_slot
         if self.rfid_last_print_state != "printing" or self.rfid_last_filament_used is None:
             self.rfid_last_filament_used = used
+            self.rfid_last_print_state = state
+            self.rfid_last_usage_slot = slot
+            return
+
+        # Tool changes briefly move loaded_slot through -1 and then onto the
+        # destination spool. Do not charge the extrusion accumulated across
+        # that transition to either spool; start a fresh usage baseline once
+        # the active source is stable. This slightly under-counts the handoff
+        # window instead of corrupting one spool's remaining estimate.
+        if slot != self.rfid_last_usage_slot:
+            self.rfid_last_filament_used = used
+            self.rfid_last_usage_slot = slot
             self.rfid_last_print_state = state
             return
 
@@ -2113,7 +2132,6 @@ class Box:
         # Never let a negative delta increase the estimated spool remaining.
         if delta <= 0.0 or delta > 5000.0:
             return
-        slot = snap.loaded_slot
         spool = self.rfid_spools.get(slot)
         if spool is None or not spool.get("total_mm"):
             return
