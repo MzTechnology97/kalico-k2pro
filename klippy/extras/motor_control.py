@@ -2624,7 +2624,6 @@ def _klog(msg, *args, level=logging.info):
 DEFAULT_REGISTRY_PATH = Path(__file__).parent / "motor_map.json"
 DEFAULT_STARTUP_DELAY = 5.0
 DEFAULT_RETRY_DELAY = 3.0
-STARTUP_AUTO_RETRY_LIMIT = 3
 PROTECTION_QUERY_DATA = 11
 STALL_EVENT_MIN_INTERVAL = 0.100
 FAULT_CLEANUP_RETRY_DELAY = 0.100
@@ -2705,6 +2704,13 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             self.config_model.switch,
             self.config_model.overcurrent_switch,
         )
+        if (self.config_model.switch != 1
+                or self.config_model.overcurrent_switch != 0):
+            _klog(
+                "switch/overcurrent_switch are accepted for Creality config "
+                "compatibility but are not applied by K2-OpenHost",
+                level=logging.warning,
+            )
 
         self.is_homing = False
         self.is_ready = False
