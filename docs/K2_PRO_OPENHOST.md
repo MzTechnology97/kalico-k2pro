@@ -48,6 +48,7 @@ The real K2 Pro has now been run from this external Kalico branch with the follo
 - emergency shutdown with active heater loads removed correctly;
 - successful Klippain-ShakeTune resonance test;
 - protected CFS observation stack on the shared RS-485 bus;
+- operational CFS Box mode (`observation_mode: false`) with persistent RFID inventory, `BOX_PRINT_INFO` on real sliced files and backend auto-mapping;
 - Moonraker visibility of normalized Box/CFS slot and filament-path state.
 
 ## CFS observation mode
@@ -102,7 +103,7 @@ When `observation_mode: true`, the mapping/status API remains visible and `BOX_P
 
 The companion `mainsail-k2openhost` fork uses this API in the normal Print dialog to present a Jacob/Fluidd-style filament mapping step. `BOX_PRINT_INFO`, live inventory and backend auto-map decisions have been exercised against the real K2 Pro; controlled `BOX_PRINT_START`, real tool-change/runout behavior and a complete supervised print still require staged hardware validation.
 
-### HelixScreen compatibility
+### HelixScreen command aliases
 
 K2-OpenHost deliberately keeps the public Flat/Fork CFS contract used by upstream HelixScreen so a HelixScreen fork is not required. The base `box.api_version` remains `1`; K2-OpenHost extensions such as the reusable filament inventory are additive and versioned separately.
 
@@ -186,10 +187,14 @@ Direct-USB Cartographer validation on the CM5 is the next probe milestone. Mixed
 
 Moonraker/Mainsail update management expects this repository to remain clean. Files tracked by this fork should not be overwritten by external installers. Locally installed extras such as ShakeTune can remain outside Git tracking so they do not mark the Kalico repository dirty.
 
+Fixes tested directly on the CM5 must be committed to this branch. A modified tracked file blocks Moonraker updates, and a hard recovery from the update manager discards it.
+
+The CFS extras are mirrored to `MzTechnology97/k2-pro-custom-firmware:k2-openhost`. The read-only `K2 OpenHost - check extras drift` workflow fails when the two trees diverge; it never syncs files.
+
 ## Next milestones
 
-1. metadata-only `BOX_PRINT_INFO` validation on real sliced files;
-2. staged CFS operational-mode validation of `BOX_PRINT_START` and logical tool mapping;
+1. controlled single-tool `BOX_PRINT_START`, then a mapped multimaterial tool change with purge matrix and temperatures;
+2. adopt the upstream Box pause/resume flow (`_BOX_PAUSE_CAPTURE` / `_BOX_RESUME_PREPARE` / `_BOX_RESUME_COMMIT`) together with the matching upstream `box.py`, instead of importing the K2 Plus macros alone;
 3. direct-USB Cartographer cold boot, reset/reconnect and persistent by-id path;
 4. controlled Cartographer probe/touch/scan and bed mesh;
 5. first complete supervised print path;
