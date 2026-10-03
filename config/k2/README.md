@@ -36,7 +36,7 @@ Cartographer       -> direct USB on CM5, preferably /dev/serial/by-id/...
 
 Cartographer is **not** planned as `/dev/ttyUSB3` anymore. A fourth gadget/MUX path was prototyped and carried real Cartographer traffic, but direct USB is now preferred because it handles native MCU reset/re-enumeration without adding a PTY/MUX/DEMUX layer.
 
-`printer.cfg` in this folder already uses these `/dev/ttyUSB*` paths and the CM5 `~/printer_data/gcodes` layout. `power_loss_recovery` is disabled because the current upstream implementation requires the K2 Plus-only `[z_align]`.
+`printer.cfg` in this folder already uses these `/dev/ttyUSB*` paths and the CM5 `~/printer_data/gcodes` layout. `[z_align]` drives the K2 Pro bottom photoelectric switch (`PA15`, as in the Creality F012 stock config). Integrated `G28` uses it when Z is unknown, and `power_loss_recovery` (`z_reference: z_align`) uses it to re-reference Z after a power loss (see `docs/K2_PRO_OPENHOST.md`).
 
 The tuned configuration of the reference K2 Pro + CM5 machine is kept in [`reference/k2pro-cm5/`](reference/k2pro-cm5/README.md).
 
