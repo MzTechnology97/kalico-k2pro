@@ -10,7 +10,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "klippy"))
 
 from extras import box as box_module
+from extras import box_print_mapping as mapping_module
 from extras.box import Box, BoxError, BoxSnapshot, BoxStore, TrackingOwner
+from extras.box_addr import AutoAddressManager
+from extras.box_change import BoxChangeEngine
+from extras.box_protocol import AutoAddressReply
 from extras.power_loss_recovery import _TrustedZReference
 
 
@@ -263,3 +267,150 @@ def test_z_align_mcu_units_match_stock_creality(monkeypatch):
     z_align._mcu_step_distance = 8.0 / (200 * 64)
     assert z_align._calc_distance_steps(10.0) == 32000
     assert z_align._calc_distance_steps(40.0) == 0xFFFF
+
+
+# ---------------------------------------------------------------------------
+# Upstream 071c813 integration (native print mapping, loader-mode start)
+# ---------------------------------------------------------------------------
+
+class FakeAddressClient:
+    def __init__(self, uid):
+        self.uid = uid
+        self.mode = 1
+        self.started = 0
+
+    def query(self, address):
+        if address != 1:
+            return None
+        return AutoAddressReply(self.uid, self.mode)
+
+    def start_app(self):
+        self.started += 1
+        self.mode = 0
+
+    def discover(self):
+        return None
+
+
+def test_loader_mode_box_is_started_and_verified():
+    uid = bytes.fromhex("5f983b4d1454b01247343534")
+    client = FakeAddressClient(uid)
+    pauses = []
+    result = AutoAddressManager(1, {1: uid}).enumerate(client, pause=pauses.append)
+    assert client.started == 1 and pauses == [2.0]
+    assert result.online == {1: uid} and result.errors == ()
+
+
+class FakeMappingBox:
+    external_slot = 16
+
+    def __init__(self, helix=None):
+        self.helix = helix or {}
+        self.registered = []
+
+    def _mapped_slot(self, tool):
+        return self.helix.get(tool, tool)
+
+    def is_valid_slot(self, slot):
+        return 0 <= slot < 4 or slot == self.external_slot
+
+    def _register_tools(self, tools):
+        self.registered.extend(tools)
+
+
+def make_engine(box):
+    engine = BoxChangeEngine.__new__(BoxChangeEngine)
+    engine.box = box
+    engine.reset_print_mapping()
+    engine.calls = []
+    engine.change = lambda gcmd, target, flush=True, logical_tool=None: (
+        engine.calls.append((target, flush, logical_tool)) or True)
+    return engine
+
+
+class FlushGcmd:
+    def get_int(self, name, default=None, minval=None, maxval=None):
+        return default
+
+
+def test_tool_without_print_map_keeps_helix_assignment():
+    engine = make_engine(FakeMappingBox(helix={0: 2}))
+    engine.select_tool(FlushGcmd(), 0)
+    engine.select_tool(FlushGcmd(), 1)
+    assert engine.calls == [(2, True, None), (1, True, None)]
+
+
+def test_tool_with_print_map_uses_native_map():
+    engine = make_engine(FakeMappingBox(helix={0: 2}))
+    engine.tool_map, engine.mapping_filename = {0: 3}, "part.gcode"
+    engine.select_tool(FlushGcmd(), 0)
+    assert engine.calls == [(3, True, 0)]
+
+
+def test_runout_swap_moves_every_tool_of_the_empty_slot():
+    engine = make_engine(FakeMappingBox())
+    engine.tool_map, engine.mapping_filename = {0: 0, 1: 1, 2: 0}, "part.gcode"
+    engine._remap_print_slot(0, 3)
+    assert engine.tool_map == {0: 3, 1: 1, 2: 3}
+    unmapped = make_engine(FakeMappingBox())
+    unmapped._remap_print_slot(0, 3)
+    assert unmapped.tool_map == {}
+
+
+def test_print_mapping_survives_power_loss_roundtrip():
+    box = FakeMappingBox()
+    engine = make_engine(box)
+    engine.tool_map, engine.mapping_filename = {0: 2, 1: 16}, "part.gcode"
+    engine.active_tool, engine.active_slot = 1, 16
+    saved = json.loads(json.dumps(engine.mapping_status()))
+    restored = make_engine(box)
+    restored.restore_print_mapping(saved)
+    assert restored.mapping_status() == engine.mapping_status()
+    assert sorted(box.registered) == [0, 1]
+    with pytest.raises(ValueError):
+        restored.restore_print_mapping(dict(saved, map={"0": 9}))
+
+
+class FakePrinterObjects:
+    def __init__(self, objects):
+        self.objects = objects
+
+    def lookup_object(self, name, default=None):
+        return self.objects.get(name, default)
+
+
+def make_mapping(objects):
+    mapping = mapping_module.BoxPrintMapping.__new__(mapping_module.BoxPrintMapping)
+    mapping.printer = FakePrinterObjects(objects)
+    mapping.box = types.SimpleNamespace(observation_mode=False, print_info=None)
+    mapping.change_engine = make_engine(FakeMappingBox())
+    mapping.auto_map_prints = True
+    mapping.auto_map_block_unresolved = True
+    mapping._explicit_start_in_progress = False
+    return mapping
+
+
+def test_auto_mapping_does_not_run_during_power_loss_recovery():
+    plr = types.SimpleNamespace(recovering=True)
+    mapping = make_mapping({"power_loss_recovery": plr})
+    mapping._handle_file_loaded()
+    assert mapping.auto_mapping["state"] == "idle"
+    assert mapping.change_engine.mapping_filename is None
+
+
+def test_auto_mapping_does_not_run_during_explicit_start():
+    mapping = make_mapping({})
+    mapping._explicit_start_in_progress = True
+    mapping._handle_file_loaded()
+    assert mapping.change_engine.mapping_filename is None
+
+
+def test_k2_macros_only_call_registered_box_commands():
+    import re
+    macros = (ROOT / "config" / "k2" / "macros.cfg").read_text()
+    box_source = (ROOT / "klippy" / "extras" / "box.py").read_text()
+    registered = set(re.findall(r'\("(_?[A-Z][A-Z0-9_]+)",', box_source))
+    defined = set(re.findall(r"^\[(?:gcode_macro|delayed_gcode) (\S+)\]", macros, re.M))
+    used = set(re.findall(r"^\s*(_?BOX_[A-Z0-9_]+)", macros, re.M))
+    assert {"_BOX_PAUSE_CAPTURE", "_BOX_RESUME_PREPARE", "_BOX_RESUME_COMMIT"} <= used
+    assert used - defined <= registered, used - defined - registered
