@@ -206,6 +206,9 @@ def suggest_mapping_report(tools, slots, swap=False):
                 # otherwise the lowest remaining is used up first.
                 short,
                 score,
+                # Then the user's runout order among equivalent spools.
+                slot.get("runout_rank") is None,
+                0 if slot.get("runout_rank") is None else int(slot["runout_rank"]),
                 remaining is None,
                 101.0 if remaining is None else max(0.0, min(100.0, remaining)),
                 slot.get("index") != tool_id,
