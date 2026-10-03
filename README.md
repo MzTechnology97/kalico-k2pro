@@ -26,7 +26,7 @@ This is the branch currently used on the external CM5/OpenHost machine.
 - protected CFS `observation_mode` safety layer;
 - K2 Pro closed-loop motor-control topology and tuned configuration;
 - external-host motor-control startup delay/retry handling;
-- tracked `gcode_shell_command.py` and Cartographer loader modules needed by the current host setup;
+- tracked `gcode_shell_command.py` needed by the current host setup;
 - CI/sync checks for K2-specific extras.
 
 ## K2-OpenHost architecture
@@ -98,7 +98,9 @@ Do not treat an experimental Cartographer bridge or unvalidated mixed-probe sett
 
 ## Local plugin hygiene / Moonraker updates
 
-Moonraker expects the Kalico Git working tree to remain clean. Files that belong to this fork, including `klippy/extras/cartographer.py` and `klippy/extras/gcode_shell_command.py`, should stay tracked from Git rather than being overwritten by third-party installers.
+Moonraker expects the Kalico Git working tree to remain clean. Files that belong to this fork, such as `klippy/extras/gcode_shell_command.py`, should stay tracked from Git rather than being overwritten by third-party installers.
+
+Cartographer is not part of this fork. Install the dedicated [cartographer3d-plugin-k2openhost](https://github.com/MzTechnology97/cartographer3d-plugin-k2openhost) (for example through [k2-openhost-helper](https://github.com/MzTechnology97/k2-openhost-helper)); its installer puts the package in `~/klippy-env` and the loader in `klippy/plugins/cartographer.py`, which Git ignores.
 
 Locally installed extras such as ShakeTune can be kept outside Git tracking (for example through `.git/info/exclude`) so the `k2-pro-openhost` branch remains updateable from Mainsail.
 
