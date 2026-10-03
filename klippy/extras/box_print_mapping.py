@@ -11,15 +11,19 @@ what K2-OpenHost needs on top of it:
 * automatic mapping of ordinary Moonraker/Orca starts (``auto_map_prints``),
   installed into the native engine map when the file is loaded;
 * the mapping suggestion shown by the Mainsail dialog after BOX_PRINT_INFO;
-* two extra ``box.get_status()`` fields:
+* warnings for the chosen map: a spool that may run out (RFID estimate below
+  the slicer length) or a base material on a filled variant (PETG on
+  PETG-CF). They are printed in the console and published, never block;
+* three extra ``box.get_status()`` fields:
 
     print_mapping_enabled
     auto_mapping
+    mapping_warnings
 """
 
 import os
 
-from extras.box_auto_mapping import suggest_mapping
+from extras.box_auto_mapping import evaluate_mapping, suggest_mapping_report
 from extras.box_gcode import read_metadata
 
 
@@ -34,7 +38,9 @@ class BoxPrintMapping:
         self.change_engine = self.box.change_engine
         self.auto_map_prints = config.getboolean("auto_map_prints", False)
         self.auto_map_block_unresolved = config.getboolean("auto_map_block_unresolved", True)
-        self.auto_mapping = {"state": "idle", "map": {}, "unresolved": []}
+        self.auto_mapping = {"state": "idle", "map": {}, "unresolved": [], "warnings": []}
+        # Warnings of the map used by the current print (automatic or chosen).
+        self.mapping_warnings = []
         self._explicit_start_in_progress = False
 
         # Extend the canonical box Moonraker object instead of publishing a
@@ -75,6 +81,7 @@ class BoxPrintMapping:
         status["print_mapping_enabled"] = not bool(
             getattr(self.box, "observation_mode", False))
         status["auto_mapping"] = dict(self.auto_mapping)
+        status["mapping_warnings"] = list(self.mapping_warnings)
         return status
 
     # ------------------------------------------------------------------
@@ -82,26 +89,55 @@ class BoxPrintMapping:
     # ------------------------------------------------------------------
 
     def _reset_auto_mapping(self, *args):
-        self.auto_mapping = {"state": "idle", "map": {}, "unresolved": []}
+        self.auto_mapping = {"state": "idle", "map": {}, "unresolved": [], "warnings": []}
+        self.mapping_warnings = []
+
+    def _slots(self):
+        status = self._base_get_status(
+            self.printer.get_reactor().monotonic())
+        return [
+            slot for slot in status.get("slots", [])
+            if slot.get("external") or slot.get("present")
+        ]
+
+    def _swap_enabled(self):
+        return bool(getattr(self.box, "runout_swap_enabled", False))
 
     def _suggest_mapping(self, tools):
         if not tools:
             self.auto_mapping = {
-                "state": "no_tools", "map": {}, "unresolved": []}
+                "state": "no_tools", "map": {}, "unresolved": [], "warnings": []}
             return {}, []
-        status = self._base_get_status(
-            self.printer.get_reactor().monotonic())
-        slots = [
-            slot for slot in status.get("slots", [])
-            if slot.get("external") or slot.get("present")
-        ]
-        mapping, unresolved = suggest_mapping(tools, slots)
+        report = suggest_mapping_report(tools, self._slots(), self._swap_enabled())
+        mapping, unresolved = report["map"], report["unresolved"]
         self.auto_mapping = {
             "state": "unresolved" if unresolved else "ready",
             "map": {str(tool): slot for tool, slot in mapping.items()},
             "unresolved": unresolved,
+            "warnings": report["warnings"],
         }
         return mapping, unresolved
+
+    def _warning_text(self, warning):
+        tool = "T%d" % warning["tool"]
+        where = self.box.slot_label(warning["slot"])
+        if warning["kind"] == "low_filament":
+            return ("%s needs about %.1f m of filament, %s has about %.1f m left%s. "
+                    "The print continues and pauses at runout unless more filament is loaded." % (
+                        tool, warning["needed_m"], where, warning["remaining_m"],
+                        " including identical spools" if warning.get("includes_swap") else ""))
+        if warning["kind"] == "material_variant":
+            return ("%s is %s but %s holds %s (different variant). Check that the "
+                    "nozzle and temperatures suit it." % (
+                        tool, warning["tool_material"] or "?", where,
+                        warning["slot_material"] or "?"))
+        return "%s (%s) uses %s (%s)." % (
+            tool, warning["tool_material"] or "?", where, warning["slot_material"] or "not set")
+
+    def _notify(self, warnings):
+        self.mapping_warnings = list(warnings)
+        for warning in warnings:
+            self.gcode.respond_info("[BOX]: Warning: " + self._warning_text(warning))
 
     def _recovery_in_progress(self):
         # PLR_RECOVER loads the file and then restores the saved map.
@@ -143,6 +179,7 @@ class BoxPrintMapping:
         engine.mapping_filename = filename
         engine.active_tool = engine.active_slot = None
         self.auto_mapping["state"] = "active"
+        self._notify(self.auto_mapping.get("warnings", []))
 
     # ------------------------------------------------------------------
     # Wrapped native commands
@@ -161,6 +198,10 @@ class BoxPrintMapping:
             self._base_print_start(gcmd)
         finally:
             self._explicit_start_in_progress = False
+        # The user chose the map; still report spools that may run out.
+        tools = (self.box.print_info or {}).get("tools", [])
+        mapping = dict(getattr(self.change_engine, "tool_map", {}) or {})
+        self._notify(evaluate_mapping(tools, self._slots(), mapping, self._swap_enabled()))
 
 
 def load_config(config):

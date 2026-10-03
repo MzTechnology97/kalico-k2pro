@@ -45,7 +45,8 @@ def read_metadata(path):
     tools = [{"tool": tool,
               "color": profile("filament_colour", tool),
               "material": profile("filament_type", tool),
-              "name": profile("filament_settings_id", tool)}
+              "name": profile("filament_settings_id", tool),
+              "length_mm": round(length, 2)}
              for tool, length in enumerate(lengths) if length > 0]
     volumes = numbers("flush_volumes_matrix") or []
     size = math.isqrt(len(volumes))
