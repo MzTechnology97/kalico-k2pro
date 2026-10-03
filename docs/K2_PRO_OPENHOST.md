@@ -100,7 +100,7 @@ The compatibility layer also translates Orca purge-matrix and nozzle-temperature
 
 When `observation_mode: true`, the mapping/status API remains visible and `BOX_PRINT_INFO` can be tested, but `BOX_PRINT_START` deliberately refuses to execute CFS mutations.
 
-The companion `mainsail-k2openhost` fork uses this API in the normal Print dialog to present a Jacob/Fluidd-style filament mapping step. This mapped-print path is implemented but still requires staged hardware validation.
+The companion `mainsail-k2openhost` fork uses this API in the normal Print dialog to present a Jacob/Fluidd-style filament mapping step. `BOX_PRINT_INFO`, live inventory and backend auto-map decisions have been exercised against the real K2 Pro; controlled `BOX_PRINT_START`, real tool-change/runout behavior and a complete supervised print still require staged hardware validation.
 
 ### HelixScreen compatibility
 

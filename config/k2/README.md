@@ -70,6 +70,12 @@ The `box` Moonraker object gains `print_mapping_version`, `print_mapping_enabled
 
 The helper translates Orca purge volumes and nozzle temperatures to physical slots and preserves that translation when the normal `START_PRINT` macro calls `PARSE_FLUSH_VOLUMES`.
 
+### CFS inventory and startup policy
+
+The current K2-OpenHost Box contract deliberately keeps `api_version: 1` and adds `filament_inventory_version: 2` plus `print_mapping_version: 1`. The operational state file is `~/printer_data/filament_box.json`; it persists custom/manual/RFID slot metadata and remaining estimates.
+
+`config/k2/cfs_system_filaments.json` is generated from the public DnG-Crafts/K2-RFID K2 catalog and currently contains 61 read-only Creality + Generic profiles. The backend restores cached metadata only for physically occupied slots after the CFS presence query and leaves a full RFID startup sweep disabled by default. Use `BOX_RFID_SCAN` or the per-slot reread path when an explicit refresh is required.
+
 ## Probe configuration
 
 The current known-good homing baseline uses **PRTouch** with Cartographer disabled. Full homing has been verified in that state.

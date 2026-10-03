@@ -52,7 +52,7 @@ Raspberry Pi CM5 / external Linux host
 
 The three K2 gadget channels map to `/dev/ttyUSB0`, `/dev/ttyUSB1` and `/dev/ttyUSB2`. Cartographer is now intended to connect directly to the CM5 USB host through a persistent `/dev/serial/by-id/...` path rather than sharing the K2 gadget serial transport.
 
-## Hardware-validated milestone — 2026-10-01
+## Hardware-validated milestone — 2026-10-02
 
 This branch has now been exercised as a real Klippy/Kalico service on the K2 Pro hardware.
 
@@ -71,7 +71,13 @@ Validated from the external host:
 - PID tuning from the external host;
 - emergency shutdown while heater loads were active, with the measured load removed correctly;
 - successful **Klippain-ShakeTune** resonance test;
-- CFS/Box protected observation mode and K2 Pro 4-byte steady-state support.
+- protected CFS/Box observation baseline plus operational Box mode on the real K2 Pro;
+- K2 Pro 4-byte `BOX_STATE` decoding with temperature/humidity adaptation;
+- persistent CFS filament inventory v2 in `~/printer_data/filament_box.json`;
+- generated 61-profile Creality + Generic K2-RFID system catalog;
+- persistent manual/RFID slot lifecycle with startup restore that does not require a full RFID sweep;
+- RFID reported/estimated remaining-filament state and explicit full-box/per-slot reread paths;
+- Jacob-compatible `BOX_PRINT_INFO` / `BOX_PRINT_START` mapping API with backend auto-map and safe Generic fallback.
 
 The earlier experimental Cartographer MUX/DEMUX path reached live Cartographer MCU streaming, but it is no longer the target architecture. Cartographer will be finalized using direct USB on the CM5.
 
@@ -112,4 +118,4 @@ For generic Kalico documentation and original project information, use:
 
 ## Status
 
-Experimental / pre-production. Core machine control now reaches full PRTouch homing, thermal tests and resonance measurement from the external host. Remaining major milestones are direct-USB Cartographer validation, a complete supervised print path and later controlled CFS mutation/load-unload tests.
+Experimental / pre-production. Core machine control now reaches full PRTouch homing, thermal tests, resonance measurement and an operational persistent CFS inventory from the external host. Remaining major milestones are direct-USB Cartographer validation, controlled mapped CFS printing/tool-change/runout validation, remaining-filament tracking over a complete print and a complete supervised OpenHost print path.
