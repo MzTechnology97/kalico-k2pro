@@ -86,7 +86,7 @@ def test_idle_removal_still_clears_slot(tmp_path):
     assert box.profile(2)["material"] == ""
 
 
-def test_seeding_writes_state_once_and_not_when_unchanged(tmp_path, monkeypatch):
+def test_system_catalog_is_kept_in_memory_and_never_written(tmp_path, monkeypatch):
     box = make_box(tmp_path)
     box.system_material_catalog = FakeCatalog([
         {"id": "10001", "material": "PLA", "brand": "Generic", "name": "Generic PLA",
@@ -99,10 +99,10 @@ def test_seeding_writes_state_once_and_not_when_unchanged(tmp_path, monkeypatch)
     original = BoxStore.save
     monkeypatch.setattr(BoxStore, "save", lambda self: (saves.append(1), original(self)))
     box._seed_material_catalog()
-    assert len(saves) == 1
-    saves.clear()
-    box._seed_material_catalog()
     assert saves == []
+    assert box.store.filament("10001")["system"] is True
+    assert "10001" not in json.loads(
+        (tmp_path / "filament_box.json").read_text()).get("filaments", {})
 
 
 def test_seeding_skips_invalid_catalog_entries(tmp_path):
