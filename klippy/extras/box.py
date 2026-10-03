@@ -33,6 +33,9 @@ EXTERNAL_PROFILE_KEY = "external"
 # incrementing this value.
 API_VERSION = 1
 FILAMENT_INVENTORY_VERSION = 2
+FILAMENT_LIBRARY_VERSION = 1
+LIBRARY_REFRESH = 2.0
+FILAMENT_SOURCES = ("user", "import", "rfid")
 LEGACY_WIDGET_VERSION = 2
 SAFE_WIDGET_COMMANDS = frozenset((
     "_BOX_SLOT_SET",
@@ -266,11 +269,34 @@ class TrackingOwner:
 
 
 class BoxStore:
-    """Small atomic JSON store for profiles, settings, and runtime identity."""
+    """Small atomic JSON store for profiles, settings, and runtime identity.
 
-    def __init__(self, path):
+    Filament profiles live in three layers merged into one view:
+
+    * system: the shipped read-only catalog, kept in memory only so catalog
+      updates apply on the next start;
+    * library: the user's custom profiles. With ``library_path`` they are kept
+      in their own JSON file (the same compact format as the system catalog),
+      which Mainsail, the Moonraker file API or a companion app can read and
+      replace; it is reloaded when it changes on disk;
+    * runtime state (``path``): slot assignments, RFID estimates, settings and
+      box identities, written often and never mixed with the library.
+
+    Without ``library_path`` the custom profiles stay in the state file, as in
+    earlier releases.
+    """
+
+    def __init__(self, path, library_path=None):
         self.path = path
+        self.library_path = library_path or None
+        self.system = {}
+        self.library_meta = {"imports": {}}
+        self.library_error = ""
+        self._library_mtime = None
+        self._merged = None
         self.data = self._load()
+        if self.library_path:
+            self._open_library()
 
     def _load(self):
         if not os.path.exists(self.path):
@@ -430,6 +456,10 @@ class BoxStore:
             "aliases": aliases,
             "spoolman_id": spoolman_id,
             "system": bool(value.get("system", False)),
+            "source": (
+                str(value.get("source", "")).strip().lower()
+                if str(value.get("source", "")).strip().lower()
+                in FILAMENT_SOURCES else "user"),
         }
 
     @staticmethod
@@ -468,15 +498,210 @@ class BoxStore:
             result[str(address)] = uid.hex()
         return result
 
-    def save(self):
-        directory = os.path.dirname(self.path)
+    @staticmethod
+    def _write_json(path, payload):
+        directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        temporary = self.path + ".tmp"
+        temporary = path + ".tmp"
         with open(temporary, "w") as stream:
-            json.dump(self.data, stream, indent=2, sort_keys=True)
+            json.dump(payload, stream, indent=2, sort_keys=True)
             stream.write("\n")
-        os.replace(temporary, self.path)
+        os.replace(temporary, path)
+
+    def save(self):
+        payload = self.data
+        if self.library_path:
+            payload = {
+                key: value for key, value in self.data.items()
+                if key != "filaments"}
+        self._write_json(self.path, payload)
+
+    # --- filament library file ---------------------------------------------
+    def _library_stat(self):
+        try:
+            return os.path.getmtime(self.library_path)
+        except OSError:
+            return None
+
+    def _read_library(self):
+        """Return (filaments, meta) from the library file; raise BoxError."""
+        try:
+            with open(self.library_path, "r", encoding="utf-8-sig") as stream:
+                text = stream.read()
+        except OSError as exc:
+            raise BoxError("Unable to read %s: %s" % (self.library_path, exc))
+        if not text.strip():
+            return {}, {"imports": {}}
+        try:
+            payload = json.loads(text)
+        except ValueError as exc:
+            raise BoxError("%s is not valid JSON: %s" % (self.library_path, exc))
+        if isinstance(payload, list):
+            payload = {"materials": payload}
+        if not isinstance(payload, dict):
+            raise BoxError("%s must contain a JSON object" % self.library_path)
+        items = payload.get("materials", [])
+        if isinstance(items, dict):
+            items = [dict(value, id=value.get("id", key))
+                     for key, value in items.items() if isinstance(value, dict)]
+        if not isinstance(items, list):
+            raise BoxError("%s.materials must be a list" % self.library_path)
+        values = {}
+        for item in items:
+            if isinstance(item, dict) and str(item.get("id", "")).strip():
+                values[str(item["id"]).strip().upper()] = dict(
+                    item, system=False)
+        imports = payload.get("imports")
+        meta = {"imports": dict(imports) if isinstance(imports, dict) else {}}
+        return self._filaments(values, strict=False), meta
+
+    def _open_library(self):
+        """Load the library file, moving custom profiles out of the state file."""
+        legacy = {
+            key: value for key, value in self.data["filaments"].items()
+            if not value.get("system")}
+        exists = os.path.exists(self.library_path)
+        entries, meta = {}, {"imports": {}}
+        if exists:
+            try:
+                entries, meta = self._read_library()
+            except BoxError as exc:
+                # Keep Klipper running on a damaged upload; the file is left
+                # untouched and every library write is refused until fixed.
+                self.library_error = str(exc)
+                logging.warning("box: %s", exc)
+        migrated = [key for key in legacy if key not in entries]
+        for key in migrated:
+            entries[key] = legacy[key]
+        self.data["filaments"] = entries
+        self.library_meta = meta
+        self._library_mtime = self._library_stat()
+        state_has_profiles = bool(self._state_file_filaments())
+        if not self.library_error and (migrated or not exists):
+            self.save_library()
+        if state_has_profiles and not self.library_error:
+            backup = self.path + ".pre-library"
+            if not os.path.exists(backup):
+                try:
+                    with open(self.path, "rb") as source:
+                        content = source.read()
+                    with open(backup, "wb") as target:
+                        target.write(content)
+                except OSError:
+                    logging.warning("box: unable to back up %s", self.path)
+            self.save()
+
+    def _state_file_filaments(self):
+        try:
+            with open(self.path, "r") as stream:
+                return (json.load(stream) or {}).get("filaments") or {}
+        except (OSError, ValueError, AttributeError):
+            return {}
+
+    def save_library(self):
+        if not self.library_path:
+            self.save()
+            return
+        if self.library_error:
+            raise BoxError(
+                "Filament library %s is damaged (%s); fix or remove it first"
+                % (self.library_path, self.library_error))
+        materials = []
+        for key in sorted(self.data["filaments"]):
+            entry = dict(self.data["filaments"][key])
+            entry.pop("system", None)
+            materials.append(entry)
+        self._write_json(self.library_path, {
+            "schema_version": FILAMENT_LIBRARY_VERSION,
+            "description": (
+                "K2-OpenHost CFS filament library: custom profiles only. "
+                "IDs are K2-RFID material IDs (tags carry 1 + ID); name matches "
+                "the OrcaSlicer preset; spoolman_id links a Spoolman filament. "
+                "Edit from Mainsail or replace this file, then run "
+                "_BOX_FILAMENT_RELOAD."),
+            "imports": dict(self.library_meta.get("imports") or {}),
+            "materials": materials,
+        })
+        self._library_mtime = self._library_stat()
+        self._merged = None
+
+    def refresh_library(self, force=False):
+        """Reload the library file when it changed on disk. Returns True on reload."""
+        if not self.library_path:
+            return False
+        mtime = self._library_stat()
+        if not force and mtime == self._library_mtime:
+            return False
+        self._library_mtime = mtime
+        if mtime is None:
+            # Removed on disk: keep the profiles in memory and rewrite it.
+            self.library_error = ""
+            self.save_library()
+            return False
+        try:
+            entries, meta = self._read_library()
+        except BoxError as exc:
+            self.library_error = str(exc)
+            logging.warning("box: %s", exc)
+            return False
+        self.library_error = ""
+        previous = self.data["filaments"]
+        self.data["filaments"] = entries
+        self.library_meta = meta
+        self._merged = None
+        slots_changed = False
+        for key, clean in entries.items():
+            if previous.get(key) != clean:
+                slots_changed |= self._sync_slots(
+                    key, clean, (previous.get(key) or {}).get("color", ""))
+        for key in previous:
+            if key not in entries and key not in self.system:
+                slots_changed |= self._detach_slots(key)
+        if slots_changed:
+            self.save()
+        return True
+
+    @property
+    def library_status(self):
+        return {
+            "path": self.library_path or self.path,
+            "separate_file": bool(self.library_path),
+            "custom_count": len(self.data["filaments"]),
+            "system_count": len(self.system),
+            "error": self.library_error,
+        }
+
+    # --- merged filament view ----------------------------------------------
+    def set_system(self, entries):
+        """Replace the in-memory system catalog (never persisted)."""
+        values = {}
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("id"):
+                continue
+            key = str(entry["id"]).strip().upper()
+            values[key] = dict(entry, system=True)
+        self.system = self._filaments(values, strict=False)
+        for clean in self.system.values():
+            clean["source"] = "system"
+        self._merged = None
+
+    def _merged_view(self):
+        if self._merged is None:
+            merged = dict(self.system)
+            for key, value in self.data["filaments"].items():
+                if key in self.system and not value.get("system"):
+                    # The editor refuses system IDs; keep the catalog entry.
+                    continue
+                merged[key] = value
+            self._merged = merged
+        return self._merged
+
+    def _ordered_filaments(self):
+        """Custom profiles first, so a user profile wins an RFID/identity match."""
+        return [
+            value for key, value in self.data["filaments"].items()
+            if key not in self.system] + list(self.system.values())
 
     @property
     def materials(self):
@@ -484,26 +709,28 @@ class BoxStore:
 
     @property
     def filaments(self):
-        return {key: dict(value) for key, value in self.data["filaments"].items()}
+        return {key: dict(value) for key, value in self._merged_view().items()}
+
+    @property
+    def filaments_status(self):
+        """Merged view for get_status; rebuilt only when a layer changes."""
+        return self._merged_view()
 
     def filament(self, filament_id):
         key = str(filament_id or "").strip().upper()
-        value = self.data["filaments"].get(key)
+        value = self.system.get(key) or self.data["filaments"].get(key)
         return None if value is None else dict(value)
 
-    def set_filament(self, filament_id, value, save=True):
-        key = str(filament_id or "").strip().upper()
-        clean = self._filaments({key: dict(value, id=key)})[key]
-        previous = self.data["filaments"].get(key)
-        previous_color = str(
-            (previous or {}).get("color", "")).strip().upper()
-        self.data["filaments"][key] = clean
+    def _sync_slots(self, key, clean, previous_color=""):
+        previous_color = str(previous_color or "").strip().upper()
+        changed = False
         for profile in self.data["slots"].values():
             if str(profile.get("filament_id", "")).strip().upper() != key:
                 continue
             source = str(profile.get("source", "manual")).strip().lower()
             if source not in ("library", "rfid"):
                 continue
+            before = dict(profile)
             profile["material"] = clean["material"]
             profile["brand"] = clean["brand"]
             profile["name"] = clean["name"]
@@ -515,23 +742,58 @@ class BoxStore:
                 current_color = str(profile.get("color", "")).strip().upper()
                 if not current_color or current_color == previous_color:
                     profile["color"] = clean["color"]
-        if save:
-            self.save()
-        return dict(clean)
+            changed |= profile != before
+        return changed
 
-    def delete_filament(self, filament_id):
-        key = str(filament_id or "").strip().upper()
-        current = self.data["filaments"].get(key)
-        if current is None or current.get("system"):
-            return False
-        if self.data["filaments"].pop(key, None) is None:
-            return False
-        for slot, profile in self.data["slots"].items():
+    def _detach_slots(self, key):
+        changed = False
+        for profile in self.data["slots"].values():
             if str(profile.get("filament_id", "")).strip().upper() == key:
                 profile.pop("filament_id", None)
                 if profile.get("source") == "library":
                     profile["source"] = "manual"
-        self.save()
+                changed = True
+        return changed
+
+    def set_filament(self, filament_id, value, save=True):
+        key = str(filament_id or "").strip().upper()
+        clean = self._filaments({key: dict(value, id=key)})[key]
+        if clean["system"]:
+            clean["source"] = "system"
+            previous = self.system.get(key)
+            self.system[key] = clean
+        else:
+            if save:
+                self.refresh_library()
+            previous = self.data["filaments"].get(key)
+            self.data["filaments"][key] = clean
+        self._merged = None
+        slots_changed = self._sync_slots(
+            key, clean, (previous or {}).get("color", ""))
+        if save:
+            if not clean["system"]:
+                # Without a library file this writes the state file itself.
+                self.save_library()
+                if self.library_path and slots_changed:
+                    self.save()
+            elif slots_changed:
+                self.save()
+        return dict(clean)
+
+    def delete_filament(self, filament_id):
+        key = str(filament_id or "").strip().upper()
+        if key in self.system:
+            return False
+        self.refresh_library()
+        current = self.data["filaments"].get(key)
+        if current is None or current.get("system"):
+            return False
+        self.data["filaments"].pop(key, None)
+        self._merged = None
+        slots_changed = self._detach_slots(key)
+        self.save_library()
+        if self.library_path and slots_changed:
+            self.save()
         return True
 
     def filament_for_rfid(self, raw_code):
@@ -540,7 +802,7 @@ class BoxStore:
         candidates = {value for value in (raw, normalized) if value}
         if len(raw) == 6 and raw.startswith("1"):
             candidates.add(raw[1:])
-        for filament in self.data["filaments"].values():
+        for filament in self._ordered_filaments():
             codes = set(str(value or "").strip().upper() for value in (
                 list(filament.get("rfid_codes") or [])
                 + [filament.get("rfid_code", ""), filament.get("id", "")]
@@ -555,7 +817,7 @@ class BoxStore:
             str(name or "").strip().casefold(),
             str(material or "").strip().upper(),
         )
-        for filament in self.data["filaments"].values():
+        for filament in self._ordered_filaments():
             candidate = (
                 str(filament.get("brand", "")).strip().casefold(),
                 str(filament.get("name", "")).strip().casefold(),
@@ -703,9 +965,15 @@ class Box:
             else os.path.join(persistent_root, "filament_box.json")
         )
 
+        default_library_path = (
+            "" if self.observation_mode
+            else os.path.join(persistent_root, "config", "cfs_filaments.json"))
         self.store = BoxStore(
-            os.path.expanduser(config.get("state_path", default_state_path))
+            os.path.expanduser(config.get("state_path", default_state_path)),
+            os.path.expanduser(
+                config.get("library_path", default_library_path) or ""),
         )
+        self.last_library_refresh = 0.0
         repo_root = os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.realpath(__file__))))
         default_system_catalog = os.path.join(
@@ -822,8 +1090,8 @@ class Box:
         )
 
         self.change_engine = BoxChangeEngine(self, config)
-        if self.auto_seed_material_database:
-            self._seed_material_catalog()
+        self._seed_material_catalog(
+            import_database=self.auto_seed_material_database)
 
         self.poll_timer = self.reactor.register_timer(self._poll)
         self.enumeration_started = False
@@ -915,6 +1183,8 @@ class Box:
             ("_BOX_MATERIAL_SET", self.cmd_material_set, "Save material metadata"),
             ("_BOX_FILAMENT_SET", self.cmd_filament_set, "Save a reusable filament profile"),
             ("_BOX_FILAMENT_DELETE", self.cmd_filament_delete, "Delete a reusable filament profile"),
+            ("_BOX_FILAMENT_RELOAD", self.cmd_filament_reload,
+             "Reload the filament library file and the K2-RFID import"),
             ("_BOX_SLOT_ASSIGN", self.cmd_slot_assign, "Assign a saved filament profile to a slot"),
             ("_BOX_RFID_READ_SLOT", self.cmd_rfid_read_slot, "Force an RFID reread for one CFS slot"),
             ("BOX_RFID_SCAN", self.cmd_info_refresh,
@@ -1120,7 +1390,8 @@ class Box:
             "boxes": self._box_unit_statuses(),
             "operation": self._operation_status(),
             "materials": self.store.materials,
-            "filaments": self.store.filaments,
+            "filaments": self.store.filaments_status,
+            "filament_library": self.store.library_status,
             "runout": self._runout_status(physical, snap),
             "runout_groups": self._runout_groups(physical),
             "runout_swap_enabled": self.runout_swap_enabled,
@@ -1960,6 +2231,8 @@ class Box:
             return None
 
         system_entry = bool(entry.get("system", False))
+        if system_entry:
+            return self.store.filament(filament_id)
         existing = self.store.filament_by_identity(brand, name, material)
         if existing is not None and system_entry and not existing.get("system"):
             # Never turn a user's custom profile into a read-only system one
@@ -2012,38 +2285,74 @@ class Box:
             "rfid_codes": codes,
             "aliases": aliases,
             "spoolman_id": (existing or {}).get("spoolman_id"),
-            "system": bool(
-                entry.get("system", False)
-                or (existing or {}).get("system", False)),
+            "system": bool((existing or {}).get("system", False)),
+            "source": entry.get("source") or (existing or {}).get("source") or "user",
         }
+        if value["system"]:
+            return existing
         saved = self.store.set_filament(key, value, save=save)
         if material not in self.store.materials:
             self.store.set_material(material, saved["target_temp"])
         return saved
 
-    def _seed_material_catalog(self):
-        # System profiles are shipped with K2-OpenHost and intentionally include
-        # Creality/Generic IDs that also exist in the small built-in fallback
-        # table. Seed them first so the UI gets the full DnG-Crafts catalog.
-        # The user-imported K2-RFID database extends the system catalog. It is
-        # deduplicated by brand/name/material so color variants remain one
-        # reusable filament identity while slot color stays spool-specific.
-        # Entries are applied in memory and the state file is written once,
-        # only when seeding actually changed it. Invalid entries are skipped so
-        # a bad imported database cannot stop Klipper from starting.
-        before = json.dumps(self.store.data, sort_keys=True)
-        for catalog, system in ((self.system_material_catalog, True),
-                                (self.material_catalog, False)):
-            for entry in catalog.entries:
-                if system:
-                    entry["system"] = True
-                try:
-                    self._ensure_catalog_filament(entry, save=False)
-                except (BoxError, TypeError, ValueError) as exc:
-                    _klog("skipping invalid catalog filament %r: %s",
-                          entry.get("id"), exc, level=logging.warning)
-        if json.dumps(self.store.data, sort_keys=True) != before:
+    def _seed_material_catalog(self, import_database=True):
+        """Load the shipped catalog in memory and merge the K2-RFID import."""
+        entries = []
+        for entry in self.system_material_catalog.entries:
+            entry["system"] = True
+            entries.append(entry)
+        self.store.set_system(entries)
+        return self._import_material_database() if import_database else 0
+
+    def _import_material_database(self, force=False):
+        """Merge the K2-RFID database at material_database_path into the library.
+
+        The import runs again only when that file's content changes, so a
+        profile deleted from the library stays deleted. Profiles already in
+        the library keep their temperatures, pressure advance and Spoolman link.
+        """
+        entries = self.material_catalog.entries
+        if not entries:
+            return 0
+        # Hash the parsed profiles, not the file bytes: reformatting the file
+        # or re-exporting the same database does not re-import it.
+        digest = hashlib.sha1(json.dumps(
+            entries, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        path = getattr(self, "material_database_path", "") or "material_database"
+        imports = self.store.library_meta.setdefault("imports", {})
+        if not force and imports.get(path) == digest:
+            return 0
+        self.store.refresh_library()
+        count = 0
+        for entry in entries:
+            entry["system"] = False
+            entry["source"] = "import"
+            try:
+                if self._ensure_catalog_filament(entry, save=False):
+                    count += 1
+            except (BoxError, TypeError, ValueError) as exc:
+                _klog("skipping invalid catalog filament %r: %s",
+                      entry.get("id"), exc, level=logging.warning)
+        imports[path] = digest
+        try:
+            self.store.save_library()
             self.store.save()
+        except BoxError as exc:
+            _klog("filament import not saved: %s", exc, level=logging.warning)
+            return 0
+        _klog("imported %d filament profiles from %s", count, path)
+        return count
+
+    def cmd_filament_reload(self, gcmd):
+        reloaded = self.store.refresh_library(force=True)
+        if self.store.library_error:
+            raise gcmd.error("[BOX]: %s" % self.store.library_error)
+        imported = self._import_material_database()
+        status = self.store.library_status
+        self._info(gcmd, "Filament library %s: %d custom profiles%s%s" % (
+            status["path"], status["custom_count"],
+            " (reloaded)" if reloaded else "",
+            ", %d imported" % imported if imported else ""))
 
     def cmd_filament_set(self, gcmd):
         filament_id = self._param(gcmd, "ID")
@@ -2060,6 +2369,8 @@ class Box:
             raise gcmd.error(
                 "[BOX]: System filament %s is read only; create a custom profile instead"
                 % str(filament_id).strip().upper())
+        if target is None:
+            target = existing.get("target_temp")
         if target is None:
             material_info = self.store.materials.get(str(material).strip().upper(), {})
             target = material_info.get("target_temp")
@@ -2109,8 +2420,12 @@ class Box:
             "aliases": list(existing.get("aliases") or []),
             "spoolman_id": spoolman,
             "system": False,
+            "source": existing.get("source") or "user",
         }
-        saved = self.store.set_filament(filament_id, value)
+        try:
+            saved = self.store.set_filament(filament_id, value)
+        except BoxError as exc:
+            raise gcmd.error("[BOX]: %s" % exc)
         if saved["material"] not in self.store.materials:
             self.store.set_material(saved["material"], saved["target_temp"])
         self._apply_new_filament(saved)
@@ -2124,7 +2439,11 @@ class Box:
         if existing and existing.get("system"):
             raise gcmd.error(
                 "[BOX]: System filament %s cannot be deleted" % filament_id)
-        if not self.store.delete_filament(filament_id):
+        try:
+            deleted = self.store.delete_filament(filament_id)
+        except BoxError as exc:
+            raise gcmd.error("[BOX]: %s" % exc)
+        if not deleted:
             raise gcmd.error("[BOX]: Filament %s does not exist" % filament_id)
         self._info(gcmd, "Deleted filament %s" % str(filament_id).strip().upper())
 
@@ -2914,6 +3233,7 @@ class Box:
             if self.auto_register_rfid_filaments:
                 saved = self._ensure_catalog_filament({
                     "id": code,
+                    "source": "rfid",
                     "material": mapping["material"],
                     "brand": mapping.get("brand", ""),
                     "name": mapping.get("name", ""),
@@ -2926,6 +3246,7 @@ class Box:
 
         catalog = self.material_catalog.lookup(raw_code)
         if catalog:
+            catalog["source"] = "import"
             saved = (
                 self._ensure_catalog_filament(catalog, raw_code)
                 if self.auto_register_rfid_filaments else None)
@@ -2950,6 +3271,7 @@ class Box:
             if self.auto_register_rfid_filaments:
                 saved = self._ensure_catalog_filament({
                     "id": code,
+                    "source": "rfid",
                     "material": product["material"],
                     "brand": product["brand"],
                     "name": product["name"],
@@ -3994,6 +4316,14 @@ class Box:
             # local printhead sensor so the UI follows the filament live.
             self._refresh_sensor_snapshot()
             return eventtime + 0.25
+        if eventtime - self.last_library_refresh >= LIBRARY_REFRESH:
+            self.last_library_refresh = eventtime
+            try:
+                if self.store.refresh_library():
+                    _klog("filament library reloaded from %s",
+                          self.store.library_path)
+            except Exception:
+                _klog("filament library refresh failed", level=logging.exception)
         if not self.drivers_ready:
             return eventtime + IDLE_POLL
         include_topology = eventtime - self.last_topology_refresh >= TOPOLOGY_POLL
