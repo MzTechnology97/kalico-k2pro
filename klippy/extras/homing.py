@@ -575,7 +575,9 @@ class PrinterHoming:
         return True
 
     def _lookup_motor_control(self):
-        return self.printer.lookup_object("motor_control")
+        # Closed-loop motor control only exists on K2 hardware; printers
+        # without [motor_control] home without the motor protection steps.
+        return self.printer.lookup_object("motor_control", None)
 
     @staticmethod
     def _collect_active_faults(result):
@@ -604,7 +606,10 @@ class PrinterHoming:
             empty_text="none")
 
     def _set_homing_stall_mode(self, mode):
-        return self._lookup_motor_control().set_homing_stall_mode(mode)
+        motor_control = self._lookup_motor_control()
+        if motor_control is None:
+            return None
+        return motor_control.set_homing_stall_mode(mode)
 
     def _enter_homing_stall_mode(self):
         if self._session_stall_mode_active:
@@ -620,18 +625,27 @@ class PrinterHoming:
 
     def _query_kinematic_protection(
             self, data=11, timeout=MOTOR_COMMAND_TIMEOUT):
-        return self._lookup_motor_control().query_kinematic_protection_status(
+        motor_control = self._lookup_motor_control()
+        if motor_control is None:
+            return {}
+        return motor_control.query_kinematic_protection_status(
             data=data, timeout=timeout)
 
     def _clear_kinematic_fault_latches(
             self, data=5, timeout=MOTOR_NO_ACK_TIMEOUT):
-        return self._lookup_motor_control().clear_kinematic_fault_latches(
+        motor_control = self._lookup_motor_control()
+        if motor_control is None:
+            return {}
+        return motor_control.clear_kinematic_fault_latches(
             data=data, timeout=timeout)
 
     def _recover_kinematic_faults_for_homing_start(
             self, query_data=11, clear_data=5,
             timeout=MOTOR_COMMAND_TIMEOUT):
-        return self._lookup_motor_control().recover_kinematic_faults_for_homing_start(
+        motor_control = self._lookup_motor_control()
+        if motor_control is None:
+            return {"persistent_errors": {}}
+        return motor_control.recover_kinematic_faults_for_homing_start(
             query_data=query_data, clear_data=clear_data, timeout=timeout)
 
     def _set_active_hmove(self, hmove):
@@ -740,7 +754,9 @@ class PrinterHoming:
         kin.clear_homing_state("xyz")
 
     def _mark_motor_control_not_homing(self):
-        self.printer.lookup_object("motor_control").is_homing = False
+        motor_control = self._lookup_motor_control()
+        if motor_control is not None:
+            motor_control.is_homing = False
 
     def _should_abort_z_align(self):
         z_align = self.printer.lookup_object("z_align", None)
@@ -886,7 +902,10 @@ class PrinterHoming:
         return epos
 
     def _start_managed_homing_session(self, requested_axes, z_align=False):
-        blocker = self._lookup_motor_control().get_homing_fault_blocker()
+        motor_control = self._lookup_motor_control()
+        blocker = (
+            motor_control.get_homing_fault_blocker()
+            if motor_control is not None else None)
         if blocker:
             raise self.printer.command_error(blocker)
         session_created = self.begin_homing_session(

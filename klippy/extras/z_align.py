@@ -31,8 +31,7 @@ import logging
 import math
 import os
 
-import mcu
-
+from .. import mcu
 from .motor_control import MOTOR_COMMAND_TIMEOUT
 
 
