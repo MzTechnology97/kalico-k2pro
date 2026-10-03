@@ -427,3 +427,27 @@ def test_box_unit_statuses_report_each_cfs():
     assert units[0]["slots"] == [0, 1, 2, 3]
     assert not units[1]["online"] and units[1]["temp_c"] is None
     assert units[1]["slots"] == [8, 9, 10, 11]
+
+
+def test_operation_status_reports_live_stage_and_sensor():
+    box = Box.__new__(Box)
+    box.operation_depth = 0
+    box.operation_progress = None
+    box.snapshot = BoxSnapshot(loaded_slot=-1)
+    box.change_engine = types.SimpleNamespace(
+        pending=types.SimpleNamespace(last_step="load", target=2))
+    sensor = {"filament_detected": False}
+    box.reactor = types.SimpleNamespace(monotonic=lambda: 0.0)
+    box._filament_sensor = lambda: types.SimpleNamespace(
+        get_status=lambda eventtime: dict(sensor))
+    with box._operation():
+        box._set_operation_progress("load", 2, "feeding_to_printhead")
+        status = box._operation_status()
+        assert status == {"active": True, "kind": "load", "slot": 2,
+                          "stage": "feeding_to_printhead",
+                          "change_step": "load", "change_target": 2}
+        sensor["filament_detected"] = True
+        assert box._poll(10.0) == 10.25
+        assert box.snapshot.filament_detected is True
+    assert box.operation_progress is None
+    assert box._operation_status()["active"] is False
