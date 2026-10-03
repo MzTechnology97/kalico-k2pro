@@ -45,6 +45,21 @@ def color_cost(first, second):
     return distance if distance <= 0.12 else None
 
 
+# Reinforcing fillers change how a filament prints (abrasive, different
+# temperatures), so "PETG" and "PETG-CF" are not interchangeable.
+FILLERS = ("CF", "GF", "KF", "AF")
+# A base material on a filled variant (or the reverse) is only a last resort.
+VARIANT_COST = 0.5
+# Filament needed beyond the slicer length: prime, purge and flush margin.
+LENGTH_MARGIN = 1.10
+LENGTH_RESERVE_M = 1.0
+
+
+def _fillers(value):
+    tokens = re.split(r"[^A-Z0-9]+", str(value or "").strip().upper())
+    return frozenset(token for token in tokens[1:] if token in FILLERS)
+
+
 def material_cost(first, second):
     a, b = _norm(first), _norm(second)
     if not a or not b:
@@ -52,13 +67,100 @@ def material_cost(first, second):
     if a == b:
         return 0.0
     family_a, family_b = _family(first), _family(second)
-    return 0.05 if family_a and family_a == family_b else None
+    if not family_a or family_a != family_b:
+        return None
+    if _fillers(first) != _fillers(second):
+        return VARIANT_COST
+    return 0.05
 
 
-def suggest_mapping(tools, slots):
+def needed_m(tool):
+    """Filament a tool needs in metres, with margin; None when unknown."""
+    try:
+        length = float(tool.get("length_mm"))
+    except (TypeError, ValueError):
+        return None
+    if length <= 0:
+        return None
+    return length / 1000.0 * LENGTH_MARGIN + LENGTH_RESERVE_M
+
+
+def _remaining_m(slot):
+    try:
+        value = float(slot.get("rfid_remaining_m"))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def available_m(slot, slots, swap=False):
+    """Known filament for a slot, plus the spools runout swap would continue on.
+
+    None means unknown (no RFID estimate), which is treated as enough.
+    """
+    total = _remaining_m(slot)
+    if total is None:
+        return None
+    if not swap or slot.get("external"):
+        return total
+    for other in slots:
+        if other is slot or other.get("external") or not other.get("present", True):
+            continue
+        # Runout swap only continues on the same material and the same colour.
+        if (_norm(other.get("material")) != _norm(slot.get("material"))
+                or _norm(other.get("color")) != _norm(slot.get("color"))):
+            continue
+        remaining = _remaining_m(other)
+        if remaining is None:
+            return None
+        total += remaining
+    return total
+
+
+def _slot_by_index(slots, index):
+    for slot in slots:
+        if int(slot.get("index", -1)) == int(index):
+            return slot
+    return None
+
+
+def evaluate_mapping(tools, slots, mapping, swap=False):
+    """Warnings for a tool -> slot map. They never block a print."""
+    warnings = []
+    for tool in tools:
+        tool_id = int(tool["tool"])
+        if tool_id not in mapping:
+            continue
+        slot = _slot_by_index(slots, mapping[tool_id])
+        if slot is None:
+            continue
+        material = material_cost(tool.get("material"), slot.get("material"))
+        if material is None:
+            warnings.append({
+                "kind": "material_mismatch", "tool": tool_id, "slot": int(slot["index"]),
+                "tool_material": tool.get("material", ""), "slot_material": slot.get("material", ""),
+            })
+        elif material >= VARIANT_COST:
+            warnings.append({
+                "kind": "material_variant", "tool": tool_id, "slot": int(slot["index"]),
+                "tool_material": tool.get("material", ""), "slot_material": slot.get("material", ""),
+            })
+        need = needed_m(tool)
+        have = available_m(slot, slots, swap)
+        if need is not None and have is not None and have < need:
+            warnings.append({
+                "kind": "low_filament", "tool": tool_id, "slot": int(slot["index"]),
+                "needed_m": round(need, 2), "remaining_m": round(have, 2),
+                "includes_swap": bool(swap and have != _remaining_m(slot)),
+            })
+    return warnings
+
+
+def suggest_mapping_report(tools, slots, swap=False):
     candidates = []
     for tool in tools:
         tool_id = int(tool["tool"])
+        need = needed_m(tool)
         for slot in slots:
             material = material_cost(tool.get("material"), slot.get("material"))
             color = color_cost(tool.get("color"), slot.get("color"))
@@ -67,12 +169,15 @@ def suggest_mapping(tools, slots):
             slot_generic = (
                 _norm(slot.get("brand")) == "GENERIC"
                 or _norm(slot.get("name")).startswith("GENERIC"))
+            variant = material is not None and material >= VARIANT_COST
             if material is not None and color is not None:
                 # Exact Orca preset names remain the strongest signal. If the
                 # slicer preset cannot be matched by name, prefer a Generic
                 # material profile over an unrelated vendor profile with the
                 # same material/color. This mirrors Orca's safe generic
                 # fallback without ever ignoring color on multicolor jobs.
+                # A filled variant (PETG on PETG-CF) is a last resort.
+                bucket = 2 if variant else 0
                 score = material + color
                 if name_exact:
                     score -= 0.04
@@ -80,16 +185,23 @@ def suggest_mapping(tools, slots):
                     score += 0.01
                 else:
                     score += 0.03
-            elif name_exact and material is not None:
+            elif name_exact and material is not None and not variant:
+                bucket = 1
                 score = 0.20 + material
             else:
                 continue
+            have = available_m(slot, slots, swap)
+            short = need is not None and have is not None and have < need
             remaining = slot.get("rfid_percent")
             try:
                 remaining = float(remaining)
             except (TypeError, ValueError):
                 remaining = None
             candidates.append((
+                bucket,
+                # Among equivalent spools, one with enough filament wins;
+                # otherwise the lowest remaining is used up first.
+                short,
                 score,
                 remaining is None,
                 101.0 if remaining is None else max(0.0, min(100.0, remaining)),
@@ -101,7 +213,8 @@ def suggest_mapping(tools, slots):
     candidates.sort()
     mapping, used = {}, set()
     for shared in (False, True):
-        for _score, _remaining_unknown, _remaining, _own, _external, slot, tool in candidates:
+        for candidate in candidates:
+            slot, tool = candidate[-2], candidate[-1]
             if tool in mapping or (not shared and slot in used):
                 continue
             mapping[tool] = slot
@@ -110,4 +223,13 @@ def suggest_mapping(tools, slots):
     if len(tools) == 1 and int(tools[0]["tool"]) not in mapping and len(loaded) == 1:
         mapping[int(tools[0]["tool"])] = int(loaded[0]["index"])
     unresolved = sorted(int(item["tool"]) for item in tools if int(item["tool"]) not in mapping)
-    return mapping, unresolved
+    return {
+        "map": mapping,
+        "unresolved": unresolved,
+        "warnings": evaluate_mapping(tools, slots, mapping, swap),
+    }
+
+
+def suggest_mapping(tools, slots, swap=False):
+    report = suggest_mapping_report(tools, slots, swap)
+    return report["map"], report["unresolved"]
