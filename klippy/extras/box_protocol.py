@@ -448,6 +448,9 @@ def decode_box_state(frame, address):
         values = empty
         events = tuple(reply.payload)
     elif reply.status == STATUS_OK and len(reply.payload) == 4:
+        # Fallback only: with [box_k2pro] loaded, its decoder handles this
+        # payload as signed temperature, humidity, event byte and box state.
+        # The opaque fields below are kept for the archived 0001 patch.
         firmware_base = (
             (reply.payload[0] << 8)
             | reply.payload[1]
