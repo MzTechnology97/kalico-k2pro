@@ -52,6 +52,9 @@ TILT_BIAS_FILE = os.path.join(
     else os.path.expanduser('~/printer_data'),
     'z_align_tilt_bias.json')
 MAX_TILT_BIAS = 1.0
+# Largest distance argument sent to the MCU routine. The stock K2-series
+# host code never exceeds it, and larger values misbehaved on a K2 Pro.
+MAX_MCU_DISTANCE_STEPS = 0xFFFF
 
 
 class ZAlignNullEndstop:
@@ -95,6 +98,17 @@ class ZAlign:
         self.safe_dist = config.getfloat('safe_dist', 40.0, above=0.0)
         self.timeout = config.getfloat('timeout', 30.0, above=0.0)
         self.zmax = config.getfloat('zmax', 350.0, above=0.0)
+        # The MCU z_align routine runs in Creality's step units:
+        # rotation_distance / (full_steps_per_rotation * microsteps), without
+        # gear_ratio, exactly like the stock K2-series host code. On the K2
+        # Plus (no gear ratio) this equals the real step distance; the geared
+        # K2 Pro stock firmware is tuned for these units.
+        stepper_z_config = config.getsection('stepper_z')
+        self._mcu_step_distance = (
+            stepper_z_config.getfloat('rotation_distance', above=0.0)
+            / (stepper_z_config.getint(
+                'full_steps_per_rotation', 200, minval=1)
+               * stepper_z_config.getint('microsteps', minval=1)))
         self._toolhead = None
         self._z_align_query_cmd = None
         self._z_align_force_stop_cmd = None
@@ -395,10 +409,16 @@ class ZAlign:
 
     def _calc_speed_ticks(self, speed):
         mcu_freq = self._main_mcu._serial.msgparser.get_constant_float('CLOCK_FREQ')
-        return max(1, int((self._step_distance / speed) * mcu_freq / 2.0))
+        return max(1, int((self._mcu_step_distance / speed) * mcu_freq / 2.0))
 
     def _calc_distance_steps(self, distance):
-        return max(1, int(distance / self._step_distance) * 2)
+        steps = max(1, int(distance / self._mcu_step_distance) * 2)
+        if steps > MAX_MCU_DISTANCE_STEPS:
+            _klog('clamping %.1fmm (%d MCU steps) to %d MCU steps',
+                  distance, steps, MAX_MCU_DISTANCE_STEPS,
+                  level=logging.warning)
+            steps = MAX_MCU_DISTANCE_STEPS
+        return steps
 
     def _enable_z_align_steppers(self):
         stepper_enable = self.printer.lookup_object('stepper_enable', None)
