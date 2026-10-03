@@ -395,6 +395,10 @@ class Homing:
         rail_name = rail.get_name()
         if rail_name not in ("stepper_x", "stepper_y"):
             return
+        # K2 closed-loop sensorless homing check; other printers home as in
+        # stock Kalico.
+        if self.printer.lookup_object("motor_control", None) is None:
+            return
         stepper_names = [s.get_name() for s in rail.get_steppers()]
         first_pos = first_hmove.get_trigger_mm_for_stepper_names(stepper_names)
         second_pos = second_hmove.get_trigger_mm_for_stepper_names(stepper_names)
@@ -575,7 +579,9 @@ class PrinterHoming:
         return True
 
     def _lookup_motor_control(self):
-        return self.printer.lookup_object("motor_control")
+        # Closed-loop motor control only exists on K2 hardware; printers
+        # without [motor_control] home without the motor protection steps.
+        return self.printer.lookup_object("motor_control", None)
 
     @staticmethod
     def _collect_active_faults(result):
@@ -604,7 +610,10 @@ class PrinterHoming:
             empty_text="none")
 
     def _set_homing_stall_mode(self, mode):
-        return self._lookup_motor_control().set_homing_stall_mode(mode)
+        motor_control = self._lookup_motor_control()
+        if motor_control is None:
+            return None
+        return motor_control.set_homing_stall_mode(mode)
 
     def _enter_homing_stall_mode(self):
         if self._session_stall_mode_active:
@@ -620,18 +629,27 @@ class PrinterHoming:
 
     def _query_kinematic_protection(
             self, data=11, timeout=MOTOR_COMMAND_TIMEOUT):
-        return self._lookup_motor_control().query_kinematic_protection_status(
+        motor_control = self._lookup_motor_control()
+        if motor_control is None:
+            return {}
+        return motor_control.query_kinematic_protection_status(
             data=data, timeout=timeout)
 
     def _clear_kinematic_fault_latches(
             self, data=5, timeout=MOTOR_NO_ACK_TIMEOUT):
-        return self._lookup_motor_control().clear_kinematic_fault_latches(
+        motor_control = self._lookup_motor_control()
+        if motor_control is None:
+            return {}
+        return motor_control.clear_kinematic_fault_latches(
             data=data, timeout=timeout)
 
     def _recover_kinematic_faults_for_homing_start(
             self, query_data=11, clear_data=5,
             timeout=MOTOR_COMMAND_TIMEOUT):
-        return self._lookup_motor_control().recover_kinematic_faults_for_homing_start(
+        motor_control = self._lookup_motor_control()
+        if motor_control is None:
+            return {"persistent_errors": {}}
+        return motor_control.recover_kinematic_faults_for_homing_start(
             query_data=query_data, clear_data=clear_data, timeout=timeout)
 
     def _set_active_hmove(self, hmove):
@@ -740,7 +758,9 @@ class PrinterHoming:
         kin.clear_homing_state("xyz")
 
     def _mark_motor_control_not_homing(self):
-        self.printer.lookup_object("motor_control").is_homing = False
+        motor_control = self._lookup_motor_control()
+        if motor_control is not None:
+            motor_control.is_homing = False
 
     def _should_abort_z_align(self):
         z_align = self.printer.lookup_object("z_align", None)
@@ -886,7 +906,10 @@ class PrinterHoming:
         return epos
 
     def _start_managed_homing_session(self, requested_axes, z_align=False):
-        blocker = self._lookup_motor_control().get_homing_fault_blocker()
+        motor_control = self._lookup_motor_control()
+        blocker = (
+            motor_control.get_homing_fault_blocker()
+            if motor_control is not None else None)
         if blocker:
             raise self.printer.command_error(blocker)
         session_created = self.begin_homing_session(
@@ -982,6 +1005,9 @@ class PrinterHoming:
 
     def _prime_xy_home_once_after_restart(self, kin, axis_idx):
         if axis_idx not in (0, 1):
+            return
+        # Only the K2 closed-loop motors need the first-home prime.
+        if self._lookup_motor_control() is None:
             return
         rail = kin.rails[axis_idx]
         hi = rail.get_homing_info()
@@ -1151,7 +1177,33 @@ class PrinterHoming:
         toolhead.wait_moves()
         self.printer.lookup_object("gcode_move").reset_last_position()
 
+    def _cmd_G28_stock(self, gcmd):
+        # Stock Kalico G28, for printers without the K2 closed-loop motors.
+        axes = []
+        for pos, axis in enumerate("XYZ"):
+            if gcmd.get(axis, None) is not None:
+                axes.append(pos)
+        if not axes:
+            axes = [0, 1, 2]
+        homing_state = Homing(self.printer)
+        homing_state.set_axes(axes)
+        kin = self.printer.lookup_object("toolhead").get_kinematics()
+        try:
+            kin.home(homing_state)
+        except self.printer.command_error:
+            if self.printer.is_shutdown():
+                raise self.printer.command_error(
+                    "Homing failed due to printer shutdown"
+                )
+            self.printer.lookup_object("stepper_enable").motor_off()
+            raise
+
     def cmd_G28(self, gcmd):
+        if self._lookup_motor_control() is None:
+            # The managed K2 sequence (closed-loop recovery, z_align, centre
+            # travel) needs K2 hardware; other printers home as in Kalico.
+            self._cmd_G28_stock(gcmd)
+            return
         axes = self._get_requested_axes(gcmd)
         homing_state = Homing(self.printer)
         toolhead = self.printer.lookup_object("toolhead")
