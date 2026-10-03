@@ -95,7 +95,28 @@ class BoxK2Pro:
             if (hub is not None
                     and hub.status == box_protocol.STATUS_OK
                     and hub.value is not None):
-                return replace(reply, downstream_mask=hub.value)
+                # K2 Pro firmware keeps the hub selector latched on the last
+                # channel even after the filament path is completely empty.
+                # Therefore CMD_SLOT_MASK(1) is a route/selector mask, not by
+                # itself proof that a filament is loaded.  Only promote that
+                # mask to Jacob's generic downstream_mask when the printhead
+                # sensor confirms filament or the CFS is in an active path
+                # state.  This prevents a failed/finished load from leaving a
+                # phantom loaded slot (for example T3 while state=IDLE,
+                # buffer=empty and the printhead sensor is clear).
+                detected, _sensor_error = self.box.get_filament_sensor_state()
+                active_path = (
+                    detected is True
+                    or reply.box_state in (
+                        box_protocol.BOX_STATE_PRELOAD,
+                        box_protocol.BOX_STATE_PRINT,
+                        box_protocol.BOX_STATE_RELOAD,
+                    )
+                )
+                return replace(
+                    reply,
+                    downstream_mask=hub.value if active_path else 0,
+                )
             return reply
 
         self.box._query_box_snapshot = query_box_snapshot
