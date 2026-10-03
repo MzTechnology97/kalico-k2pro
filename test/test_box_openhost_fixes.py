@@ -149,8 +149,14 @@ class FakeGcmd:
     def __init__(self, params):
         self.params = params
 
+    def get(self, name, default=None):
+        return self.params.get(name, default)
+
     def get_int(self, name, default=None, minval=None, maxval=None):
         return int(self.params.get(name, default))
+
+    def error(self, message):
+        return BoxError(message)
 
 
 def test_runout_swap_without_enable_enables(tmp_path):
@@ -454,3 +460,50 @@ def test_operation_status_reports_live_stage_and_sensor():
         assert box.snapshot.filament_detected is True
     assert box.operation_progress is None
     assert box._operation_status()["active"] is False
+
+
+def white_pla_box(tmp_path):
+    box = make_box(tmp_path)
+    for slot in (0, 1, 2):
+        box.set_profile(slot, {"material": "PLA", "color": "#FFFFFF", "source": "manual"})
+    return box
+
+
+def test_runout_order_follows_the_manual_sequence(tmp_path):
+    box = white_pla_box(tmp_path)
+    assert runout_chain(box, 0b0111) == [1, 2]
+    box.store.set_setting("runout_order", [2, 1, 0])
+    assert runout_chain(box, 0b0111) == [2, 1]
+
+
+def test_manual_order_wins_over_rfid_remaining(tmp_path):
+    box = white_pla_box(tmp_path)
+    box.rfid_percent = {1: 10.0, 2: 80.0}
+    assert runout_chain(box, 0b0111) == [1, 2]
+    box.store.set_setting("runout_order", [2])
+    assert runout_chain(box, 0b0111) == [2, 1]
+
+
+def test_runout_groups_report_the_manual_order(tmp_path):
+    box = white_pla_box(tmp_path)
+    box.store.set_setting("runout_order", [2, 0, 1])
+    snap = BoxSnapshot(slot_mask=0b0111, loaded_slot=-1)
+    groups = box._runout_groups(box._slot_statuses(snap))
+    pla = [group for group in groups if group["material"] == "PLA"][0]
+    assert pla["slots"] == [2, 0, 1]
+    assert pla["strategy"] == "manual_order"
+    statuses = {item["index"]: item for item in box._slot_statuses(snap)}
+    assert statuses[2]["runout_rank"] == 0 and statuses[1]["runout_rank"] == 2
+
+
+def test_runout_order_command(tmp_path):
+    box = white_pla_box(tmp_path)
+    box._info = lambda *args: None
+    box.cmd_runout_order(FakeGcmd({"ORDER": "2, 1,0,2"}))
+    assert box.runout_order == [2, 1, 0]
+    with pytest.raises(BoxError):
+        box.cmd_runout_order(FakeGcmd({"ORDER": "9"}))
+    with pytest.raises(BoxError):
+        box.cmd_runout_order(FakeGcmd({"ORDER": "two"}))
+    box.cmd_runout_order(FakeGcmd({"ORDER": "AUTO"}))
+    assert box.runout_order == []

@@ -194,3 +194,12 @@ def test_explicit_map_warnings():
     slots = [slot(3, "PETG-CF", "#000000", remaining_m=2.0)]
     kinds = sorted(w["kind"] for w in evaluate_mapping(tools, slots, {0: 3}))
     assert kinds == ["low_filament", "material_variant"]
+
+
+def test_start_uses_the_first_spool_of_the_manual_runout_order():
+    slots = [
+        dict(slot(0, "PLA", "#FFFFFF"), runout_rank=2),
+        dict(slot(1, "PLA", "#FFFFFF"), runout_rank=1),
+        dict(slot(2, "PLA", "#FFFFFF"), runout_rank=0),
+    ]
+    assert suggest_mapping([tool(0, "PLA", "#FFFFFF")], slots)[0] == {0: 2}
