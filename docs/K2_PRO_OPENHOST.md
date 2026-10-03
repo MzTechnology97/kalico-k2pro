@@ -191,7 +191,7 @@ Upstream `power_loss_recovery.py` re-references Z through `[z_align]`: the MCU d
 
 For single-Z printers without a bottom switch, `z_reference: trusted_position` restores the physical Z stored with each checkpoint instead; it is not used on the K2 Pro.
 
-Integrated homing through `[z_align]` and the recovery path still need supervised validation on the real K2 Pro, including a power cut.
+Integrated homing through `[z_align]` is hardware-validated (three consecutive `G28` / `M84` cycles aligned at the first MCU attempt on 2026-10-03). It requires the stock 16 Z microsteps: at 64 the MCU-driven routine lost steps and failed with photoelectric errors. `PLR_RECOVER` still needs a supervised power-cut validation.
 
 ## Local extras and clean Git updates
 
