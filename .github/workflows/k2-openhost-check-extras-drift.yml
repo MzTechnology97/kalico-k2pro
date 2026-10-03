@@ -7,11 +7,19 @@ name: K2 OpenHost - check extras drift
 # pushed the result to k2-pro-openhost. Since 2026-10-02 the CFS extras in this
 # branch are newer than that source, so a sync would silently revert them.
 #
-# This workflow only reports which manifest extras differ between the two
-# repositories. It never copies, commits or pushes.
+# This workflow only reports which extras differ between the two
+# repositories. It never copies, commits or pushes. It runs automatically when
+# extras change so a missing mirror commit in k2-pro-custom-firmware shows up as
+# a failed check.
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - k2-pro-openhost
+    paths:
+      - klippy/extras/**
+      - .github/workflows/k2-openhost-check-extras-drift.yml
 
 permissions:
   contents: read
@@ -52,7 +60,10 @@ jobs:
 
           rows = []
           drift = False
-          for name in sorted(manifest['files']):
+          # The manifest lists the upstream Jacobean files; OpenHost-only modules
+          # (box_k2pro.py, box_print_mapping.py, ...) are only present as files.
+          names = set(manifest['files']) | {p.name for p in source.glob('*.py')}
+          for name in sorted(names):
               src = source / name
               dst = target / name
               if not src.is_file():
