@@ -1,0 +1,85 @@
+name: K2 OpenHost - check extras drift
+
+# Read-only replacement for the former "sync validated extras" workflow.
+#
+# The old workflow copied every manifest file from
+# MzTechnology97/k2-pro-custom-firmware:k2-openhost into klippy/extras and
+# pushed the result to k2-pro-openhost. Since 2026-10-02 the CFS extras in this
+# branch are newer than that source, so a sync would silently revert them.
+#
+# This workflow only reports which manifest extras differ between the two
+# repositories. It never copies, commits or pushes.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Kalico K2 Pro branch
+        uses: actions/checkout@v4
+        with:
+          ref: k2-pro-openhost
+
+      - name: Checkout K2 extras source
+        uses: actions/checkout@v4
+        with:
+          repository: MzTechnology97/k2-pro-custom-firmware
+          ref: k2-openhost
+          path: .k2-openhost-source
+
+      - name: Compare manifest extras
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import sys
+
+          source = pathlib.Path('.k2-openhost-source/extras')
+          target = pathlib.Path('klippy/extras')
+          manifest = json.loads((source / 'manifest.json').read_text())
+
+          def sha256(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          rows = []
+          drift = False
+          for name in sorted(manifest['files']):
+              src = source / name
+              dst = target / name
+              if not src.is_file():
+                  status = 'missing in source'
+              elif not dst.is_file():
+                  status = 'missing in Kalico'
+              elif sha256(src) == sha256(dst):
+                  status = 'identical'
+              else:
+                  status = 'DIFFERENT'
+              if status != 'identical':
+                  drift = True
+              src_size = src.stat().st_size if src.is_file() else '-'
+              dst_size = dst.stat().st_size if dst.is_file() else '-'
+              rows.append((name, status, src_size, dst_size))
+              print(f'{status:18} {name} (source {src_size} B, Kalico {dst_size} B)')
+
+          summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary:
+              with open(summary, 'a') as fh:
+                  fh.write('## K2 extras drift\n\n')
+                  fh.write('| File | Status | Source bytes | Kalico bytes |\n')
+                  fh.write('|---|---|---|---|\n')
+                  for name, status, src_size, dst_size in rows:
+                      fh.write(f'| `{name}` | {status} | {src_size} | {dst_size} |\n')
+
+          if drift:
+              print('Drift detected. Reconcile the files manually; this workflow never syncs.')
+              sys.exit(1)
+          PY
