@@ -6,6 +6,7 @@
 the public G-code surface, composing change sequencing through ``BoxChangeEngine``.
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -196,6 +197,7 @@ class _ReadOnlyCFSProxy:
         0x0A,  # box state
         0x0E,  # encoder
         0x14,  # version/SN
+        0x15,  # hardware status (read-only diagnostics)
         0xF0,  # firmware version
         0xA1,  # discovery
         0xA2,  # online check
@@ -295,7 +297,8 @@ class BoxStore:
             if not isinstance(value, dict):
                 raise BoxError("%s.%s must be an object" % (self.path, name))
         sections["materials"] = self._materials(sections["materials"])
-        sections["filaments"] = self._filaments(sections["filaments"])
+        sections["filaments"] = self._filaments(
+            sections["filaments"], strict=False)
         sections["rfid_mappings"] = self._rfid_mappings(
             sections["rfid_mappings"])
         sections["addresses"] = self._addresses(sections["addresses"])
@@ -329,91 +332,104 @@ class BoxStore:
         return round(value, 6)
 
     @staticmethod
-    def _filaments(values):
+    def _filaments(values, strict=True):
         result = {}
         for key, value in values.items():
-            if not isinstance(value, dict):
-                raise BoxError("Invalid filament entry %r" % key)
-            filament_id = str(value.get("id", key)).strip().upper()
-            if not filament_id or len(filament_id) > 64:
-                raise BoxError("Invalid filament ID %r" % key)
-            material = str(value.get("material", "")).strip().upper()
-            if not material:
-                raise BoxError("Filament %s has no material" % filament_id)
-            color = str(value.get("color", "")).strip().upper()
-            if color and (len(color) != 7 or color[0] != "#"
-                          or any(c not in "0123456789ABCDEF" for c in color[1:])):
-                raise BoxError("Invalid color for filament %s" % filament_id)
-            target = value.get("target_temp")
-            if target is not None and (isinstance(target, bool)
-                                       or not isinstance(target, int)
-                                       or not 170 <= target <= 350):
-                raise BoxError("Invalid target temperature for filament %s" % filament_id)
-            ranges = {}
-            for field in ("min_temp", "max_temp"):
-                raw = value.get(field)
-                if raw in (None, ""):
-                    ranges[field] = None
-                    continue
-                try:
-                    raw = int(round(float(raw)))
-                except (TypeError, ValueError):
-                    raise BoxError(
-                        "Invalid %s for filament %s" % (field, filament_id))
-                if not 0 <= raw <= 500:
-                    raise BoxError(
-                        "Invalid %s for filament %s" % (field, filament_id))
-                ranges[field] = raw
-            pressure_advance = value.get("pressure_advance")
-            if pressure_advance in (None, ""):
-                pressure_advance = None
-            else:
-                try:
-                    pressure_advance = float(pressure_advance)
-                except (TypeError, ValueError):
-                    raise BoxError(
-                        "Invalid pressure_advance for filament %s" % filament_id)
-                if not 0.0 <= pressure_advance <= 2.0:
-                    raise BoxError(
-                        "Invalid pressure_advance for filament %s" % filament_id)
-                pressure_advance = round(pressure_advance, 6)
-            spoolman_id = value.get("spoolman_id")
-            if spoolman_id is not None:
-                try:
-                    spoolman_id = int(spoolman_id)
-                except (TypeError, ValueError):
-                    raise BoxError("Invalid Spoolman ID for filament %s" % filament_id)
-                if spoolman_id < 0:
-                    spoolman_id = None
-            codes = []
-            for raw_code in (
-                    list(value.get("rfid_codes") or [])
-                    + [value.get("rfid_code", "")]):
-                code = str(raw_code or "").strip().upper()
-                if code and code not in codes:
-                    codes.append(code)
-            aliases = []
-            for raw_alias in value.get("aliases") or []:
-                alias = str(raw_alias or "").strip().upper()
-                if alias and alias != filament_id and alias not in aliases:
-                    aliases.append(alias)
-            result[filament_id] = {
-                "id": filament_id,
-                "material": material,
-                "color": color,
-                "brand": str(value.get("brand", "")).strip(),
-                "name": str(value.get("name", "")).strip(),
-                "target_temp": target,
-                "min_temp": ranges["min_temp"],
-                "max_temp": ranges["max_temp"],
-                "pressure_advance": pressure_advance,
-                "rfid_code": codes[0] if codes else "",
-                "rfid_codes": codes,
-                "aliases": aliases,
-                "spoolman_id": spoolman_id,
-                "system": bool(value.get("system", False)),
-            }
+            try:
+                filament_id, clean = BoxStore._filament_entry(key, value)
+            except BoxError as exc:
+                if strict:
+                    raise
+                # A single damaged library entry must not stop Klipper from
+                # starting; skip it and keep the rest of the persisted state.
+                logging.warning("box: skipping invalid filament %r: %s", key, exc)
+                continue
+            result[filament_id] = clean
         return result
+
+    @staticmethod
+    def _filament_entry(key, value):
+        if not isinstance(value, dict):
+            raise BoxError("Invalid filament entry %r" % key)
+        filament_id = str(value.get("id", key)).strip().upper()
+        if not filament_id or len(filament_id) > 64:
+            raise BoxError("Invalid filament ID %r" % key)
+        material = str(value.get("material", "")).strip().upper()
+        if not material:
+            raise BoxError("Filament %s has no material" % filament_id)
+        color = str(value.get("color", "")).strip().upper()
+        if color and (len(color) != 7 or color[0] != "#"
+                      or any(c not in "0123456789ABCDEF" for c in color[1:])):
+            raise BoxError("Invalid color for filament %s" % filament_id)
+        target = value.get("target_temp")
+        if target is not None and (isinstance(target, bool)
+                                   or not isinstance(target, int)
+                                   or not 170 <= target <= 350):
+            raise BoxError("Invalid target temperature for filament %s" % filament_id)
+        ranges = {}
+        for field in ("min_temp", "max_temp"):
+            raw = value.get(field)
+            if raw in (None, ""):
+                ranges[field] = None
+                continue
+            try:
+                raw = int(round(float(raw)))
+            except (TypeError, ValueError):
+                raise BoxError(
+                    "Invalid %s for filament %s" % (field, filament_id))
+            if not 0 <= raw <= 500:
+                raise BoxError(
+                    "Invalid %s for filament %s" % (field, filament_id))
+            ranges[field] = raw
+        pressure_advance = value.get("pressure_advance")
+        if pressure_advance in (None, ""):
+            pressure_advance = None
+        else:
+            try:
+                pressure_advance = float(pressure_advance)
+            except (TypeError, ValueError):
+                raise BoxError(
+                    "Invalid pressure_advance for filament %s" % filament_id)
+            if not 0.0 <= pressure_advance <= 2.0:
+                raise BoxError(
+                    "Invalid pressure_advance for filament %s" % filament_id)
+            pressure_advance = round(pressure_advance, 6)
+        spoolman_id = value.get("spoolman_id")
+        if spoolman_id is not None:
+            try:
+                spoolman_id = int(spoolman_id)
+            except (TypeError, ValueError):
+                raise BoxError("Invalid Spoolman ID for filament %s" % filament_id)
+            if spoolman_id < 0:
+                spoolman_id = None
+        codes = []
+        for raw_code in (
+                list(value.get("rfid_codes") or [])
+                + [value.get("rfid_code", "")]):
+            code = str(raw_code or "").strip().upper()
+            if code and code not in codes:
+                codes.append(code)
+        aliases = []
+        for raw_alias in value.get("aliases") or []:
+            alias = str(raw_alias or "").strip().upper()
+            if alias and alias != filament_id and alias not in aliases:
+                aliases.append(alias)
+        return filament_id, {
+            "id": filament_id,
+            "material": material,
+            "color": color,
+            "brand": str(value.get("brand", "")).strip(),
+            "name": str(value.get("name", "")).strip(),
+            "target_temp": target,
+            "min_temp": ranges["min_temp"],
+            "max_temp": ranges["max_temp"],
+            "pressure_advance": pressure_advance,
+            "rfid_code": codes[0] if codes else "",
+            "rfid_codes": codes,
+            "aliases": aliases,
+            "spoolman_id": spoolman_id,
+            "system": bool(value.get("system", False)),
+        }
 
     @staticmethod
     def _rfid_mappings(values):
@@ -474,7 +490,7 @@ class BoxStore:
         value = self.data["filaments"].get(key)
         return None if value is None else dict(value)
 
-    def set_filament(self, filament_id, value):
+    def set_filament(self, filament_id, value, save=True):
         key = str(filament_id or "").strip().upper()
         clean = self._filaments({key: dict(value, id=key)})[key]
         previous = self.data["filaments"].get(key)
@@ -498,7 +514,8 @@ class BoxStore:
                 current_color = str(profile.get("color", "")).strip().upper()
                 if not current_color or current_color == previous_color:
                     profile["color"] = clean["color"]
-        self.save()
+        if save:
+            self.save()
         return dict(clean)
 
     def delete_filament(self, filament_id):
@@ -1178,7 +1195,7 @@ class Box:
             units["T%d" % address] = {
                 "state": str(snap.state_code if snap.state_code is not None else 0),
                 "version": "K2-OpenHost",
-                "sn": known_uid.hex() if known_uid else "-1",
+                "sn": self._public_unit_id(known_uid),
                 "temperature": ("None" if snap.temp_c is None else str(snap.temp_c)),
                 "dry_and_humidity": (
                     "None" if snap.humidity_pct is None else str(snap.humidity_pct)),
@@ -1203,6 +1220,13 @@ class Box:
         }
         result.update(units)
         return result
+
+    @staticmethod
+    def _public_unit_id(uid):
+        """Stable per-unit identifier that does not expose the CFS UniID."""
+        if not uid:
+            return "-1"
+        return hashlib.sha256(bytes(uid)).hexdigest()[:12]
 
     def _slot_statuses(self, snap):
         return [self._slot_status(slot, snap) for slot in self.physical_slots]
@@ -1798,7 +1822,7 @@ class Box:
             target = self.change_engine.default_temp
         return max(170, min(350, int(target)))
 
-    def _ensure_catalog_filament(self, entry, raw_code=None):
+    def _ensure_catalog_filament(self, entry, raw_code=None, save=True):
         if not isinstance(entry, dict):
             return None
         material = str(entry.get("material", "")).strip().upper()
@@ -1808,9 +1832,19 @@ class Box:
         if not material or not filament_id:
             return None
 
+        system_entry = bool(entry.get("system", False))
         existing = self.store.filament_by_identity(brand, name, material)
+        if existing is not None and system_entry and not existing.get("system"):
+            # Never turn a user's custom profile into a read-only system one
+            # just because brand/name/material match a shipped catalog entry.
+            existing = None
         if existing is None:
             existing = self.store.filament(filament_id)
+            if (existing is not None and system_entry
+                    and not existing.get("system")):
+                _klog("system filament %s skipped: a custom profile uses that ID",
+                      filament_id, level=logging.warning)
+                return None
         key = filament_id if existing is None else existing["id"]
         codes = list((existing or {}).get("rfid_codes") or [])
         for code in (
@@ -1855,7 +1889,7 @@ class Box:
                 entry.get("system", False)
                 or (existing or {}).get("system", False)),
         }
-        saved = self.store.set_filament(key, value)
+        saved = self.store.set_filament(key, value, save=save)
         if material not in self.store.materials:
             self.store.set_material(material, saved["target_temp"])
         return saved
@@ -1864,14 +1898,25 @@ class Box:
         # System profiles are shipped with K2-OpenHost and intentionally include
         # Creality/Generic IDs that also exist in the small built-in fallback
         # table. Seed them first so the UI gets the full DnG-Crafts catalog.
-        for entry in self.system_material_catalog.entries:
-            entry["system"] = True
-            self._ensure_catalog_filament(entry)
         # The user-imported K2-RFID database extends the system catalog. It is
         # deduplicated by brand/name/material so color variants remain one
         # reusable filament identity while slot color stays spool-specific.
-        for entry in self.material_catalog.entries:
-            self._ensure_catalog_filament(entry)
+        # Entries are applied in memory and the state file is written once,
+        # only when seeding actually changed it. Invalid entries are skipped so
+        # a bad imported database cannot stop Klipper from starting.
+        before = json.dumps(self.store.data, sort_keys=True)
+        for catalog, system in ((self.system_material_catalog, True),
+                                (self.material_catalog, False)):
+            for entry in catalog.entries:
+                if system:
+                    entry["system"] = True
+                try:
+                    self._ensure_catalog_filament(entry, save=False)
+                except (BoxError, TypeError, ValueError) as exc:
+                    _klog("skipping invalid catalog filament %r: %s",
+                          entry.get("id"), exc, level=logging.warning)
+        if json.dumps(self.store.data, sort_keys=True) != before:
+            self.store.save()
 
     def cmd_filament_set(self, gcmd):
         filament_id = self._param(gcmd, "ID")
@@ -2109,11 +2154,7 @@ class Box:
             self._slot_to_tnn(slot), color))
 
     def cmd_runout_swap(self, gcmd):
-        params = gcmd.get_command_parameters()
-        if "ENABLE" in params:
-            enabled = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
-        else:
-            enabled = not self.runout_swap_enabled
+        enabled = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
         self.store.set_setting("runout_swap_enabled", enabled)
         self._info(gcmd, "Runout swap %s" % ("enabled" if enabled else "disabled"))
 
@@ -2335,9 +2376,29 @@ class Box:
             self.rfid_pending.add(slot)
             self._snapshot_rfid_cache(slot)
 
+    def _defer_active_slot_clear(self, slot):
+        """Return True while ``slot`` is the active print or runout source.
+
+        When a spool runs out, the CFS reports its bay empty well before the
+        printhead sensor triggers BOX_RUNOUT_CHECK. runout_recovery() finds the
+        replacement chain from the source slot's material/colour, and
+        BoxChangeEngine calls mark_slot_depleted() once the swap or pause has
+        been decided, so the source profile must survive until then.
+        """
+        if (getattr(self, "runout_active", False)
+                and slot == getattr(self, "runout_origin", None)):
+            return True
+        owner = getattr(self, "tracking_owner", None)
+        return owner is not None and owner.slot == slot
+
     def _rfid_removed(self, slot):
         self._persist_rfid_estimates(force=True)
         self._clear_rfid_watch(slot)
+        if self._defer_active_slot_clear(slot):
+            # Keep profile, spool estimate and RFID state for runout recovery;
+            # mark_slot_depleted() finalizes the bay. If the print ends without
+            # a runout, the absent-confirmation pass clears it once idle.
+            return
         self.rfid_live_slots.discard(slot)
         self.rfid_percent.pop(slot, None)
         self.rfid_reported_percent.pop(slot, None)
@@ -2365,6 +2426,9 @@ class Box:
             elif changed & bit:
                 # A live present->absent transition is authoritative and may
                 # be cleared immediately.
+                self.rfid_absent_confirm.pop(slot, None)
+            elif self._defer_active_slot_clear(slot):
+                # Active print/runout source: see _defer_active_slot_clear().
                 self.rfid_absent_confirm.pop(slot, None)
             else:
                 # A printer can occasionally report an empty mask while the
