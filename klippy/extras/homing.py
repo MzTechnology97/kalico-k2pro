@@ -1177,7 +1177,33 @@ class PrinterHoming:
         toolhead.wait_moves()
         self.printer.lookup_object("gcode_move").reset_last_position()
 
+    def _cmd_G28_stock(self, gcmd):
+        # Stock Kalico G28, for printers without the K2 closed-loop motors.
+        axes = []
+        for pos, axis in enumerate("XYZ"):
+            if gcmd.get(axis, None) is not None:
+                axes.append(pos)
+        if not axes:
+            axes = [0, 1, 2]
+        homing_state = Homing(self.printer)
+        homing_state.set_axes(axes)
+        kin = self.printer.lookup_object("toolhead").get_kinematics()
+        try:
+            kin.home(homing_state)
+        except self.printer.command_error:
+            if self.printer.is_shutdown():
+                raise self.printer.command_error(
+                    "Homing failed due to printer shutdown"
+                )
+            self.printer.lookup_object("stepper_enable").motor_off()
+            raise
+
     def cmd_G28(self, gcmd):
+        if self._lookup_motor_control() is None:
+            # The managed K2 sequence (closed-loop recovery, z_align, centre
+            # travel) needs K2 hardware; other printers home as in Kalico.
+            self._cmd_G28_stock(gcmd)
+            return
         axes = self._get_requested_axes(gcmd)
         homing_state = Homing(self.printer)
         toolhead = self.printer.lookup_object("toolhead")
