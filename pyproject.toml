@@ -37,6 +37,31 @@ funding = "https://docs.kalico.gg/Sponsors.html"
 line-length = 80
 indent-width = 4
 exclude = ["./.github", "./.history", "./config", "./docs", "./lib", "./src"]
+# K2 / K2-OpenHost modules keep the style of the Jacob10383 K2 firmware they
+# are synced from (k2-pro-custom-firmware), so upstream syncs merge cleanly.
+extend-exclude = [
+  "klippy/extras/belt_mdl.py",
+  "klippy/extras/box.py",
+  "klippy/extras/box_*.py",
+  "klippy/extras/chamber_heater_circulation_fan.py",
+  "klippy/extras/extended_zone_transform.py",
+  "klippy/extras/external_rfid_reader.py",
+  "klippy/extras/fan_feedback.py",
+  "klippy/extras/force_stop_homing.py",
+  "klippy/extras/homing.py",
+  "klippy/extras/led_idle_manager.py",
+  "klippy/extras/motion_limits.py",
+  "klippy/extras/motor_control.py",
+  "klippy/extras/power_loss_recovery.py",
+  "klippy/extras/prtouch.py",
+  "klippy/extras/ptc_power_limiter.py",
+  "klippy/extras/serial_485.py",
+  "klippy/extras/temperature_fan_manual_floor.py",
+  "klippy/extras/z_align.py",
+  "scripts/generate_cfs_system_filaments.py",
+  "test/test_box_*.py",
+]
+force-exclude = true
 
 [tool.ruff.lint]
 extend-select = [
