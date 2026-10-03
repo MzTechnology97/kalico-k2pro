@@ -768,6 +768,9 @@ class Box:
         self.drivers_ready = False
         self.snapshot = BoxSnapshot(loaded_slot=None)
         self.operation_depth = 0
+        # K2-OpenHost: live load/unload stage for the UI while the poll
+        # timer is paused by an operation.
+        self.operation_progress = None
         self.tracking_epoch = 0
         self.tracking_owner = None
         self.path_owner = None
@@ -1115,6 +1118,7 @@ class Box:
             "slot_filament_mask": snap.slot_mask,
             "slots": slots,
             "boxes": self._box_unit_statuses(),
+            "operation": self._operation_status(),
             "materials": self.store.materials,
             "filaments": self.store.filaments,
             "runout": self._runout_status(physical, snap),
@@ -3846,6 +3850,29 @@ class Box:
             self.operation_depth -= 1
             if self.operation_depth == 0:
                 self.clog_baseline = None
+                self.operation_progress = None
+
+    def _set_operation_progress(self, kind, slot, stage):
+        self.operation_progress = {"kind": kind, "slot": slot, "stage": stage}
+
+    def _refresh_sensor_snapshot(self):
+        detected, error = self.get_filament_sensor_state()
+        snap = self.snapshot
+        if (detected, error) != (snap.filament_detected, snap.filament_sensor_error):
+            self.snapshot = replace(
+                snap, filament_detected=detected, filament_sensor_error=error)
+
+    def _operation_status(self):
+        progress = self.operation_progress or {}
+        request = self.change_engine.pending
+        return {
+            "active": bool(self.operation_depth),
+            "kind": progress.get("kind"),
+            "slot": progress.get("slot"),
+            "stage": progress.get("stage"),
+            "change_step": None if request is None else request.last_step,
+            "change_target": None if request is None else request.target,
+        }
 
     def _require_reply(self, reply, context, allowed=(0x00,)):
         if reply is None:
@@ -3963,6 +3990,9 @@ class Box:
 
     def _poll(self, eventtime):
         if self.operation_depth:
+            # The CFS bus belongs to the running operation; only refresh the
+            # local printhead sensor so the UI follows the filament live.
+            self._refresh_sensor_snapshot()
             return eventtime + 0.25
         if not self.drivers_ready:
             return eventtime + IDLE_POLL
@@ -4150,6 +4180,7 @@ class Box:
                 self._query_presence(address, driver), "slot-presence query")
             self.check_operation_abort(fault_generation)
             self._info(self.gcode, "Loading %s" % self.slot_label(slot))
+            self._set_operation_progress("load", slot, "preparing")
             if slot in self.rfid_pending:
                 state = self.box_replies.get(address)
                 if (live.loaded_slot == -1
@@ -4170,8 +4201,10 @@ class Box:
                             % (self.slot_label(slot), exc))
                 self._clear_rfid_watch(slot)
             load_encoder_start = self._optional_encoder(driver)
+            self._set_operation_progress("load", slot, "feeding_to_buffer")
             self._require_reply(
                 driver.load_stage(local, 0, timeout=45.0), "load stage 0")
+            self._set_operation_progress("load", slot, "feeding_to_printhead")
             self.check_operation_abort(fault_generation)
 
             with driver.load_session() as load_driver:
@@ -4237,6 +4270,7 @@ class Box:
                             "Load timed out before printhead sensor arrival")
 
                 self.check_operation_abort(fault_generation)
+                self._set_operation_progress("load", slot, "seating")
                 self._require_reply(
                     load_driver.load_stage(local, 6, timeout=5.0),
                     "load stage 6")
@@ -4254,6 +4288,7 @@ class Box:
                 raise BoxError(box_protocol.status_detail(stage7.status))
 
             self.check_operation_abort(fault_generation)
+            self._set_operation_progress("load", slot, "verifying")
             self.activate_tracking(slot)
             final = self._wait_for_state(
                 slot, True, True, fault_generation=fault_generation)
@@ -4309,6 +4344,7 @@ class Box:
                 slot = live.loaded_slot
                 driver, address, local = self._driver_for_slot(slot)
                 self._info(self.gcode, "Unloading %s" % self.slot_label(slot))
+                self._set_operation_progress("unload", slot, "preparing")
                 self.disable_filament_sensor()
                 self._set_tracking(
                     driver, address, None, "disable CFS tracking")
@@ -4326,6 +4362,8 @@ class Box:
                     saved_gcode = True
                     self.gcode.run_script_from_command("M83")
                     retract_toolhead = self.printer.lookup_object("toolhead")
+                    self._set_operation_progress(
+                        "unload", slot, "retracting_from_printhead")
                     self._buffer_retract(driver, "before extruder retract")
                     total = 0.0
                     previous_encoder = self._encoder(driver)
@@ -4357,6 +4395,7 @@ class Box:
                     self.gcode.run_script_from_command(
                         "RESTORE_GCODE_STATE NAME=_box_unload_retract MOVE=0")
                     saved_gcode = False
+                self._set_operation_progress("unload", slot, "retracting_to_cfs")
                 for attempt in range(2):
                     try:
                         path_reply = driver.unload_path(
@@ -4383,6 +4422,7 @@ class Box:
                     self.check_operation_abort(fault_generation)
                 self._require_reply(path_reply, "loaded-path retract")
                 self.check_operation_abort(fault_generation)
+                self._set_operation_progress("unload", slot, "verifying")
                 final = self._wait_for_state(
                     -1, False, False, fault_generation=fault_generation)
                 if final.filament_sensor_error:
