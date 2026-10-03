@@ -48,8 +48,6 @@ def color_cost(first, second):
 # Reinforcing fillers change how a filament prints (abrasive, different
 # temperatures), so "PETG" and "PETG-CF" are not interchangeable.
 FILLERS = ("CF", "GF", "KF", "AF")
-# A base material on a filled variant (or the reverse) is only a last resort.
-VARIANT_COST = 0.5
 # Filament needed beyond the slicer length: prime, purge and flush margin.
 LENGTH_MARGIN = 1.10
 LENGTH_RESERVE_M = 1.0
@@ -70,8 +68,16 @@ def material_cost(first, second):
     if not family_a or family_a != family_b:
         return None
     if _fillers(first) != _fillers(second):
-        return VARIANT_COST
+        # Never map a base material on its filled variant (or the reverse).
+        return None
     return 0.05
+
+
+def is_material_variant(first, second):
+    """Same material family with different fillers, e.g. PETG and PETG-CF."""
+    family = _family(first)
+    return bool(family and family == _family(second)
+                and _fillers(first) != _fillers(second))
 
 
 def needed_m(tool):
@@ -134,15 +140,14 @@ def evaluate_mapping(tools, slots, mapping, swap=False):
         slot = _slot_by_index(slots, mapping[tool_id])
         if slot is None:
             continue
-        material = material_cost(tool.get("material"), slot.get("material"))
-        if material is None:
+        # Only a map chosen by hand (or the loaded-filament fallback) can
+        # reach these: the automatic matcher never pairs such materials.
+        if material_cost(tool.get("material"), slot.get("material")) is None:
             warnings.append({
-                "kind": "material_mismatch", "tool": tool_id, "slot": int(slot["index"]),
-                "tool_material": tool.get("material", ""), "slot_material": slot.get("material", ""),
-            })
-        elif material >= VARIANT_COST:
-            warnings.append({
-                "kind": "material_variant", "tool": tool_id, "slot": int(slot["index"]),
+                "kind": ("material_variant"
+                         if is_material_variant(tool.get("material"), slot.get("material"))
+                         else "material_mismatch"),
+                "tool": tool_id, "slot": int(slot["index"]),
                 "tool_material": tool.get("material", ""), "slot_material": slot.get("material", ""),
             })
         need = needed_m(tool)
@@ -169,15 +174,13 @@ def suggest_mapping_report(tools, slots, swap=False):
             slot_generic = (
                 _norm(slot.get("brand")) == "GENERIC"
                 or _norm(slot.get("name")).startswith("GENERIC"))
-            variant = material is not None and material >= VARIANT_COST
             if material is not None and color is not None:
                 # Exact Orca preset names remain the strongest signal. If the
                 # slicer preset cannot be matched by name, prefer a Generic
                 # material profile over an unrelated vendor profile with the
                 # same material/color. This mirrors Orca's safe generic
                 # fallback without ever ignoring color on multicolor jobs.
-                # A filled variant (PETG on PETG-CF) is a last resort.
-                bucket = 2 if variant else 0
+                bucket = 0
                 score = material + color
                 if name_exact:
                     score -= 0.04
@@ -185,7 +188,7 @@ def suggest_mapping_report(tools, slots, swap=False):
                     score += 0.01
                 else:
                     score += 0.03
-            elif name_exact and material is not None and not variant:
+            elif name_exact and material is not None:
                 bucket = 1
                 score = 0.20 + material
             else:
@@ -220,7 +223,9 @@ def suggest_mapping_report(tools, slots, swap=False):
             mapping[tool] = slot
             used.add(slot)
     loaded = [slot for slot in slots if slot.get("loaded")]
-    if len(tools) == 1 and int(tools[0]["tool"]) not in mapping and len(loaded) == 1:
+    if (len(tools) == 1 and int(tools[0]["tool"]) not in mapping and len(loaded) == 1
+            and material_cost(tools[0].get("material"), loaded[0].get("material")) is not None):
+        # The filament already in the printhead, unless it is another material.
         mapping[int(tools[0]["tool"])] = int(loaded[0]["index"])
     unresolved = sorted(int(item["tool"]) for item in tools if int(item["tool"]) not in mapping)
     return {
