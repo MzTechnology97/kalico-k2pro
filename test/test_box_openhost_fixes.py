@@ -414,3 +414,16 @@ def test_k2_macros_only_call_registered_box_commands():
     used = set(re.findall(r"^\s*(_?BOX_[A-Z0-9_]+)", macros, re.M))
     assert {"_BOX_PAUSE_CAPTURE", "_BOX_RESUME_PREPARE", "_BOX_RESUME_COMMIT"} <= used
     assert used - defined <= registered, used - defined - registered
+
+
+def test_box_unit_statuses_report_each_cfs():
+    box = Box.__new__(Box)
+    box.drivers = {1: object(), 3: object()}
+    reply = types.SimpleNamespace(status=0, box_state=2, temp_c=30.5, humidity_pct=34)
+    box.box_replies = {1: reply}
+    units = box._box_unit_statuses()
+    assert [unit["address"] for unit in units] == [1, 3]
+    assert units[0]["online"] and units[0]["temp_c"] == 30.5
+    assert units[0]["slots"] == [0, 1, 2, 3]
+    assert not units[1]["online"] and units[1]["temp_c"] is None
+    assert units[1]["slots"] == [8, 9, 10, 11]
