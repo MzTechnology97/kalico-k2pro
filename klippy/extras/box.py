@@ -1114,6 +1114,7 @@ class Box:
             "loaded_mask": snap.loaded_mask,
             "slot_filament_mask": snap.slot_mask,
             "slots": slots,
+            "boxes": self._box_unit_statuses(),
             "materials": self.store.materials,
             "filaments": self.store.filaments,
             "runout": self._runout_status(physical, snap),
@@ -1246,6 +1247,27 @@ class Box:
 
     def _slot_statuses(self, snap):
         return [self._slot_status(slot, snap) for slot in self.physical_slots]
+
+    def _box_unit_statuses(self):
+        """K2-OpenHost: one entry per online CFS for multi-unit frontends.
+
+        The top-level temp_c/humidity_pct follow the box that owns the load
+        path; this list carries every unit's own environment and slot range.
+        """
+        units = []
+        for address in sorted(self.drivers):
+            reply = self.box_replies.get(address)
+            units.append({
+                "address": address,
+                "online": reply is not None,
+                "status_code": None if reply is None else reply.status,
+                "state_code": None if reply is None else reply.box_state,
+                "temp_c": None if reply is None else reply.temp_c,
+                "humidity_pct": None if reply is None else reply.humidity_pct,
+                "slots": [self._global_slot(address, local)
+                          for local in range(SLOTS_PER_BOX)],
+            })
+        return units
 
     def _external_status(self, snap):
         return self._slot_status(self.external_slot, snap, external=True)
