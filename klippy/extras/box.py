@@ -48,6 +48,7 @@ SAFE_WIDGET_COMMANDS = frozenset((
     "BOX_RFID_SCAN",
     "BOX_INFO_REFRESH",
     "_BOX_SET_RUNOUT_SWAP",
+    "_BOX_SET_RUNOUT_ORDER",
     "BOX_ENABLE_AUTO_REFILL",
     "_BOX_SET_UNLOAD_AFTER_PRINT",
     "_BOX_SET_RFID_INSERT_READING",
@@ -1197,6 +1198,8 @@ class Box:
              "HelixScreen/Creality-compatible slot metadata update"),
             ("_BOX_SET_RUNOUT_SWAP", self.cmd_runout_swap,
              "Set automatic runout swapping"),
+            ("_BOX_SET_RUNOUT_ORDER", self.cmd_runout_order,
+             "Set the manual order of identical spools for runout swap"),
             ("BOX_ENABLE_AUTO_REFILL", self.cmd_runout_swap,
              "HelixScreen/Creality-compatible runout swap setter"),
             ("_BOX_SET_UNLOAD_AFTER_PRINT", self.cmd_unload_after_print,
@@ -1395,6 +1398,7 @@ class Box:
             "runout": self._runout_status(physical, snap),
             "runout_groups": self._runout_groups(physical),
             "runout_swap_enabled": self.runout_swap_enabled,
+            "runout_order": self.runout_order,
             "unload_after_print_enabled": self.unload_after_print_enabled,
             "rfid_insert_reading_enabled": self.rfid_insert_reading_enabled,
             "rfid_startup_reading_enabled": self.rfid_startup_reading_enabled,
@@ -1581,6 +1585,7 @@ class Box:
             "rfid_total_m": None if total_mm is None else round(total_mm / 1000.0, 3),
             "rfid_remaining_m": None if remaining_mm is None else round(remaining_mm / 1000.0, 3),
             "rfid_reserve": profile["rfid_reserve"],
+            "runout_rank": None if external else self._runout_rank(slot),
             "external": external,
         }
 
@@ -1776,6 +1781,45 @@ class Box:
         return bool(self.store.setting("runout_swap_enabled", True))
 
     @property
+    def runout_order(self):
+        """Physical slots in the user's runout order (empty: automatic)."""
+        store = getattr(self, "store", None)
+        order = []
+        for value in (store.setting("runout_order", []) if store else []) or []:
+            try:
+                slot = int(value)
+            except (TypeError, ValueError):
+                continue
+            if (0 <= slot < MAX_ADDRESSES * box_protocol.SLOTS_PER_BOX
+                    and slot not in order):
+                order.append(slot)
+        return order
+
+    def _runout_rank(self, slot):
+        order = self.runout_order
+        return order.index(slot) if slot in order else None
+
+    def _runout_sort_key(self, item):
+        # A manual order wins; otherwise the lowest known RFID remaining is
+        # used up first, then slot order.
+        rank = self._runout_rank(item["index"])
+        return (
+            rank is None,
+            0 if rank is None else rank,
+            item.get("rfid_percent") is None,
+            101.0 if item.get("rfid_percent") is None
+            else float(item["rfid_percent"]),
+            item["index"],
+        )
+
+    def _runout_strategy(self, items):
+        if any(self._runout_rank(item["index"]) is not None for item in items):
+            return "manual_order"
+        if any(item.get("rfid_percent") is not None for item in items):
+            return "lowest_remaining_first"
+        return "slot_order"
+
+    @property
     def unload_after_print_enabled(self):
         return bool(self.store.setting("unload_after_print_enabled", False))
 
@@ -1873,12 +1917,7 @@ class Box:
         for (material, color), items in groups.items():
             if len(items) < 2:
                 continue
-            items.sort(key=lambda item: (
-                item.get("rfid_percent") is None,
-                101.0 if item.get("rfid_percent") is None
-                else float(item["rfid_percent"]),
-                item["index"],
-            ))
+            items.sort(key=self._runout_sort_key)
             result.append({
                 "material": material,
                 "color": color,
@@ -1888,10 +1927,7 @@ class Box:
                     "percent": item.get("rfid_percent"),
                     "rfid": bool(item.get("rfid_active")),
                 } for item in items],
-                "strategy": (
-                    "lowest_remaining_first"
-                    if any(item.get("rfid_percent") is not None for item in items)
-                    else "slot_order"),
+                "strategy": self._runout_strategy(items),
             })
         result.sort(key=lambda item: (item["material"], item["color"]))
         return result
@@ -1912,12 +1948,7 @@ class Box:
                 if item["index"] != source and item["present"]
                 and item["material"] == material and item["color"] == color
             ]
-        candidates.sort(key=lambda item: (
-            item.get("rfid_percent") is None,
-            101.0 if item.get("rfid_percent") is None
-            else float(item["rfid_percent"]),
-            item["index"],
-        ))
+        candidates.sort(key=self._runout_sort_key)
         chain = [item["index"] for item in candidates]
         detail = [{
             "slot": item["index"],
@@ -1929,10 +1960,7 @@ class Box:
             "chain": chain,
             "chain_detail": detail,
             "sequence": [source] + chain,
-            "strategy": (
-                "lowest_remaining_first"
-                if any(item.get("rfid_percent") is not None for item in candidates)
-                else "slot_order"),
+            "strategy": self._runout_strategy(candidates),
         }
 
     def runout_recovery(self):
@@ -2603,6 +2631,28 @@ class Box:
         enabled = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
         self.store.set_setting("runout_swap_enabled", enabled)
         self._info(gcmd, "Runout swap %s" % ("enabled" if enabled else "disabled"))
+
+    def cmd_runout_order(self, gcmd):
+        raw = str(gcmd.get("ORDER", "") or "").strip()
+        if not raw or raw.upper() == "AUTO":
+            self.store.set_setting("runout_order", [])
+            self._info(gcmd, "Runout order: automatic")
+            return
+        order = []
+        for part in raw.replace(" ", "").split(","):
+            if not part:
+                continue
+            try:
+                slot = int(part)
+            except ValueError:
+                raise gcmd.error("[BOX]: ORDER must list slot indexes, e.g. ORDER=2,1,0")
+            if not self.is_physical_slot(slot):
+                raise gcmd.error("[BOX]: %d is not a CFS slot" % slot)
+            if slot not in order:
+                order.append(slot)
+        self.store.set_setting("runout_order", order)
+        self._info(gcmd, "Runout order: %s" % ", ".join(
+            self.slot_label(slot) for slot in order))
 
     def cmd_unload_after_print(self, gcmd):
         enabled = bool(gcmd.get_int("ENABLE", 0, minval=0, maxval=1))
