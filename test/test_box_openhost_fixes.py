@@ -240,3 +240,26 @@ def test_z_align_reference_frame_accepts_single_z_k2_pro(monkeypatch):
         [300.0, 300.2]) == [300.0, 300.2]
     with pytest.raises(FakeZPrinter.command_error):
         make_z_align(monkeypatch, 1).validate_reference_frame([300.0, 300.2])
+
+
+class FakeMcuSerial:
+    class msgparser:
+        @staticmethod
+        def get_constant_float(name):
+            assert name == "CLOCK_FREQ"
+            return 120000000.0
+
+
+def test_z_align_mcu_units_match_stock_creality(monkeypatch):
+    z_align = make_z_align(monkeypatch, 1)
+    z_align._main_mcu = type("M", (), {"_serial": FakeMcuSerial()})()
+    # K2 Pro stock profile: rotation_distance 8, 16 microsteps, gear ratio
+    # ignored by the stock host code -> identical MCU arguments.
+    z_align._mcu_step_distance = 8.0 / (200 * 16)
+    assert z_align._calc_speed_ticks(10.0) == 15000
+    assert z_align._calc_distance_steps(10.0) == 8000
+    assert z_align._calc_distance_steps(40.0) == 32000
+    # 64 microsteps on the reference CM5: same physical motion, clamped safe.
+    z_align._mcu_step_distance = 8.0 / (200 * 64)
+    assert z_align._calc_distance_steps(10.0) == 32000
+    assert z_align._calc_distance_steps(40.0) == 0xFFFF
