@@ -1,7 +1,7 @@
 from klippy.extras.box_auto_mapping import (
-    VARIANT_COST,
     color_cost,
     evaluate_mapping,
+    is_material_variant,
     material_cost,
     suggest_mapping,
     suggest_mapping_report,
@@ -47,9 +47,11 @@ def test_related_material_family_is_allowed():
     assert material_cost("PA6-CF", "PA12-CF") == 0.05
 
 
-def test_filled_variant_is_a_last_resort_with_a_warning():
-    assert material_cost("PETG-CF", "PETG") == VARIANT_COST
-    assert material_cost("PLA", "PLA-GF") == VARIANT_COST
+def test_filled_variant_is_never_matched_automatically():
+    assert material_cost("PETG-CF", "PETG") is None
+    assert material_cost("PLA", "PLA-GF") is None
+    assert is_material_variant("PETG", "PETG-CF")
+    assert not is_material_variant("PLA", "PLA+")
     report = suggest_mapping_report(
         [tool(0, "PETG", "#000000", "Generic PETG @K2 Pro-all")],
         [slot(0, "PETG-CF", "#000000", "Generic PETG-CF"),
@@ -58,14 +60,21 @@ def test_filled_variant_is_a_last_resort_with_a_warning():
     assert report["map"] == {0: 1}
     assert report["warnings"] == []
 
-    # Only the filled variant is loaded: the print is not blocked, it warns.
+    # Only the filled variant is loaded: the tool stays unresolved, even with
+    # an identical preset name.
     report = suggest_mapping_report(
-        [tool(0, "PETG", "#000000", "Generic PETG @K2 Pro-all")],
+        [tool(0, "PETG", "#000000", "Generic PETG-CF")],
         [slot(0, "PETG-CF", "#000000", "Generic PETG-CF")],
     )
-    assert report["map"] == {0: 0}
-    assert report["unresolved"] == []
-    assert report["warnings"][0]["kind"] == "material_variant"
+    assert report["map"] == {}
+    assert report["unresolved"] == [0]
+
+    # Nor through the loaded-filament fallback of single-tool prints.
+    report = suggest_mapping_report(
+        [tool(0, "PETG", "#FF0000")],
+        [slot(0, "PETG-CF", "#000000", loaded=True)],
+    )
+    assert report["unresolved"] == [0]
     assert material_cost("ABS", "PLA") is None
 
 
