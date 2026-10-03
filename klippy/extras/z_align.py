@@ -18,6 +18,7 @@
 # retries: 5  # Max MCU retry attempts before aborting.
 # retry_tolerance: 10  # Allowed left/right mismatch in MCU-reported steps.
 # endstop_pin_z: PA15, PA8  # Bottom photoelectric switch pins, one per Z motor.
+#                           # The single-Z K2 Pro uses one switch: PA15.
 # zd_up: 0  # Direction level that moves Z away from the switches.
 # zes_untrig: 1  # Logic level reported by an untriggered switch.
 # rise_distance: 340  # mm rise after switch alignment before final Z home.
@@ -46,7 +47,10 @@ STARTUP_RISE_PRIME_MAX_DIST = 0.1
 STARTUP_RISE_PRIME_SPEED = 10.0
 MOTOR_ZDOWN_TIMEOUT = -10000
 MOTOR_PROTECT_ERROR = -10001
-TILT_BIAS_FILE = '/mnt/UDISK/printer_data/z_align_tilt_bias.json'
+TILT_BIAS_FILE = os.path.join(
+    '/mnt/UDISK/printer_data' if os.path.isdir('/mnt/UDISK/printer_data')
+    else os.path.expanduser('~/printer_data'),
+    'z_align_tilt_bias.json')
 MAX_TILT_BIAS = 1.0
 
 
@@ -613,8 +617,9 @@ class ZAlign:
             values = [float(value) for value in frame]
             steppers = self._z_steppers()
             z_min, z_max = self._toolhead.get_kinematics().rails[2].get_range()
-            if len(values) != len(steppers) or len(values) != 2:
-                raise ValueError('expected two Z positions')
+            # One position per Z stepper: K2 Plus dual Z or single-Z K2 Pro.
+            if len(values) != len(steppers) or len(values) not in (1, 2):
+                raise ValueError('expected one Z position per Z stepper')
             if not all(math.isfinite(value) for value in values):
                 raise ValueError('non-finite Z position')
             if min(values) < z_min or max(values) > z_max:

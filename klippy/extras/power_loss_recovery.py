@@ -816,14 +816,75 @@ class _VirtualSDGCodeProxy:
         return result
 
 
+class _TrustedZReference:
+    """Z reference for single-Z printers without a Z-max homing primitive.
+
+    K2-OpenHost / K2 Pro: Z homes by touching the nozzle to the bed (PRTouch),
+    which is impossible over a part, and the single TMC2208 Z axis cannot home
+    sensorlessly to Z max like the K2 Plus z_align. The leadscrew-driven bed
+    holds its position without power, so recovery restores the physical
+    (kinematic) Z recorded with each checkpoint instead of re-homing Z. A bed
+    that moved while unpowered can only have dropped, which leaves the nozzle
+    higher than expected, never lower. If a layer change happened after the
+    last durable checkpoint, the resumed print is up to that layer high.
+    """
+
+    KIND = "trusted_kinematic_z"
+
+    def __init__(self, toolhead):
+        self.toolhead = toolhead
+        rails = getattr(toolhead.get_kinematics(), "rails", None)
+        if not rails or len(rails) < 3:
+            raise RuntimeError("trusted Z reference requires a Z rail")
+        self.zmax = float(rails[2].get_range()[1])
+
+    def capture_reference_frame(self):
+        return {
+            "kind": self.KIND,
+            "kinematic_z": float(self.toolhead.get_position()[2]),
+            "zmax": self.zmax,
+        }
+
+    def validate_reference_frame(self, frame):
+        if not isinstance(frame, dict) or frame.get("kind") != self.KIND:
+            raise ValueError("checkpoint Z reference is not a trusted single-Z frame")
+        value = frame.get("kinematic_z")
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not -3.0 <= value <= self.zmax):
+            raise ValueError("invalid saved kinematic Z")
+
+    def is_active(self):
+        return False
+
+    def abort_internal(self, *args, **kwargs):
+        pass
+
+    def invalidate_homing_state(self):
+        pass
+
+
 class PowerLossRecovery:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object("gcode")
         self.startup_output_handlers = len(self.gcode.output_callbacks)
-        self.store = AtomicSnapshotStore(config.get(
-            "state_path", "/mnt/UDISK/printer_data/power_loss_recovery"))
+        persistent_root = (
+            "/mnt/UDISK/printer_data"
+            if os.path.isdir("/mnt/UDISK/printer_data")
+            else os.path.expanduser("~/printer_data")
+        )
+        self.store = AtomicSnapshotStore(os.path.expanduser(config.get(
+            "state_path",
+            os.path.join(persistent_root, "power_loss_recovery"))))
+        # z_align: K2 Plus dual-Z rehome to Z max. trusted_position: single-Z
+        # printers such as the K2 Pro (see _TrustedZReference). auto picks
+        # z_align when [z_align] is configured.
+        self.z_reference = config.getchoice(
+            "z_reference",
+            {"auto": "auto", "z_align": "z_align",
+             "trusted_position": "trusted_position"},
+            "auto")
         self.candidate_interval = config.getfloat(
             "candidate_interval", 0.5, minval=0.1)
         self.checkpoint_interval = config.getfloat(
@@ -887,6 +948,17 @@ class PowerLossRecovery:
 
     # Lifecycle -------------------------------------------------------
 
+    def _z_reference_object(self):
+        z_align = self.printer.lookup_object("z_align", None)
+        mode = self.z_reference
+        if mode == "auto":
+            mode = "z_align" if z_align is not None else "trusted_position"
+        if mode == "z_align":
+            if z_align is None:
+                raise RuntimeError("z_reference: z_align requires [z_align]")
+            return z_align
+        return _TrustedZReference(self.toolhead)
+
     def _handle_ready(self):
         try:
             if not self.store.status()["available"]:
@@ -895,7 +967,7 @@ class PowerLossRecovery:
             self.toolhead = self.printer.lookup_object("toolhead")
             self.gcode_move = self.printer.lookup_object("gcode_move")
             self.print_stats = self.printer.lookup_object("print_stats")
-            self.z_align = self.printer.lookup_object("z_align")
+            self.z_align = self._z_reference_object()
             self.motion_mcus = (
                 self.printer.lookup_object("mcu"),
                 self.printer.lookup_object("mcu nozzle_mcu"),
@@ -1632,16 +1704,20 @@ class PowerLossRecovery:
             "M104 S%.3f" % min(heaters["extruder"], self.nozzle_standby),
         ):
             self._run(command)
-        if not self.z_align.start_prepare():
-            raise ValueError("Z alignment unexpectedly reported Z homed")
-        prepared = self.z_align.wait_prepare_complete()
-        self._run("G28 X Y")
-        clearance = self._clearance(state["max_print_z"])
-        if clearance > float(prepared.get("prepared_zmax", self.z_align.zmax)):
-            raise ValueError("recovery clearance exceeds Z reference")
-        self.z_align.perform_blocking_rise(
-            target_z=clearance, rise_speed=self.recovery_z_speed,
-            reference_frame=snapshot["z_frame"])
+        if isinstance(self.z_align, _TrustedZReference):
+            self._restore_trusted_z(snapshot["z_frame"], state["max_print_z"])
+        else:
+            if not self.z_align.start_prepare():
+                raise ValueError("Z alignment unexpectedly reported Z homed")
+            prepared = self.z_align.wait_prepare_complete()
+            self._run("G28 X Y")
+            clearance = self._clearance(state["max_print_z"])
+            if clearance > float(
+                    prepared.get("prepared_zmax", self.z_align.zmax)):
+                raise ValueError("recovery clearance exceeds Z reference")
+            self.z_align.perform_blocking_rise(
+                target_z=clearance, rise_speed=self.recovery_z_speed,
+                reference_frame=snapshot["z_frame"])
 
         self.gcode_move.absolute_coord = True
         self.gcode_move.absolute_extrude = False
@@ -1668,6 +1744,21 @@ class PowerLossRecovery:
         self._restore_tuning(snapshot)
         self._restore_gcode_state(state)
         self._restore_fans(fans)
+
+    def _restore_trusted_z(self, frame, max_print_z):
+        """Re-reference Z from the checkpoint and clear the part before XY homing."""
+        current = float(frame["kinematic_z"])
+        clearance = self._clearance(max_print_z)
+        if clearance is None or clearance < current:
+            raise ValueError("unsafe recovery clearance")
+        position = list(self.toolhead.get_position())
+        position[2] = current
+        self.toolhead.set_position(position, homing_axes="z")
+        # Raising Z moves the bed away from the nozzle and the part.
+        self.toolhead.manual_move(
+            [None, None, clearance], self.recovery_z_speed)
+        self.toolhead.wait_moves()
+        self._run("G28 X Y")
 
     def _restore_box(self, gcmd, token, temperature):
         box = self.printer.lookup_object("box", None)

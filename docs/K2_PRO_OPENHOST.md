@@ -183,6 +183,16 @@ Cartographer support lives in `MzTechnology97/cartographer3d-plugin-k2openhost`.
 
 Direct-USB Cartographer validation on the CM5 is the next probe milestone. Mixed mode is optional and should only be enabled after standalone Cartographer is stable.
 
+## Power-loss recovery on the K2 Pro
+
+Upstream `power_loss_recovery.py` re-references Z through `[z_align]`: the MCU drops the bed onto the bottom photoelectric switch, away from the nozzle and the part, and the checkpoint stores where that switch sits in the print's Z coordinates. The K2 Pro has the same bottom switch with a single Z motor (Creality F012 stock: `endstop_pin_z: PA15`), so OpenHost enables `[z_align]` with the stock K2 Pro values and adapts `z_align.py` to accept a one-stepper reference frame.
+
+`PLR_RECOVER CONFIRM=1` then follows the upstream flow: drop to the switch, home X/Y, rise to `max_print_z + recovery_lift` (capped by `maximum_recovery_z` and `zmax`) at the K2 Pro `max_z_velocity` of 10 mm/s, and restore heaters, CFS, mesh and position. Because `[z_align]` is configured, the first `G28` after boot also drops the bed to the switch before the fast rise and PRTouch homing, as on the stock firmware. State files default to `~/printer_data` on the CM5.
+
+For single-Z printers without a bottom switch, `z_reference: trusted_position` restores the physical Z stored with each checkpoint instead; it is not used on the K2 Pro.
+
+Integrated homing through `[z_align]` and the recovery path still need supervised validation on the real K2 Pro, including a power cut.
+
 ## Local extras and clean Git updates
 
 Moonraker/Mainsail update management expects this repository to remain clean. Files tracked by this fork should not be overwritten by external installers. Locally installed extras such as ShakeTune can remain outside Git tracking so they do not mark the Kalico repository dirty.
@@ -197,7 +207,7 @@ The CFS extras are mirrored to `MzTechnology97/k2-pro-custom-firmware:k2-openhos
 2. adopt the upstream Box pause/resume flow (`_BOX_PAUSE_CAPTURE` / `_BOX_RESUME_PREPARE` / `_BOX_RESUME_COMMIT`) together with the matching upstream `box.py`, instead of importing the K2 Plus macros alone;
 3. direct-USB Cartographer cold boot, reset/reconnect and persistent by-id path;
 4. controlled Cartographer probe/touch/scan and bed mesh;
-5. first complete supervised print path;
+5. first complete supervised print path, including a supervised power cut with `PLR_RECOVER`;
 6. optional mixed PRTouch + Cartographer validation.
 
 ## Canonical project documentation
