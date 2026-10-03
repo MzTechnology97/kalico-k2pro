@@ -30,8 +30,8 @@ duplicated here.
 - `[mcu rpi]` host MCU on the CM5 and a `CM5-temp` temperature sensor;
 - extruder sensor `PT1000`, bed sensor `R3men_bed` (custom thermistor
   definitions included), extruder `rotation_distance: 7.0207`;
-- microsteps X/Y 32, Z 64; Z `homing_retract_dist: 10`; TMC2208 Z
-  `stealthchop_threshold: 0`, `interpolate: False`;
+- microsteps X/Y 32, Z 16 (stock; 64 made the MCU-driven z_align lose steps);
+  Z `homing_retract_dist: 10`; TMC2208 Z `stealthchop_threshold: 0`;
 - heater bed `max_power: 0.6`; `ptc_power_limiter` bed 0.6 / chamber 0.5 /
   combined 1.0;
 - input shaper 48.8 Hz (X) / 40.8 Hz (Y) and ShakeTune resonance settings;
