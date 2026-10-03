@@ -36,7 +36,9 @@ Cartographer       -> direct USB on CM5, preferably /dev/serial/by-id/...
 
 Cartographer is **not** planned as `/dev/ttyUSB3` anymore. A fourth gadget/MUX path was prototyped and carried real Cartographer traffic, but direct USB is now preferred because it handles native MCU reset/re-enumeration without adding a PTY/MUX/DEMUX layer.
 
-T113 filesystem paths such as `/mnt/UDISK/...` should be converted to the CM5 `printer_data` layout where required.
+`printer.cfg` in this folder already uses these `/dev/ttyUSB*` paths and the CM5 `~/printer_data/gcodes` layout. `power_loss_recovery` is disabled because the current upstream implementation requires the K2 Plus-only `[z_align]`.
+
+The tuned configuration of the reference K2 Pro + CM5 machine is kept in [`reference/k2pro-cm5/`](reference/k2pro-cm5/README.md).
 
 ## Motor-control profile
 
@@ -66,7 +68,7 @@ BOX_PRINT_START FILENAME="folder/file.gcode" MAP="0:1,1:3"
 
 The `box` Moonraker object gains `print_mapping_version`, `print_mapping_enabled`, `print_info` and `print_mapping`. `mainsail-k2openhost` uses those fields to show filament mapping inside the normal Print dialog.
 
-`BOX_PRINT_INFO` only reads G-code metadata and is safe for the first validation step. In `observation_mode`, `BOX_PRINT_START` is intentionally blocked. Do not switch to operational Box mode merely to test the UI; validate the metadata path first.
+`BOX_PRINT_INFO` only reads G-code metadata and stays available in `observation_mode`, where `BOX_PRINT_START` is intentionally blocked. The profile ships with `observation_mode: false`: operational Box mode, `BOX_PRINT_INFO` and auto-mapping are validated on the reference K2 Pro, while mapped `BOX_PRINT_START` prints with real tool changes are still being validated. Set `observation_mode: true` as a read-only fallback.
 
 The helper translates Orca purge volumes and nozzle temperatures to physical slots and preserves that translation when the normal `START_PRINT` macro calls `PARSE_FLUSH_VOLUMES`.
 
