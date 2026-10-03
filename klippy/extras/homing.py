@@ -395,6 +395,10 @@ class Homing:
         rail_name = rail.get_name()
         if rail_name not in ("stepper_x", "stepper_y"):
             return
+        # K2 closed-loop sensorless homing check; other printers home as in
+        # stock Kalico.
+        if self.printer.lookup_object("motor_control", None) is None:
+            return
         stepper_names = [s.get_name() for s in rail.get_steppers()]
         first_pos = first_hmove.get_trigger_mm_for_stepper_names(stepper_names)
         second_pos = second_hmove.get_trigger_mm_for_stepper_names(stepper_names)
@@ -1001,6 +1005,9 @@ class PrinterHoming:
 
     def _prime_xy_home_once_after_restart(self, kin, axis_idx):
         if axis_idx not in (0, 1):
+            return
+        # Only the K2 closed-loop motors need the first-home prime.
+        if self._lookup_motor_control() is None:
             return
         rail = kin.rails[axis_idx]
         hi = rail.get_homing_info()
