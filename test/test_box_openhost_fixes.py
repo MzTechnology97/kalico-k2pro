@@ -228,8 +228,11 @@ class FakeZPrinter:
 
 def make_z_align(monkeypatch, stepper_count):
     # z_align imports Kalico's mcu module at import time; only __init__ uses it.
-    monkeypatch.setitem(sys.modules, "mcu", types.ModuleType("mcu"))
-    ZAlign = importlib.import_module("extras.z_align").ZAlign
+    # It is a package-relative import, so load it as klippy.extras.z_align.
+    monkeypatch.syspath_prepend(str(ROOT))
+    monkeypatch.setitem(
+        sys.modules, "klippy.mcu", types.ModuleType("klippy.mcu"))
+    ZAlign = importlib.import_module("klippy.extras.z_align").ZAlign
     z_align = ZAlign.__new__(ZAlign)
     z_align.printer = FakeZPrinter()
     kin = FakeKinematics()
