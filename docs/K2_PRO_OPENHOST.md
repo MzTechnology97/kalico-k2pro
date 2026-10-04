@@ -242,6 +242,32 @@ Zero and negative readings are accepted as measurements. NaN, infinity and non-n
 
 A `[temperature_sensor motor_X_MCU]` section in the configuration conflicts with these objects and is rejected with a clear error.
 
+## MOT2 protection answers
+
+The protection query (`FUNC_PROTECTION` `0x0C`, data `11`) must answer with exactly 8 bytes: `error_code` then `warning_code`, each a little-endian uint32. `motor_map.json` types the matching firmware parameters (`protection_param_err_code_mask`, `protection_param_warning_code_mask` and the `*_backup` values) as `uint32_t`. No other data value or length is verified, so none is accepted. A firmware extension needs a documented format first; it is never padded or cut.
+
+The bit meanings are in `ERROR_CODE_LABELS` and `WARNING_CODE_LABELS`. They match [Jacob's error explanation](https://jacob10383.github.io/k2-plus-custom-firmware/error-explanation/#motor-control); that page explains each bit and what to check.
+
+The frame status byte carries latch bits: `0x01` stall, `0x02` error and `0x04` warning.
+
+| Answer | Result |
+| --- | --- |
+| 8 bytes, latch bits consistent with the masks | decoded; `active`, `has_error`, `stalled` |
+| a mask set without its latch bit | decoded as active; `status_mismatch: true` |
+| error or warning latch bit set, matching mask 0 | unverified |
+| unknown status bits | unverified |
+| payload not 8 bytes | unverified |
+| bad CRC, address or function | transport error; retried once by the client |
+
+An unverified answer raises `ProtectionResponseError`, the same as a failed query:
+- the cached fault stays;
+- the axis is never reported healthy;
+- the existing policies apply unchanged: X/Y shut down, E pauses and can be cleared, a stall-pin query that fails is handled as an unverified fault.
+
+`motor_control.py` is bundled from Jacob's K2 firmware. On the next sync, keep `PROTECTION_PAYLOAD_FORMATS`, `ProtectionResponseError` and the strict `decode_protection_payload()`. The upstream version pads short payloads with zeros.
+
+Hardware still to confirm: the real latch-bit behaviour after a clear, with the printer idle.
+
 ## Probe baseline and Cartographer
 
 The current known-good Z-homing baseline is the stock PRTouch stack. Full homing has been tested successfully with Cartographer disabled.
