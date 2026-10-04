@@ -943,7 +943,8 @@ def summarize_override_actions(actions: list[dict]) -> dict:
 
     verified  every override read back equal to its target
     degraded  some override is unknown or wrong (see the lists)
-    unknown   no override was checked
+    none      no override is configured for this axis: nothing to verify
+    unknown   overrides exist but none was checked
     """
     problems = {"critical": [], "diagnostic": [], "unclassified": []}
     checked = writes = 0
@@ -969,6 +970,8 @@ def summarize_override_actions(actions: list[dict]) -> dict:
         state = "degraded"
     elif checked:
         state = "verified"
+    elif not actions:
+        state = "none"
     else:
         state = "unknown"
     return {
@@ -5420,11 +5423,11 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 "reachable": record["reachable"],
                 "parameters": finite_copy(record["parameters"]),
                 "calibration": finite_copy(record["calibration"]),
-                "configured": params == "verified",
+                "configured": params in ("verified", "none"),
                 "calibration_verified": calibration == "read",
                 "operational": ready and not record["blocked"],
                 "blocked": record["blocked"],
-                "degraded": ready and (params != "verified"
+                "degraded": ready and (params not in ("verified", "none")
                                        or calibration != "read"),
                 "reasons": list(record["reasons"]),
                 "policy": self.override_policy,
