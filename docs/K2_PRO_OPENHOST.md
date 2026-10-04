@@ -2,7 +2,7 @@
 
 This branch is the current integrated Kalico target for the K2-OpenHost project.
 
-Last updated: **2026-10-02**.
+Last updated: **2026-10-04**.
 
 ## Upstream attribution
 
@@ -17,8 +17,11 @@ The code base is inherited from `Jacob10383/kalico`, itself based on `KalicoCrew
 - Jacob-compatible CFS print metadata/mapping API for Mainsail;
 - K2 Pro closed-loop motor-control topology and tuned configuration;
 - startup delay/retry handling for external-host boot timing;
-- tracked loader modules for Cartographer and G-code shell command support;
-- synchronization/compile checks for K2-specific extras.
+- Jacob10383's 071c813 update: native logical-tool mapping and the `_BOX_PAUSE_CAPTURE` / `_BOX_RESUME_PREPARE` / `_BOX_RESUME_COMMIT` pause contract;
+- CFS mapping warnings, strict material-variant rule and manual runout order;
+- OrcaSlicer filament Sync through Moonraker `lane_data`;
+- tracked G-code shell command support (Cartographer comes from the official plugin and is not tracked here);
+- CI: Ruff, firmware build and the strict MkDocs build.
 
 ## Current transport
 
@@ -28,6 +31,8 @@ Nozzle MCU -> /dev/ttyUSB1 -> T113 ttyGS1 -> ttyS3
 RS-485/CFS -> /dev/ttyUSB2 -> T113 ttyGS2 -> ttyS5
 Cartographer -> direct USB on CM5 (preferred target)
 ```
+
+On the printer side the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) runs these three bridges from the T113's slot B at every boot, installed from the [K2-OpenHost Installer Helper](https://github.com/MzTechnology97/k2-openhost-installer-helper). It was prepared on stock firmware 1.1.0.94 and is not yet hardware-validated.
 
 The earlier Cartographer MUX/DEMUX experiment is not the final topology. It carried live Cartographer MCU traffic, but reset/re-enumeration and PTY lifecycle add unnecessary complexity. The three gadget serial channels are now reserved for the original K2 buses.
 
@@ -113,6 +118,13 @@ The compatibility surface includes the flat `slots[]` payload, `external: true` 
 
 K2-OpenHost keeps Jacob's `box.api_version: 1` contract for OrcaSlicer compatibility and advertises the additive library separately as `filament_inventory_version: 2`. The inventory layer adds a persistent filament library on top of the existing slot profiles. The library and slot assignments live in the configured `state_path` (normally `~/printer_data/filament_box.json`) and are published through `printer.objects.box.filaments` and `printer.objects.box.slots`.
 
+With `library_path` (default in `config/k2/box.cfg`: `~/printer_data/config/cfs_filaments.json`) the custom profiles live in their own JSON file:
+- it is visible in the Mainsail file manager and in Moonraker backups;
+- a replaced file is reloaded automatically or with `_BOX_FILAMENT_RELOAD`;
+- profiles from an older state file move there once, with a backup `<state_path>.pre-library`.
+
+Brands are managed from the Mainsail filament library.
+
 Reusable filament profiles contain an ID, material, default color, brand, name, flush/target temperature, optional nozzle min/max range, optional pressure-advance metadata, optional RFID material code and optional Spoolman ID. The target temperature is copied into each assigned slot, so two saved profiles using the same material family may still keep different purge/fallback temperatures. They can be created from the Mainsail **CFS filament library** or from G-code:
 
 ```text
@@ -131,7 +143,16 @@ K2-OpenHost ships `config/k2/cfs_system_filaments.json`, generated from the curr
 
 RFID remaining filament is tracked in two layers. The CFS-reported percentage is retained as `rfid_reported_percent`; K2-OpenHost also keeps an estimated `rfid_percent`/`rfid_remaining_m` from the RFID spool length and `print_stats.filament_used`. `BOX_RFID_SCAN` performs an explicit all-populated-slot scan, while `_BOX_RFID_READ_SLOT SLOT=n` rereads one physical bay on demand. During printing the estimate is decremented from actual positive extrusion usage and persisted periodically and when printing stops. A later hardware reread may lower the estimate but a stale CFS percentage never increases it. `_BOX_RFID_READ_SLOT SLOT=n` forces a single-slot RFID reread and refreshes the hardware percentage. Confirmed runout persists the source estimate at zero and clears its active slot profile after a successful swap (or before pausing when the CFS has positively reported runout but no replacement exists). K2-RFID Windows/Android tags that use the non-unique serial `000001` use a portable fingerprint based on supplier/material/color/nominal length/reserve, so moving a spool between CFS slots preserves its local remaining estimate. If two simultaneously inserted tags are indistinguishable by those fields, the second live instance is deliberately split by slot to prevent the two physical spools from corrupting each other's estimate. The previous slot-scoped estimate format is migrated on first use.
 
-Runout groups are formed from present slots with the same material and colour. When RFID percentages are known, both automatic print mapping between otherwise equal candidates and runout replacement chains prefer the lowest remaining percentage first; slots without a known percentage are used after known RFID spools. Manual slot selection still remains authoritative for the currently loaded source.
+Runout groups are formed from present slots with exactly the same material string and colour. When RFID percentages are known, both automatic print mapping between otherwise equal candidates and runout replacement chains prefer the lowest remaining percentage first; slots without a known percentage are used after known RFID spools. Manual slot selection still remains authoritative for the currently loaded source.
+
+The order can also be set by hand, useful for spools without RFID (a full 1 kg spool, a 300 g one and a nearly empty one):
+
+```text
+_BOX_SET_RUNOUT_ORDER ORDER=2,1,0   # physical slots, first used first
+_BOX_SET_RUNOUT_ORDER AUTO          # back to the automatic order
+```
+
+The order is persisted as the `runout_order` setting. Each slot reports its `runout_rank`, and the strategy shows `manual_order`. The Mainsail Runout swap widget edits it with up/down arrows.
 
 Slot inventory persistence is deliberately event-driven. `filament_box.json` stores both manual and RFID slot assignments plus spool-identity remaining estimates. On startup K2-OpenHost performs one CFS slot-presence mask query, restores cached metadata only for occupied bays, and leaves per-tag RFID reads disabled by default. A live present→absent transition clears the corresponding slot immediately; a bay already absent during boot is cleared only after repeated topology confirmation to avoid destroying valid inventory because of a transient RS-485 startup sample. RFID records are read on insertion, explicit per-slot reread, or only when the optional startup-reread setting is enabled.
 
@@ -146,11 +167,21 @@ K2-OpenHost deliberately keeps compatibility with **both** the original/upstream
 - HelixScreen's `BOX_MODIFY_TN` and `BOX_MODIFY_TN_DATA ... PART=color_value` commands are accepted. Tool mapping is persisted in K2-OpenHost and the T0..T15 fallbacks honor that map when no per-print `BOX_PRINT_START` map is active.
 - The stock K2 command envelope emitted by HelixScreen (`BOX_SAVE_FAN`, `BOX_MODE_WAIT`, `CR_BOX_*`, etc.) is accepted. OpenHost deliberately collapses those steps onto the already validated high-level change/unload engine so the stock envelope does not duplicate purge, cut or RS-485 operations.
 - The current `feat/k2-box-fork-support` branch deliberately gives the nested `T1` stock schema precedence if a payload contains both nested and flat representations. With K2-OpenHost's dual payload this means that branch currently follows the same stock-compatible path as original HelixScreen. If upstream later prefers the Flat/API-v1 path, the native Fork commands (`T<n>`, `BOX_UNLOAD`, `_BOX_SLOT_SET`, `_BOX_SLOT_CLEAR`) remain available as well.
-- HelixScreen's `lane_data` convention remains its own standard Moonraker persistence layer. K2-OpenHost does not require HelixScreen-specific fields in `filament_box.json`, so upstream HelixScreen can keep using `lane_data` and its own override merge logic unchanged.
+- K2-OpenHost publishes the occupied CFS slots to Moonraker's `lane_data` namespace (`publish_lane_data`, see OrcaSlicer below), the AFC/Happy Hare convention that HelixScreen also reads. No HelixScreen-specific fields are needed in `filament_box.json`, and HelixScreen keeps its own override merge logic unchanged.
+- The [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) installs upstream HelixScreen on the printer screen, pointed at this host's Moonraker.
 
 This compatibility layer is additive: current Mainsail, Orca and the K2-OpenHost filament inventory continue to use the flat API, while HelixScreen sees the stock K2 contract it already supports.
 
 ## OrcaSlicer direct CFS printing
+
+**Official OrcaSlicer (2.3.2 and later), filament Sync:**
+- `box_lane_data.py` keeps one `lane<N>` entry per occupied physical slot in Moonraker's `lane_data` namespace, with `lane`, `material`, `color`, `nozzle_temp`, `spool_id`, `name`, `vendor` and `filament_id`;
+- the Sync button in OrcaSlicer fills its filament list from these entries;
+- writes run in a background thread and send only what changed;
+- `publish_lane_data: false` in `[box]` turns it off;
+- OrcaSlicer 2.4.2 sends a placeholder API key that Moonraker rejects; the [K2-OpenHost OrcaSlicer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/ORCASLICER.md) has the nginx fix.
+
+**Jacob10383's OrcaSlicer fork:**
 
 Jacob10383's OrcaSlicer fork detects `box.print_mapping_version == 1`, queries `printer.objects.box`, uploads without auto-start, asks the printer to inspect the stored G-code with `BOX_PRINT_INFO`, and starts it with `BOX_PRINT_START` plus the selected logical-tool to physical-slot map. K2-OpenHost deliberately keeps `print_mapping_version: 1`, so this path is protocol-compatible without a stock Creality mapping endpoint.
 
@@ -163,6 +194,12 @@ auto_map_block_unresolved: true
 ```
 
 The auto-mapper uses material family plus perceptual OKLab color matching derived from Jacob's Orca mapping logic. Exact Orca profile-name matches remain strongest; when the slicer name is not present in the slot inventory, an otherwise compatible `Generic` profile is preferred over an unrelated vendor profile with the same material/color. The same suggestion is published in `box.auto_mapping` when `BOX_PRINT_INFO` inspects a file, so Mainsail and the firmware share one mapping decision path. On the validated K2-OpenHost profile `auto_map_prints` is enabled; a normal Orca/Moonraker print start installs the mapping before the first `T` command. If any used tool cannot be resolved, the start is rejected rather than silently printing from the wrong spool. Explicit `BOX_PRINT_START` mappings always take precedence.
+
+Mapping rules added on 2026-10-04:
+- **Warnings that never block.** `mapping_warnings` (also in `box.auto_mapping.warnings`, logged to the console) reports:
+  - `low_filament`: the estimated need, `length_mm/1000 * 1.1 + 1` m, is more than the slot plus its same-material, same-colour runout partners hold;
+  - `material_variant` and `material_mismatch`.
+- **Strict variants.** A base material is never auto-mapped onto its filled variant (CF, GF, KF and AF fillers): a PETG print does not start on PETG-CF because no similar PETG is loaded. The loaded-filament fallback also requires a compatible material.
 
 Hardware-backed metadata validation on `cubo.gcode` detected PETG tools T0/T1. With a temporary black PETG profile on physical slot 1 and cyan PETG profile on slot 2, `BOX_PRINT_INFO` produced `auto_mapping: {0:1, 1:2}`; after the temporary profiles were removed the same file returned both tools unresolved, confirming the fail-safe behavior without starting a print.
 
@@ -206,11 +243,12 @@ Upstream changes from Jacob10383 are reviewed directly against [Jacob10383/k2-pl
 ## Next milestones
 
 1. controlled single-tool `BOX_PRINT_START`, then a mapped multimaterial tool change with purge matrix and temperatures;
-2. adopt the upstream Box pause/resume flow (`_BOX_PAUSE_CAPTURE` / `_BOX_RESUME_PREPARE` / `_BOX_RESUME_COMMIT`) together with the matching upstream `box.py`, instead of importing the K2 Plus macros alone;
+2. hardware-validate the upstream Box pause/resume flow (`_BOX_PAUSE_CAPTURE` / `_BOX_RESUME_PREPARE` / `_BOX_RESUME_COMMIT`), integrated with the 071c813 `box.py`;
 3. direct-USB Cartographer cold boot, reset/reconnect and persistent by-id path;
 4. controlled Cartographer probe/touch/scan and bed mesh;
 5. first complete supervised print path, including a supervised power cut with `PLR_RECOVER`;
-6. optional mixed PRTouch + Cartographer validation.
+6. optional mixed PRTouch + Cartographer validation;
+7. T113 bootstrap on the real printer: slot B trial boot, gadget/bridges, HelixScreen, `k2oh-mcu-fw`.
 
 ## Canonical project documentation
 
