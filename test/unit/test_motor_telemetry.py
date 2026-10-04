@@ -288,6 +288,7 @@ def test_motor_control_status_is_cached_and_serializable(h):
         _readiness_status=lambda: {},
         param_cache=mc.MotorParamCache(mc.ALL_AXES),
         event_log=mc.MotorEventLog(),
+        extruder_transport=None,
         is_check_cut_pos_start=False,
         cut_state=False,
         _transport_ready_status=lambda: {},

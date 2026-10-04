@@ -243,6 +243,28 @@ Problems are listed as `critical_problems`, `diagnostic_problems` and `unclassif
 
 Every startup or retry resets readiness.
 
+### Nozzle transport for the E motor
+
+X and Y talk over the shared RS-485 bus: its counters are in `serial_485` and cover every device on that bus. E talks through the Nozzle MCU's transparent transport (`transparent_send` / `transparent_response`), which has its own counters in `motor_control.nozzle_transport`.
+
+| field | meaning |
+| --- | --- |
+| `configured` / `busy` | the transparent command is registered / a send is in progress |
+| `sends` | calls from the motor firmware client: one logical command attempt each, because the client owns retries and calls again |
+| `wire_attempts` | `transparent_send` commands on the Nozzle link; a send with `attempts=N` makes up to N |
+| `responses` / `timeouts` | wire attempts answered / not answered before the host deadline |
+| `no_response` | sends whose every wire attempt timed out |
+| `busy_rejections` | sends refused because another send was in progress |
+| `send_errors` / `protocol_errors` | the host could not send / the answer had an unexpected payload type |
+| `last_result`, `last_error`, `last_at` | the latest outcome (monotonic time; raw bytes scrubbed) |
+| `latency_ms` | `last`, `min`, `max`, `avg` from send to response, on answered wire attempts |
+
+**Timeouts:** the device timeout (`timeout_ms` sent to the Nozzle MCU, from the command timeout) differs from the host wait. The host waits `max(timeout + 0.25 s, 0.5 s)` unless a `response_timeout` is given.
+
+**Response matching:** the protocol has no transaction id. A response counts only if the MCU stamped it after the current query started (`#sent_time`). The callback is removed when the wait ends, so a response that arrives later is not counted and cannot be attributed. One send at a time is enforced by `busy`.
+
+**Budget:** this adds no traffic. The temperature poll reads one axis every 6 s (E every 18 s) and the protection poll runs every 60 s; these counters only describe that traffic. Timeouts, retries and polling are unchanged.
+
 ### Motor event history
 
 `motor_control` keeps a bounded, in-memory history of protection events and recovery steps, so a pause or recovery can be explained after the fact. The cached fault itself is cleared after a confirmed recovery; the history is not.
