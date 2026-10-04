@@ -3078,7 +3078,7 @@ class Box:
             and spool.get("fingerprint") == fingerprint
             for other_slot, spool in self.rfid_spools.items())
         return (
-            "%s:slot:%d" % (fingerprint, int(slot))
+            "%s:slot:%s" % (fingerprint, slot)
             if duplicate else fingerprint)
 
     def _rfid_slot_keys(self):
@@ -3145,8 +3145,8 @@ class Box:
             material = self._clean_rfid(fields.get("mat_id")).upper()
             number = self._clean_rfid(fields.get("number")).upper() or "?"
             color = self._normal_color(fields.get("color")) or "?"
-            legacy = "slot:%s:%s:%s:%s:%d" % (
-                supplier, material, number, color, int(slot))
+            legacy = "slot:%s:%s:%s:%s:%s" % (
+                supplier, material, number, color, slot)
             saved = persisted.get(legacy, {})
             if not saved and fingerprint and key != fingerprint:
                 saved = persisted.get(fingerprint, {})
