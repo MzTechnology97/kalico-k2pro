@@ -173,6 +173,96 @@ def build_485_frame(addr, func, payload=b"", header_byte=0x00):
     return bytes([PACK_HEAD]) + body + bytes([crc8(body[1:])])
 
 
+class LinkWatchdog:
+    """Health of the RS-485 link from request outcomes.
+
+    On K2-OpenHost the host port is a USB gadget serial: if the T113 bridge
+    stops or the RS-485 side goes quiet, the port stays open and every
+    request just times out, so Klipper itself never notices. The link is
+    "lost" when no device on the bus has answered for ``lost_after`` seconds
+    and at least ``min_timeouts`` requests in a row timed out. One answer from
+    any device (CFS or motors) brings it back to "ok". A single absent device
+    does not count: the others keep answering.
+
+    ok()/timeout() run on the request worker thread; evaluate() and
+    snapshot() on the reactor.
+    """
+
+    def __init__(self, lost_after=10.0, min_timeouts=3, clock=time.monotonic):
+        self.lost_after = float(lost_after)
+        self.min_timeouts = int(min_timeouts)
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.started = clock()
+        self.last_ok = None
+        self.last_timeout = None
+        self.consecutive = 0
+        self.state = "unknown"
+        self.lost_count = 0
+        self.lost_since = None
+
+    def ok(self):
+        with self.lock:
+            self.last_ok = self.clock()
+            self.consecutive = 0
+
+    def timeout(self):
+        with self.lock:
+            self.last_timeout = self.clock()
+            self.consecutive += 1
+
+    def reset(self):
+        with self.lock:
+            self.started = self.clock()
+            self.consecutive = 0
+            self.last_ok = None
+            self.state = "unknown"
+            self.lost_since = None
+
+    def evaluate(self):
+        """(old, new) when the state changed, else None."""
+        with self.lock:
+            now = self.clock()
+            since = self.last_ok if self.last_ok is not None else self.started
+            if (self.consecutive >= self.min_timeouts
+                    and now - since >= self.lost_after):
+                new = "lost"
+            elif self.consecutive == 0 and self.last_ok is not None:
+                new = "ok"
+            elif self.consecutive:
+                new = "degraded"
+            else:
+                new = self.state
+            if self.state == "lost" and new != "ok":
+                new = "lost"  # only an answer ends a loss
+            if new == self.state:
+                return None
+            old, self.state = self.state, new
+            if new == "lost":
+                self.lost_count += 1
+                self.lost_since = now
+            elif old == "lost":
+                self.lost_since = None
+            return old, new
+
+    def snapshot(self):
+        with self.lock:
+            now = self.clock()
+            return {
+                "link_state": self.state,
+                "link_ok_age": (None if self.last_ok is None
+                                else round(now - self.last_ok, 2)),
+                "consecutive_timeouts": self.consecutive,
+                "link_lost_count": self.lost_count,
+                "link_lost_for": (None if self.lost_since is None
+                                  else round(now - self.lost_since, 2)),
+            }
+
+
+LINK_LOST_ACTIONS = {"pause": "pause", "warn": "warn", "shutdown": "shutdown"}
+LINK_CHECK_INTERVAL = 1.0
+
+
 class Serial_485_Wrapper:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -189,6 +279,12 @@ class Serial_485_Wrapper:
         self.write_timeout = config.getfloat("write_timeout", 1.0)
         self.read_chunk = config.getint("read_chunk", 4096)
         self.max_queued_frames = config.getint("max_queued_frames", 64)
+        self.link = LinkWatchdog(
+            config.getfloat("link_lost_timeout", 10.0, minval=2.0, maxval=300.0),
+            config.getint("link_lost_timeouts", 3, minval=1, maxval=100))
+        self.link_lost_action = config.getchoice(
+            "link_lost_action", LINK_LOST_ACTIONS, "pause")
+        self._link_timer = None
 
         self._serial = None
         self._reader_thread = None
@@ -227,6 +323,7 @@ class Serial_485_Wrapper:
             "reader_errors": 0,
         }
 
+        self.printer.register_event_handler("klippy:ready", self._start_link_watch)
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
         self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
@@ -236,6 +333,70 @@ class Serial_485_Wrapper:
             desc="Show RS485 transport status and counters")
         _klog("init section=%s name=%s port=%s baud=%s",
               self.section_name, self.name, self.serial_port, self.baud)
+    # --- link watchdog ------------------------------------------------------
+
+    def _start_link_watch(self):
+        self.link.reset()
+        if self._link_timer is None:
+            self._link_timer = self.reactor.register_timer(self._link_check)
+        self.reactor.update_timer(
+            self._link_timer, self.reactor.monotonic() + LINK_CHECK_INTERVAL)
+
+    def _stop_link_watch(self):
+        if self._link_timer is not None:
+            self.reactor.update_timer(self._link_timer, self.reactor.NEVER)
+
+    def _link_check(self, eventtime):
+        if self.printer.is_shutdown():
+            return self.reactor.NEVER
+        try:
+            change = self.link.evaluate()
+            if change is not None:
+                self._link_changed(*change)
+        except Exception:
+            _klog("link watchdog failed", level=logging.exception)
+        return eventtime + LINK_CHECK_INTERVAL
+
+    def _printing(self):
+        print_stats = self.printer.lookup_object("print_stats", None)
+        return getattr(print_stats, "state", None) == "printing"
+
+    def _link_changed(self, old, new):
+        snap = self.link.snapshot()
+        if new == "lost":
+            msg = ("RS-485 link lost: no device on %s answered for %.0f s "
+                   "(%d requests timed out). Check the T113 bridge and the USB "
+                   "link; the CFS and motor diagnostics are unavailable."
+                   % (self.serial_port, self.link.lost_after,
+                      snap["consecutive_timeouts"]))
+            _klog("%s", msg, level=logging.error)
+            printing = self._printing()
+            self.printer.send_event("serial_485:link_lost", dict(snap))
+            if printing and self.link_lost_action == "shutdown":
+                self.printer.invoke_shutdown(msg)
+                return
+            self.gcode.respond_raw("!! " + msg)
+            if printing and self.link_lost_action == "pause":
+                self._pause_for_link_loss()
+        elif old == "lost" and new == "ok":
+            msg = "RS-485 link restored"
+            _klog("%s", msg)
+            self.gcode.respond_info(msg)
+            self.printer.send_event("serial_485:link_restored", dict(snap))
+
+    def _pause_for_link_loss(self):
+        pause_resume = self.printer.lookup_object("pause_resume", None)
+        if pause_resume is None:
+            return
+        try:
+            if not pause_resume.pause_command_sent:
+                pause_resume.send_pause_command()
+                self.reactor.register_async_callback(
+                    lambda e: self.gcode.run_script("PAUSE"))
+        except Exception:
+            _klog("pause after RS-485 link loss failed",
+                  level=logging.exception)
+
     def _log_warning_ratelimited(self, key, msg, *args, interval=1.0):
         now = time.monotonic()
         last = self._last_log_time.get(key, 0.0)
@@ -258,12 +419,15 @@ class Serial_485_Wrapper:
                   level=logging.exception)
 
     def _handle_disconnect(self):
+        self._stop_link_watch()
         self._disconnect("klippy:disconnect")
 
     def _handle_shutdown(self):
+        self._stop_link_watch()
         self._disconnect("klippy:shutdown")
 
     def _handle_firmware_restart(self):
+        self._stop_link_watch()
         self._disconnect("klippy:firmware_restart")
 
     def _connect(self):
@@ -566,6 +730,7 @@ class Serial_485_Wrapper:
                 while self._rx_frames:
                     frame = self._rx_frames.popleft()
                     if self._matches_response(request_addr, request_func, frame):
+                        self.link.ok()
                         return frame
                     self._stats["rx_unmatched"] += 1
                     self._log_warning_ratelimited(
@@ -582,6 +747,7 @@ class Serial_485_Wrapper:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
                     self._stats["timeouts"] += 1
+                    self.link.timeout()
                     return None
                 self._rx_cond.wait(timeout=remaining)
 
@@ -801,6 +967,8 @@ class Serial_485_Wrapper:
             "timeouts": self._stats["timeouts"],
             "send_errors": self._stats["send_errors"],
             "reader_errors": self._stats["reader_errors"],
+            **self.link.snapshot(),
+            "link_lost_action": self.link_lost_action,
         }
 
     def get_status(self, eventtime):
