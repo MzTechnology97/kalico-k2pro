@@ -21,7 +21,7 @@ reactor never waits for the network.
 
 Sounds play on print state changes (complete, pause, error, cancel), on a
 Klipper shutdown and on an external RFID scan, like the stock firmware's
-buzzer. T113_BEEP SOUND=<name> plays one; T113_BEEP PATTERN=... any pattern.
+buzzer. BUZZER SOUND=<name> plays one; BUZZER PATTERN=... any pattern.
 """
 
 from __future__ import annotations
@@ -182,33 +182,33 @@ class K2T113:
         )
         for name, func, ready, desc in (
             (
-                "T113_STATUS",
-                self.cmd_T113_STATUS,
+                "BOARD_STATUS",
+                self.cmd_BOARD_STATUS,
                 True,
                 "Show the T113 telemetry (last poll)",
             ),
             (
-                "T113_BEEP",
-                self.cmd_T113_BEEP,
+                "BUZZER",
+                self.cmd_BUZZER,
                 False,
-                "Buzzer: T113_BEEP [MS=200] [COUNT=1] | PATTERN=on,off,..."
+                "Buzzer: BUZZER [MS=200] [COUNT=1] | PATTERN=on,off,..."
                 " | SOUND=print_complete|pause|error|cancel|shutdown|rfid",
             ),
             (
-                "T113_BRIDGES_RESTART",
-                self.cmd_T113_BRIDGES_RESTART,
+                "USB_BRIDGES_RESTART",
+                self.cmd_USB_BRIDGES_RESTART,
                 True,
                 "Restart the T113 USB bridges: CONFIRM=1",
             ),
             (
-                "T113_SCREEN_RESTART",
-                self.cmd_T113_SCREEN_RESTART,
+                "SCREEN_RESTART",
+                self.cmd_SCREEN_RESTART,
                 True,
                 "Restart HelixScreen on the printer",
             ),
             (
-                "T113_MCU_POWER_CYCLE",
-                self.cmd_T113_MCU_POWER_CYCLE,
+                "MCU_POWER_CYCLE",
+                self.cmd_MCU_POWER_CYCLE,
                 True,
                 "Power-cycle the printer MCUs, then FIRMWARE_RESTART: CONFIRM=1",
             ),
@@ -430,7 +430,7 @@ class K2T113:
         }
 
     # --- G-code ---------------------------------------------------------------------
-    def cmd_T113_STATUS(self, gcmd):
+    def cmd_BOARD_STATUS(self, gcmd):
         if not self.enabled:
             gcmd.respond_info("T113: %s" % self.last_error)
             return
@@ -464,7 +464,7 @@ class K2T113:
             )
         )
 
-    def cmd_T113_BEEP(self, gcmd):
+    def cmd_BUZZER(self, gcmd):
         if not self.enabled:
             raise gcmd.error("k2_t113 is disabled: %s" % self.last_error)
         sound = gcmd.get("SOUND", None)
@@ -496,8 +496,8 @@ class K2T113:
         if gcmd.get_int("CONFIRM", 0) != 1:
             raise gcmd.error("%s interrupts the printer; add CONFIRM=1" % what)
 
-    def cmd_T113_BRIDGES_RESTART(self, gcmd):
-        self._confirm(gcmd, "T113_BRIDGES_RESTART")
+    def cmd_USB_BRIDGES_RESTART(self, gcmd):
+        self._confirm(gcmd, "USB_BRIDGES_RESTART")
         self._action(
             "T113 bridges restart",
             "POST",
@@ -505,11 +505,11 @@ class K2T113:
             {"force": self.printer.is_shutdown()},
         )
 
-    def cmd_T113_SCREEN_RESTART(self, gcmd):
+    def cmd_SCREEN_RESTART(self, gcmd):
         self._action("HelixScreen restart", "POST", "/screen/restart", {})
 
-    def cmd_T113_MCU_POWER_CYCLE(self, gcmd):
-        self._confirm(gcmd, "T113_MCU_POWER_CYCLE")
+    def cmd_MCU_POWER_CYCLE(self, gcmd):
+        self._confirm(gcmd, "MCU_POWER_CYCLE")
         gcmd.respond_info(
             "Power-cycling the printer MCUs through the T113; "
             "Klipper restarts afterwards"

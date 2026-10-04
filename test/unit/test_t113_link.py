@@ -386,30 +386,30 @@ def test_m300_only_without_a_macro(t113):
 def test_power_cycle_needs_confirm(t113):
     obj, _p = t113()
     with pytest.raises(RuntimeError, match="CONFIRM=1"):
-        obj.cmd_T113_MCU_POWER_CYCLE(Gcmd())
+        obj.cmd_MCU_POWER_CYCLE(Gcmd())
     assert obj.client.calls == []
 
 
 def test_power_cycle_then_firmware_restart(t113):
     obj, printer = t113()
     printer.shutdown = True
-    obj.cmd_T113_MCU_POWER_CYCLE(Gcmd(CONFIRM=1))
+    obj.cmd_MCU_POWER_CYCLE(Gcmd(CONFIRM=1))
     assert obj.client.calls == [("POST", "/mcu/cycle", {"force": True})]
     assert printer.exits == ["firmware_restart"]
-    assert printer.commands["T113_MCU_POWER_CYCLE"][1] is True
+    assert printer.commands["MCU_POWER_CYCLE"][1] is True
 
 
 def test_failed_power_cycle_does_not_restart(t113):
     obj, printer = t113()
     obj.client.fail = "HTTP 409 refused: a print is printing"
-    obj.cmd_T113_MCU_POWER_CYCLE(Gcmd(CONFIRM=1))
+    obj.cmd_MCU_POWER_CYCLE(Gcmd(CONFIRM=1))
     assert printer.exits == []
     assert "failed" in printer.raw[0]
 
 
 def test_bridges_restart(t113):
     obj, _p = t113()
-    obj.cmd_T113_BRIDGES_RESTART(Gcmd(CONFIRM=1))
+    obj.cmd_USB_BRIDGES_RESTART(Gcmd(CONFIRM=1))
     assert obj.client.calls == [("POST", "/bridges/restart", {"force": False})]
 
 
@@ -487,18 +487,18 @@ def test_muted_sound(t113):
 
 def test_t113_beep_sound_and_pattern(t113):
     obj, _p = t113()
-    obj.cmd_T113_BEEP(Gcmd(SOUND="pause"))
-    obj.cmd_T113_BEEP(Gcmd(PATTERN="100,50,100"))
-    obj.cmd_T113_BEEP(Gcmd(MS=300, COUNT=2))
+    obj.cmd_BUZZER(Gcmd(SOUND="pause"))
+    obj.cmd_BUZZER(Gcmd(PATTERN="100,50,100"))
+    obj.cmd_BUZZER(Gcmd(MS=300, COUNT=2))
     assert [c[2] for c in obj.client.calls] == [
         {"pattern": [500, 250, 500]},
         {"pattern": [100, 50, 100]},
         {"pattern": [300, 120, 300]},
     ]
     with pytest.raises(RuntimeError, match="SOUND must be"):
-        obj.cmd_T113_BEEP(Gcmd(SOUND="party"))
+        obj.cmd_BUZZER(Gcmd(SOUND="party"))
     with pytest.raises(RuntimeError):
-        obj.cmd_T113_BEEP(Gcmd(PATTERN="x"))
+        obj.cmd_BUZZER(Gcmd(PATTERN="x"))
 
 
 @pytest.mark.parametrize(
@@ -597,3 +597,18 @@ def test_rfid_beep_none_and_missing_t113():
     r2 = reader("t113", None)
     r2._start_beep()
     assert r.local == [] and r2.local == []
+
+
+def test_command_names_are_valid_klipper_names(t113):
+    # gcode.register_command refuses extended names whose 2nd char is a
+    # digit (T113_... would clash with T1 tool changes) at printer start.
+    obj, printer = t113()
+    obj._handle_connect()
+    names = list(printer.commands)
+    assert {"BOARD_STATUS", "BUZZER", "MCU_POWER_CYCLE", "M300"} <= set(names)
+    for name in names:
+        if name == "M300":
+            continue
+        assert name.upper() == name
+        assert name.replace("_", "A").isalnum()
+        assert not name[0].isdigit() and not name[1:2].isdigit(), name
