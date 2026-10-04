@@ -22,6 +22,7 @@ from extras.box_change import BoxChangeEngine
 from extras.box_gcode import read_metadata
 from extras.box_catalog import resolve_material
 from extras.box_k2rfid_catalog import K2RfidMaterialCatalog
+from extras.box_lane_data import LaneDataPublisher
 from extras.motion_limits import restore_motion_limits, save_motion_limits
 
 
@@ -989,6 +990,10 @@ class Box:
             "auto_register_rfid_filaments", True)
         self.auto_seed_material_database = config.getboolean(
             "auto_seed_material_database", True)
+        # CFS slots in Moonraker's lane_data namespace for OrcaSlicer "Sync".
+        self.lane_data = (
+            LaneDataPublisher()
+            if config.getboolean("publish_lane_data", True) else None)
         self.system_material_catalog = K2RfidMaterialCatalog(
             self.system_material_database_path)
         self.material_catalog = K2RfidMaterialCatalog(
@@ -1291,6 +1296,9 @@ class Box:
 
     def _klippy_ready(self, *args):
         self.klippy_ready = True
+        lane_data = getattr(self, "lane_data", None)
+        if lane_data is not None:
+            lane_data.start()
 
         if not self.observation_mode:
             self.reactor.register_callback(
@@ -4380,6 +4388,9 @@ class Box:
         try:
             snap = self.read_live_state(include_topology=include_topology)
             self._track_rfid_usage(eventtime, snap)
+            lane_data = getattr(self, "lane_data", None)
+            if lane_data is not None:
+                lane_data.update(self._slot_statuses(snap))
             if include_topology:
                 self.last_topology_refresh = eventtime
             if snap.tracking and not self.runout_active:
