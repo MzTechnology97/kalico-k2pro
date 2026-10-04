@@ -159,7 +159,10 @@ class Controller:
         self.mc = mc.MotorControl.__new__(mc.MotorControl)
         self.clock = 50.0
         self.mc.reactor = SimpleNamespace(monotonic=lambda: self.clock)
-        self.mc._protection_last_query = {}
+        self.mc.protection_validity = mc.ProtectionValidity(
+            mc.ALL_AXES, mc.PROTECTION_STALE_AFTER
+        )
+        self.mc.protection_validity.new_session()
         self.mc.motor_error_code = {}
         self.mc.motor_warning_code = {}
         self.mc.motor_fault_detail = {}

@@ -509,6 +509,123 @@ def decode_protection_payload(payload: bytes, frame_status=None,
     return result
 
 
+class ProtectionQueryError(RuntimeError):
+    """Some axes of a group protection query failed.
+
+    ``partial`` holds the answers of the axes that did reply (already applied
+    to the cache), ``errors`` the exception of each axis that did not.
+    """
+
+    def __init__(self, partial: dict, errors: dict):
+        self.partial = partial
+        self.errors = errors
+        super().__init__(
+            "protection query failed for %s"
+            % ", ".join("%s: %r" % (axis, exc)
+                        for axis, exc in sorted(errors.items())))
+
+
+class ProtectionValidity:
+    """Per-axis record of protection queries and clears; no I/O.
+
+    States, most important first:
+      clear_pending  a clear was sent (no ACK exists for it) and no valid
+                     query has confirmed the result yet
+      query_failed   the last query of this axis failed
+      unknown        no valid answer in this session (new startup/retry)
+      stale          the last valid answer is older than stale_after
+      current        a valid answer in this session, recent enough
+    Only "current" is valid. The last confirmed fault is kept as history
+    even after a clear, together with the outcome of that clear.
+    """
+
+    def __init__(self, axes, stale_after: float):
+        self.stale_after = float(stale_after)
+        self.session = 0
+        self.axes = {axis: self._blank() for axis in axes}
+
+    @staticmethod
+    def _blank() -> dict:
+        return {
+            "last_attempt": None, "last_success": None, "last_error": None,
+            "total_errors": 0, "consecutive_errors": 0, "session": None,
+            "source": None, "last_confirmed_fault": None, "clear": None,
+        }
+
+    def new_session(self):
+        self.session += 1
+        for record in self.axes.values():
+            record["consecutive_errors"] = 0
+            if record["clear"] and record["clear"]["result"] == "pending":
+                record["clear"]["result"] = "abandoned"
+
+    def attempt(self, axis: str, now: float):
+        self.axes[axis]["last_attempt"] = now
+
+    def success(self, axis: str, now: float, detail: dict, source: str):
+        record = self.axes[axis]
+        record.update(last_success=now, last_error=None,
+                      consecutive_errors=0, session=self.session,
+                      source=source)
+        active = bool(detail.get("active"))
+        if active:
+            record["last_confirmed_fault"] = {
+                "error_code": int(detail.get("error_code") or 0),
+                "warning_code": int(detail.get("warning_code") or 0),
+                "has_error": bool(detail.get("has_error")),
+                "at": now, "session": self.session, "source": source,
+            }
+        clear = record["clear"]
+        if clear and clear["result"] == "pending":
+            clear["result"] = "persistent" if active else "confirmed"
+            clear["verified_at"] = now
+
+    def failure(self, axis: str, now: float, exc: Exception):
+        record = self.axes[axis]
+        record["last_error"] = repr(exc)
+        record["total_errors"] += 1
+        record["consecutive_errors"] += 1
+        clear = record["clear"]
+        if clear and clear["result"] == "pending":
+            clear["recheck_errors"] += 1
+            clear["last_recheck_error"] = repr(exc)
+
+    def clear_requested(self, axis: str, now: float, result: dict | None):
+        result = result or {}
+        self.axes[axis]["clear"] = {
+            "requested_at": now, "session": self.session,
+            "result": "pending", "verified_at": None,
+            "unexpected_response": bool(result.get("unexpected_response")),
+            "recheck_errors": 0, "last_recheck_error": None,
+        }
+
+    def state(self, axis: str, now: float) -> str:
+        record = self.axes[axis]
+        clear = record["clear"]
+        if clear and clear["result"] == "pending":
+            return "clear_pending"
+        if record["consecutive_errors"]:
+            return "query_failed"
+        if record["last_success"] is None or record["session"] != self.session:
+            return "unknown"
+        if now - record["last_success"] > self.stale_after:
+            return "stale"
+        return "current"
+
+    def status(self, axis: str, now: float) -> dict:
+        record = self.axes[axis]
+        state = self.state(axis, now)
+        last = record["last_success"]
+        return {
+            **{key: (dict(value) if isinstance(value, dict) else value)
+               for key, value in record.items()},
+            "state": state,
+            "valid": state == "current",
+            "query_age": None if last is None else max(0.0, now - last),
+            "current_session": self.session,
+        }
+
+
 def _decode_mask(mask: int, labels_map: dict[int, str]) -> dict:
     value = int(mask or 0)
     bits = []
@@ -2770,6 +2887,12 @@ PROTECTION_QUERY_DATA = 11
 STALL_EVENT_MIN_INTERVAL = 0.100
 FAULT_CLEANUP_RETRY_DELAY = 0.100
 PROTECTION_POLL_INTERVAL = 60.0
+# Protection data stays current across one missed periodic poll: two poll
+# intervals plus the worst-case time of one poll round (every axis, each with
+# DEFAULT_ATTEMPTS tries of MOTOR_COMMAND_TIMEOUT). 126 s with today's values.
+PROTECTION_STALE_AFTER = (
+    2 * PROTECTION_POLL_INTERVAL
+    + len(ALL_AXES) * DEFAULT_ATTEMPTS * MOTOR_COMMAND_TIMEOUT)
 CALIBRATION_STAGE_ENCODER = "encoder"
 CALIBRATION_STAGE_OFFSET = "offset"
 # Stage 1 completes only after firmware observes 0xC0 and returns 0x0C.
@@ -2895,7 +3018,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self._startup_auto_retry_count = 0
         self._startup_allow_auto_retry = True
         self._startup_timer = self.reactor.register_timer(self._startup_handler)
-        self._protection_last_query = {}
+        self.protection_validity = ProtectionValidity(
+            ALL_AXES, PROTECTION_STALE_AFTER)
         self.temp_sensors = Mot2TempSensorHub(self, config)
 
         for axis, pin_cfg in self.stall_monitor.pin_map.items():
@@ -3783,6 +3907,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self._startup_fault_clear_ok = None
         self._startup_fault_clear_result = ""
         self._startup_protection_active = {}
+        self.protection_validity.new_session()
         if reset_retry_state:
             self._startup_auto_retry_count = 0
             self._startup_allow_auto_retry = True
@@ -3876,24 +4001,46 @@ class MotorControl(MotorControlDebugSurfaceMixin):
 
     def query_protection_status(self, axes=ALL_AXES,
                                 data: int = PROTECTION_QUERY_DATA,
-                                timeout: float = MOTOR_COMMAND_TIMEOUT):
+                                timeout: float = MOTOR_COMMAND_TIMEOUT,
+                                source: str = "query"):
+        # One axis at a time, so an axis that fails does not throw away the
+        # answers of the others. A failed axis keeps its cached fault.
         axes = tuple(axes)
-        result = self.axes.check_protection(
-            axes, data=data, timeout=timeout)
-        for axis, detail in result.items():
-            self._protection_last_query[axis] = self.reactor.monotonic()
+        validity = self.protection_validity
+        result = {}
+        errors = {}
+        for axis in axes:
+            validity.attempt(axis, self.reactor.monotonic())
+            try:
+                detail = self.axes.check_protection(
+                    (axis,), data=data, timeout=timeout)[axis]
+            except Exception as exc:
+                validity.failure(axis, self.reactor.monotonic(), exc)
+                errors[axis] = exc
+                continue
+            validity.success(axis, self.reactor.monotonic(), detail, source)
+            result[axis] = detail
             if detail.get("active"):
                 self._update_fault_state(axis, detail)
             else:
                 self._clear_fault_state((axis,))
+        if errors:
+            if len(axes) == 1:
+                raise errors[axes[0]]
+            raise ProtectionQueryError(result, errors)
         return result
 
     def clear_fault_latches(self, axes=ALL_AXES, data: int = 5,
                             timeout: float = MOTOR_NO_ACK_TIMEOUT):
+        # The clear command has no ACK: nothing is known to be cleared until
+        # a valid query says so. The fault stays cached and the axis is
+        # clear_pending; the next valid query records the outcome.
         axes = tuple(axes)
         result = self.axes.clear_fault_latches(
             axes, data=data, timeout=timeout)
-        self._clear_fault_state(tuple(result.keys()))
+        now = self.reactor.monotonic()
+        for axis in result:
+            self.protection_validity.clear_requested(axis, now, result[axis])
         return result
 
     def recover_faults_for_homing_start(self, axes=KINEMATIC_AXES,
@@ -4186,7 +4333,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                                source: str) -> dict:
         axes = tuple(axes)
         details = self.query_protection_status(
-            axes=axes, data=data, timeout=timeout)
+            axes=axes, data=data, timeout=timeout, source=source)
         return {"source": source, "axes": details}
 
     @staticmethod
@@ -4550,17 +4697,17 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         faults = {}
         for axis in ALL_AXES:
             detail = dict(self.motor_fault_detail.get(axis, {}))
-            updated = self._protection_last_query.get(axis)
+            validity = self.protection_validity.status(axis, eventtime)
             faults[axis] = {
                 **detail,
                 **describe_fault_detail({
                     "error_code": detail.get("error_code", 0),
                     "warning_code": detail.get("warning_code", 0),
                 }),
-                "last_query": updated,
-                "query_age": (None if updated is None
-                              else max(0.0, eventtime - updated)),
-                "queried": updated is not None,
+                "last_query": validity["last_success"],
+                "query_age": validity["query_age"],
+                "queried": validity["last_success"] is not None,
+                "validity": validity,
             }
         return {
             "cut": {
@@ -4683,7 +4830,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                     axes_result.update(
                         self.query_protection_status(
                             axes=(axis,), data=PROTECTION_QUERY_DATA,
-                            timeout=MOTOR_COMMAND_TIMEOUT))
+                            timeout=MOTOR_COMMAND_TIMEOUT,
+                            source="periodic_poll"))
                 except Exception as exc:
                     _klog(
                         "periodic protection poll failed axis=%s",
