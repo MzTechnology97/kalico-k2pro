@@ -60,6 +60,7 @@ CONTROL_OPTIONS = (
     "startup_delay",
     "retry_delay",
     "motor_closed_loop",
+    "override_policy",
 )
 
 
@@ -81,6 +82,7 @@ class MotorControlConfigModel:
     retry_delay: float
     switch: int
     overcurrent_switch: int
+    override_policy: str = "warn"
 
     @staticmethod
     def _parse_pin(config, option, default_desc, default_startup):
@@ -165,6 +167,9 @@ class MotorControlConfigModel:
             switch=config.getint("switch", 1, minval=0, maxval=1),
             overcurrent_switch=config.getint(
                 "overcurrent_switch", 0, minval=0, maxval=1),
+            override_policy=config.getchoice(
+                "override_policy", {"warn": "warn", "block": "block"},
+                "warn"),
         )
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -812,6 +817,13 @@ def parse_response_frame(rx: bytes) -> dict:
 
 CALIBRATION_PARAM_IDS = (9, 25)
 CALIBRATION_NEAR_ZERO_THRESHOLD = 0.15
+# motor_map.json: id 9 is param_elec_offset (the electrical offset found by
+# calibration), id 25 is param_elec_offset_err_deg (the residual error of
+# that calibration, in degrees). An offset at ~0 can mean the factory
+# default of an uncalibrated motor, so it is flagged as suspect. A residual
+# error near 0 is what a good calibration produces, so id 25 is reported raw
+# and never judged by the near-zero test. Neither blocks startup.
+CALIBRATION_NEAR_ZERO_SUSPECT_IDS = (9,)
 
 
 def param_values_match(current, target, param) -> bool:
@@ -862,13 +874,145 @@ def calibration_param_result(axis: str, param, param_id: int, value=None,
             "value": None,
             "error": error,
         }
+    judged = param_id in CALIBRATION_NEAR_ZERO_SUSPECT_IDS
     return {
         "axis": axis,
         "key": param.key,
         "param_id": param_id,
         "value": value,
-        "near_zero": is_near_zero_calibration_value(value),
+        "near_zero": judged and is_near_zero_calibration_value(value),
         "near_zero_threshold": CALIBRATION_NEAR_ZERO_THRESHOLD,
+        "judged": judged,
+    }
+
+
+# --- startup readiness ------------------------------------------------------------
+#
+# Override keys whose readback decides whether the axis runs as configured.
+# Control-loop gains and filters set the closed-loop behaviour; protection
+# thresholds decide when a fault trips. Reporting-only keys are diagnostic.
+# Keys in neither list keep the previous behaviour: a warning only.
+CRITICAL_OVERRIDE_PREFIXES = (
+    "controller_pos_loop_",
+    "controller_spd_loop_",
+    "controller_cur_loop_",
+    "controller_cur_filter_",
+    "controller_leso_",
+    "protection_param_prt_",
+    "protection_param_pos_over_limit_",
+    "protection_param_encoder_mutation_",
+    "protection_param_power_voltage_min",
+    "protection_param_mcu_temp_max",
+    "protection_param_err_code_mask",
+)
+DIAGNOSTIC_OVERRIDE_KEYS = (
+    "protection_param_protect_report",
+    "protection_param_warning_code_mask",
+)
+OVERRIDE_ERROR_OPS = (
+    "read_error", "write_error", "verify_error", "verify_mismatch",
+    "apply_error")
+# Ops that prove the board does not hold the configured value. The others
+# (read/verify/apply errors) leave the value unknown.
+OVERRIDE_CONFIRMED_MISMATCH_OPS = ("write_error", "verify_mismatch")
+OVERRIDE_POLICIES = ("warn", "block")
+
+
+def classify_override_key(key: str) -> str:
+    key = str(key or "")
+    if key in DIAGNOSTIC_OVERRIDE_KEYS:
+        return "diagnostic"
+    if key.startswith(CRITICAL_OVERRIDE_PREFIXES):
+        return "critical"
+    return "unclassified"
+
+
+def summarize_override_actions(actions: list[dict]) -> dict:
+    """State of the configured overrides of one axis from apply actions.
+
+    verified  every override read back equal to its target
+    degraded  some override is unknown or wrong (see the lists)
+    unknown   no override was checked
+    """
+    problems = {"critical": [], "diagnostic": [], "unclassified": []}
+    checked = writes = 0
+    for action in actions:
+        op = action.get("op")
+        if action.get("param_id", -1) >= 0 and not str(op).startswith("skip"):
+            checked += 1
+        if op == "write":
+            writes += 1
+        if op not in OVERRIDE_ERROR_OPS:
+            continue
+        key = action.get("key")
+        problems[classify_override_key(key)].append({
+            "key": key,
+            "op": op,
+            "confirmed_mismatch": op in OVERRIDE_CONFIRMED_MISMATCH_OPS,
+            "target": action.get("override_value"),
+            "read": action.get("current_value"),
+            "error": (action.get("wrote_value")
+                      if op != "verify_mismatch" else None),
+        })
+    if any(problems.values()):
+        state = "degraded"
+    elif checked:
+        state = "verified"
+    else:
+        state = "unknown"
+    return {
+        "state": state,
+        "checked": checked,
+        "writes": writes,
+        "critical_problems": problems["critical"],
+        "diagnostic_problems": problems["diagnostic"],
+        "unclassified_problems": problems["unclassified"],
+        "confirmed_critical_mismatch": any(
+            item["confirmed_mismatch"] for item in problems["critical"]),
+    }
+
+
+def summarize_calibration(entries: list[dict]) -> dict:
+    """read: every value read; suspect: a judged value near 0;
+    read_failed: some value could not be read; unknown: nothing read."""
+    errors = [e for e in entries if e.get("error")]
+    suspect = [e for e in entries if e.get("near_zero")]
+    if errors:
+        state = "read_failed"
+    elif suspect:
+        state = "suspect"
+    elif entries:
+        state = "read"
+    else:
+        state = "unknown"
+    return {
+        "state": state,
+        "values": {str(e.get("key")): e.get("value") for e in entries
+                   if not e.get("error")},
+        "errors": [{"key": e.get("key"), "error": e.get("error")}
+                   for e in errors],
+        "suspect": [str(e.get("key")) for e in suspect],
+    }
+
+
+def finite_copy(value):
+    """Deep copy for status output; non-finite floats become None."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: finite_copy(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [finite_copy(item) for item in value]
+    return value
+
+
+def blank_axis_readiness() -> dict:
+    return {
+        "reachable": None,
+        "parameters": {"state": "unknown"},
+        "calibration": {"state": "unknown"},
+        "blocked": False,
+        "reasons": [],
     }
 
 
@@ -3020,6 +3164,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self._startup_timer = self.reactor.register_timer(self._startup_handler)
         self.protection_validity = ProtectionValidity(
             ALL_AXES, PROTECTION_STALE_AFTER)
+        self.override_policy = self.config_model.override_policy
+        self.axis_readiness = {axis: blank_axis_readiness() for axis in ALL_AXES}
         self.temp_sensors = Mot2TempSensorHub(self, config)
 
         for axis, pin_cfg in self.stall_monitor.pin_map.items():
@@ -3604,6 +3750,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             self.gcode.respond_info(
                 "Motor control: stall latch active on axes %s at startup"
                 % stalled)
+        for axis in KINEMATIC_AXES:
+            self.axis_readiness[axis]["reachable"] = True
         return {
             "prepare": prepared,
             "targets": result,
@@ -3611,6 +3759,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
 
     def _startup_discover_extruder_target(self):
         target = self.axes.read_extruder_addr(timeout=MOTOR_COMMAND_TIMEOUT)
+        self.axis_readiness[EXTRUDER_AXIS]["reachable"] = True
         return {"target": target}
 
     def _startup_check_axis_protection(self, label: str, axes, *,
@@ -3686,6 +3835,11 @@ class MotorControl(MotorControlDebugSurfaceMixin):
     @staticmethod
     def _unsafe_calibration_entries(entries: list[dict]) -> list[dict]:
         return [entry for entry in entries if entry.get("near_zero")]
+
+    def _readiness_note(self, axis: str, reason: str):
+        record = self.axis_readiness[axis]
+        if reason not in record["reasons"]:
+            record["reasons"].append(reason)
 
     @staticmethod
     def _calibration_error_entries(entries: list[dict]) -> list[dict]:
@@ -3770,6 +3924,27 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 "actions": actions,
                 "calibration": calibration,
             }
+            record = self.axis_readiness[axis]
+            if axis in failures:
+                record["parameters"] = {
+                    "state": "failed", "error": failures[axis]}
+                self._readiness_note(axis, "overrides could not be applied")
+            else:
+                record["parameters"] = summarize_override_actions(actions)
+            record["calibration"] = summarize_calibration(calibration)
+            params = record["parameters"]
+            if params.get("critical_problems"):
+                self._readiness_note(axis, "critical override not verified")
+            if params.get("confirmed_critical_mismatch") \
+                    and self.override_policy == "block":
+                record["blocked"] = True
+                failures.setdefault(
+                    axis, "critical override does not hold its configured "
+                    "value (override_policy: block)")
+            if record["calibration"]["state"] == "read_failed":
+                self._readiness_note(axis, "calibration not read")
+            elif record["calibration"]["state"] == "suspect":
+                self._readiness_note(axis, "calibration offset near zero")
         if calibration_errors:
             joined = ", ".join(
                 "%s.%s: %s" % (
@@ -3908,6 +4083,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self._startup_fault_clear_result = ""
         self._startup_protection_active = {}
         self.protection_validity.new_session()
+        self.axis_readiness = {axis: blank_axis_readiness() for axis in ALL_AXES}
         if reset_retry_state:
             self._startup_auto_retry_count = 0
             self._startup_allow_auto_retry = True
@@ -4690,6 +4866,28 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 "active fault had no runtime policy target detail=%s",
                 detail, level=logging.warning)
 
+    def _readiness_status(self) -> dict:
+        ready = bool(self.is_ready and self.motor_params_init)
+        result = {}
+        for axis in ALL_AXES:
+            record = self.axis_readiness.get(axis, blank_axis_readiness())
+            params = record["parameters"]["state"]
+            calibration = record["calibration"]["state"]
+            result[axis] = {
+                "reachable": record["reachable"],
+                "parameters": finite_copy(record["parameters"]),
+                "calibration": finite_copy(record["calibration"]),
+                "configured": params == "verified",
+                "calibration_verified": calibration == "read",
+                "operational": ready and not record["blocked"],
+                "blocked": record["blocked"],
+                "degraded": ready and (params != "verified"
+                                       or calibration != "read"),
+                "reasons": list(record["reasons"]),
+                "policy": self.override_policy,
+            }
+        return result
+
     def get_status(self, eventtime=None):
         # Only cached state here: Moonraker subscriptions must not send packets.
         if eventtime is None:
@@ -4724,6 +4922,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 "error": self._startup_error,
             },
             "faults": faults,
+            "readiness": self._readiness_status(),
             "stall_state": dict(self.stall_monitor.read_all()),
             "temperatures": self.temp_sensors.get_status(eventtime),
         }

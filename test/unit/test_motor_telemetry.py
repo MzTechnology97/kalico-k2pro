@@ -285,6 +285,7 @@ def test_motor_control_status_is_cached_and_serializable(h):
             "e": {"error_code": 256, "warning_code": 4, "active": True}
         },
         protection_validity=validity,
+        _readiness_status=lambda: {},
         is_check_cut_pos_start=False,
         cut_state=False,
         _transport_ready_status=lambda: {},
