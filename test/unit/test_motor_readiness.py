@@ -89,6 +89,14 @@ def test_no_overrides_is_unknown():
     assert summary["state"] == "unknown" and summary["checked"] == 0
 
 
+def test_axis_without_overrides_is_none_and_configured():
+    assert mc.summarize_override_actions([])["state"] == "none"
+    rig = Rig(actions={"e": []})
+    rig.run()
+    status = rig.status()["e"]
+    assert status["configured"] is True and status["degraded"] is False
+
+
 @pytest.mark.parametrize(
     "op, confirmed",
     [
