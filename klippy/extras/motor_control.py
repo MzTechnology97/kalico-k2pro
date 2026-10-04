@@ -2205,8 +2205,33 @@ POLL_INTERVAL = 6.0
 POLL_TIMEOUT = 0.25
 
 
+# A sample stays current for two full X/Y/E polling rounds (one axis every
+# POLL_INTERVAL), so one missed read does not flip it but a stopped or
+# stuck poll does.
+TEMP_SAMPLE_MAX_AGE = 2 * POLL_INTERVAL * len(ALL_AXES)
+
+# Sample states, most important first:
+#   stopped           the monitor is not running (startup, retry, shutdown)
+#   failed            the last read in this session failed
+#   never             no read has ever succeeded
+#   previous_session  the value is from before the last stop/start
+#   stale             older than TEMP_SAMPLE_MAX_AGE
+#   current           read in this session, recently, and the last read
+#                     succeeded
+TEMP_SAMPLE_STATES = (
+    "stopped", "failed", "never", "previous_session", "stale", "current")
+
+
 class Mot2AxisTempSensor:
-    def __init__(self):
+    """Standard ``temperature_sensor`` object for one motor MCU.
+
+    ``temperature`` keeps the last reading so graphs stay continuous; only
+    ``valid`` (and ``state``) say whether it is a current measurement.
+    """
+
+    def __init__(self, hub=None, axis=None):
+        self.hub = hub
+        self.axis = axis
         self.temperature = 0.0
         self.measured_min = None
         self.measured_max = None
@@ -2222,36 +2247,53 @@ class Mot2AxisTempSensor:
             self.measured_min = min(self.measured_min, temp)
             self.measured_max = max(self.measured_max, temp)
 
-    def get_status(self, _eventtime):
-        return {
+    def get_status(self, eventtime):
+        status = {
             "temperature": round(self.temperature, 2),
             "measured_min_temp": round(self.measured_min, 2) if self.measured_min is not None else 0.0,
             "measured_max_temp": round(self.measured_max, 2) if self.measured_max is not None else 0.0,
         }
+        if self.hub is not None:
+            sample = self.hub.sample_status(self.axis, eventtime)
+            status.update(valid=sample["valid"], state=sample["state"],
+                          sample_age=sample["sample_age"])
+        return status
 
 
 class Mot2TempSensorHub:
     def __init__(self, replacement, config):
         self.replacement = replacement
         self.reactor = replacement.reactor
+        printer = replacement.printer
         self.sensors = {}
         self.samples = {}
-        heaters = replacement.printer.load_object(config, "heaters")
+        heaters = printer.load_object(config, "heaters")
         for axis in ALL_AXES:
-            sensor = Mot2AxisTempSensor()
             name = "temperature_sensor motor_%s_MCU" % (axis.upper(),)
-            replacement.printer.add_object(name, sensor)
+            if printer.lookup_object(name, None) is not None:
+                raise config.error(
+                    "[%s] is created by [motor_control]; remove that section "
+                    "from your configuration" % (name,))
+            sensor = Mot2AxisTempSensor(self, axis)
+            printer.add_object(name, sensor)
             heaters.register_sensor(config.getsection(name), sensor)
             self.sensors[axis] = sensor
             self.samples[axis] = {
-                "last_update": None, "last_error": None,
-                "read_errors": 0, "consecutive_errors": 0,
+                "last_update": None, "last_attempt": None,
+                "last_error": None, "read_errors": 0,
+                "consecutive_errors": 0, "session": None,
             }
         self._timer = self.reactor.register_timer(self._poll)
         self._started = False
+        self._session = 0
         self._axis_index = 0
 
     def start(self):
+        # A new acquisition session: earlier readings stay as history but
+        # are not current again until a new read succeeds.
+        self._session += 1
+        for sample in self.samples.values():
+            sample["consecutive_errors"] = 0
         self._started = True
         self.reactor.update_timer(self._timer, self.reactor.monotonic())
 
@@ -2259,22 +2301,35 @@ class Mot2TempSensorHub:
         self._started = False
         self.reactor.update_timer(self._timer, self.reactor.NEVER)
 
+    def sample_status(self, axis, eventtime):
+        sample = self.samples[axis]
+        updated = sample["last_update"]
+        age = None if updated is None else max(0.0, eventtime - updated)
+        if not self._started:
+            state = "stopped"
+        elif sample["consecutive_errors"]:
+            state = "failed"
+        elif updated is None:
+            state = "never"
+        elif sample["session"] != self._session:
+            state = "previous_session"
+        elif age > TEMP_SAMPLE_MAX_AGE:
+            state = "stale"
+        else:
+            state = "current"
+        return {
+            **sample,
+            "temperature": (None if updated is None
+                            else self.sensors[axis].temperature),
+            "sample_age": age,
+            "state": state,
+            "valid": state == "current",
+            "current_session": self._session,
+        }
+
     def get_status(self, eventtime):
-        result = {}
-        max_age = 2 * POLL_INTERVAL * len(ALL_AXES)
-        for axis, sample in self.samples.items():
-            updated = sample["last_update"]
-            age = None if updated is None else max(0.0, eventtime - updated)
-            result[axis] = {
-                **sample,
-                "temperature": (None if updated is None
-                                else self.sensors[axis].temperature),
-                "sample_age": age,
-                "valid": bool(self._started and age is not None
-                              and age <= max_age
-                              and sample["consecutive_errors"] == 0),
-            }
-        return result
+        return {axis: self.sample_status(axis, eventtime)
+                for axis in self.samples}
 
     def _poll(self, _eventtime):
         if not self._started:
@@ -2282,19 +2337,18 @@ class Mot2TempSensorHub:
         if self.replacement.is_ready and self.replacement.motor_params_init:
             axis = ALL_AXES[self._axis_index]
             self._axis_index = (self._axis_index + 1) % len(ALL_AXES)
+            sample = self.samples[axis]
+            sample["last_attempt"] = self.reactor.monotonic()
             try:
                 target = self.replacement.axes.target(axis)
                 temp = target.client.get_value(
                     target.addr, GET_MCU_TEMP_INDEX,
                     timeout=POLL_TIMEOUT, attempts=1)
-                if not math.isfinite(temp):
-                    raise ValueError("Non-finite motor MCU temperature")
                 self.sensors[axis].note(temp)
-                self.samples[axis].update(
+                sample.update(
                     last_update=self.reactor.monotonic(), last_error=None,
-                    consecutive_errors=0)
+                    consecutive_errors=0, session=self._session)
             except Exception as exc:
-                sample = self.samples[axis]
                 sample["last_error"] = str(exc)
                 sample["read_errors"] += 1
                 sample["consecutive_errors"] += 1

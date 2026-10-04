@@ -209,6 +209,39 @@ The CM5 can become ready before the K2 motor controllers. The OpenHost integrati
 
 The production transport must have exactly one owner per UART/gadget endpoint. A duplicate GS2 bridge was discovered during the experimental Cartographer multiplexing work and caused RS-485 instability; after returning to a single bridge, motor-control operation returned to normal.
 
+## Motor MCU temperatures
+
+`motor_control` reads the MCU temperature of X, Y and E (GET index 17), one axis every 6 s, so each axis is read every 18 s. The polling is unchanged; subscriptions never send packets.
+
+Each axis appears in two places:
+- `temperature_sensor motor_X_MCU` (`_Y_`, `_E_`) is registered with `heaters`, so Mainsail and Moonraker show it like any temperature sensor;
+- `motor_control.temperatures.<axis>` carries the full sample.
+
+The standard sensor keeps the last `temperature` so graphs stay continuous. Its `valid`, `state` and `sample_age` fields say whether that value is a current measurement.
+
+`state` is one of these, checked in this order:
+
+| state | meaning | valid |
+| --- | --- | --- |
+| `stopped` | the monitor is not running (startup, retry, shutdown) | no |
+| `failed` | the last read in this session failed | no |
+| `never` | no read has ever succeeded | no |
+| `previous_session` | the value was read before the last stop/start | no |
+| `stale` | older than 36 s (two full X/Y/E rounds) | no |
+| `current` | read in this session, recently, last read succeeded | yes |
+
+Every stop/start opens a new acquisition session (`current_session`). Earlier values stay as history but are not current again until a new read succeeds.
+
+`motor_control.temperatures.<axis>` also has:
+- `temperature`: `null` until the first read;
+- `last_update` and `last_attempt` (reactor monotonic seconds);
+- `last_error`, `read_errors` and `consecutive_errors`;
+- `session`, the session of the last successful read.
+
+Zero and negative readings are accepted as measurements. NaN, infinity and non-numeric answers count as failed reads.
+
+A `[temperature_sensor motor_X_MCU]` section in the configuration conflicts with these objects and is rejected with a clear error.
+
 ## Probe baseline and Cartographer
 
 The current known-good Z-homing baseline is the stock PRTouch stack. Full homing has been tested successfully with Cartographer disabled.
