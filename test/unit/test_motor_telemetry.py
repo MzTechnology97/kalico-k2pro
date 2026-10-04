@@ -286,6 +286,7 @@ def test_motor_control_status_is_cached_and_serializable(h):
         },
         protection_validity=validity,
         _readiness_status=lambda: {},
+        param_cache=mc.MotorParamCache(mc.ALL_AXES),
         is_check_cut_pos_start=False,
         cut_state=False,
         _transport_ready_status=lambda: {},

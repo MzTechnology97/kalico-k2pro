@@ -162,6 +162,8 @@ class Rig:
         }
         self.mc.is_ready = True
         self.mc.motor_params_init = True
+        self.mc.reactor = SimpleNamespace(monotonic=lambda: 10.0)
+        self.mc.param_cache = mc.MotorParamCache(mc.ALL_AXES)
         actions = actions or {}
         cal = cal or {}
         raises = raises or {}
@@ -283,7 +285,7 @@ def test_retry_resets_readiness():
     rig.run()
     m = rig.mc
     m.reactor = SimpleNamespace(
-        update_timer=lambda *a: None, NEVER=float("inf")
+        update_timer=lambda *a: None, NEVER=float("inf"), monotonic=lambda: 1
     )
     m.temp_sensors = SimpleNamespace(stop=lambda: None)
     m._fault_cleanup_timer = m._protection_poll_timer = object()
