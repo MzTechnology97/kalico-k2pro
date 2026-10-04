@@ -25,22 +25,34 @@ This is the branch currently used on the external CM5/OpenHost machine.
 ## What is integrated
 
 - Jacob/Kalico core lineage;
-- K2 Pro configuration baseline;
-- K2-specific Jacobean extras synchronized from the K2/OpenHost source history;
-- K2 Pro CFS four-byte state compatibility;
-- protected CFS `observation_mode` safety layer;
-- K2 Pro closed-loop motor-control topology and tuned configuration;
+- K2 Pro configuration baseline (closed-loop motors, PRTouch, `[z_align]` and power-loss recovery on the single-Z K2 Pro);
+- K2-specific Jacobean extras, **maintained in this repository** (the former `k2-pro-custom-firmware` mirror is archived), including Jacob10383's 071c813 update: native logical-tool mapping and the `_BOX_PAUSE_CAPTURE` / `_BOX_RESUME_PREPARE` / `_BOX_RESUME_COMMIT` pause contract;
+- K2 Pro CFS four-byte state compatibility and the protected `observation_mode` safety layer;
+- CFS filament inventory:
+  - persistent slots and RFID remaining estimates;
+  - a separate custom filament library (`cfs_filaments.json`) with brands;
+  - K2-RFID and Spoolman compatibility;
+- CFS print mapping (`BOX_PRINT_INFO` / `BOX_PRINT_START`, backend auto-mapping):
+  - warnings for low filament and material variants that never block a print;
+  - a strict rule that never maps a base material onto its CF/GF/KF/AF variant;
+- runout swap groups with a manual order (`_BOX_SET_RUNOUT_ORDER`, editable from the Mainsail Runout swap widget);
+- official OrcaSlicer filament **Sync**: the CFS slots are published to Moonraker's `lane_data` namespace (`publish_lane_data`);
 - external-host motor-control startup delay/retry handling;
 - tracked `gcode_shell_command.py` needed by the current host setup;
-- CI/sync checks for K2-specific extras.
+- CI: Ruff, firmware build and the strict MkDocs build.
+
+## Installing
+
+- **External host:** [K2-OpenHost Installer Helper](https://github.com/MzTechnology97/k2-openhost-installer-helper) installs this branch with Moonraker, the [Mainsail K2-OpenHost fork](https://github.com/MzTechnology97/mainsail-k2openhost) and the official Cartographer3D plugin.
+- **Printer T113:** the same installer runs the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) from its menu. It writes a K2-OpenHost system to the T113's spare slot B (USB gadget bridges, HelixScreen pointed at this host, Creality MCU/motor/CFS firmware updates). Slot A is untouched. It was prepared and tested on stock firmware 1.1.0.94, and is not guaranteed on newer releases.
 
 ## K2-OpenHost architecture
 
 ```text
 K2 LCD/touch
     |
-Allwinner T113
-    |-- UI / future HelixScreen
+Allwinner T113 (slot B: K2-OpenHost T113 bootstrap)
+    |-- HelixScreen -> Moonraker on the external host
     |-- USB ConfigFS gadget
     |-- ttyGS0 -> ttyS2 -> Main MCU
     |-- ttyGS1 -> ttyS3 -> Nozzle MCU
@@ -114,7 +126,8 @@ Locally installed extras such as ShakeTune can be kept outside Git tracking (for
 - [K2 Pro/OpenHost integration notes](docs/K2_PRO_OPENHOST.md)
 - [K2 configuration context](config/k2/README.md)
 - [Canonical K2-OpenHost documentation](https://github.com/MzTechnology97/K2-OpenHost)
-- [K2 extra source/patch history](https://github.com/MzTechnology97/k2-pro-custom-firmware/tree/k2-openhost)
+- [T113 bootstrap for the printer side](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap)
+- K2 extras upstream: [Jacob10383/k2-plus-custom-firmware](https://github.com/Jacob10383/k2-plus-custom-firmware). The former mirror `MzTechnology97/k2-pro-custom-firmware` is archived (read-only history).
 - [Cartographer3D plugin (official)](https://github.com/Cartographer3D/cartographer3d-plugin) and the [K2-OpenHost Cartographer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/CARTOGRAPHER.md)
 
 For generic Kalico documentation and original project information, use:
@@ -125,4 +138,17 @@ For generic Kalico documentation and original project information, use:
 
 ## Status
 
-Experimental / pre-production. Core machine control now reaches full PRTouch homing, thermal tests, resonance measurement and an operational persistent CFS inventory from the external host. Remaining major milestones are direct-USB Cartographer validation, controlled mapped CFS printing/tool-change/runout validation, remaining-filament tracking over a complete print and a complete supervised OpenHost print path.
+Experimental / pre-production. Core machine control now reaches full PRTouch homing, `[z_align]` homing, thermal tests, resonance measurement and an operational persistent CFS inventory from the external host.
+
+Built since the 2026-10-02 milestone, but not yet hardware-validated:
+- the 071c813 pause contract;
+- mapping warnings and the strict variant rule;
+- the manual runout order;
+- OrcaSlicer `lane_data` Sync, verified with OrcaSlicer 2.4.2.
+
+Remaining major milestones:
+- direct-USB Cartographer validation;
+- controlled mapped CFS printing, tool change and runout validation;
+- remaining-filament tracking over a complete print;
+- a supervised power cut with `PLR_RECOVER`;
+- a complete supervised OpenHost print path, including the T113 bootstrap on slot B.
