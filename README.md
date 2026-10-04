@@ -88,7 +88,7 @@ The earlier experimental Cartographer MUX/DEMUX path reached live Cartographer M
 
 ## Probe strategy
 
-Two Cartographer roles are supported by the companion repository `MzTechnology97/cartographer3d-plugin-k2openhost`:
+Two Cartographer roles are supported by the official [Cartographer3D plugin](https://github.com/Cartographer3D/cartographer3d-plugin):
 
 - `register_as_probe: true` — Cartographer becomes the canonical Klipper/Kalico probe;
 - `register_as_probe: false` — optional mixed mode where PRTouch remains the primary Z-reference probe while Cartographer stays available for scan/mesh functions.
@@ -105,7 +105,7 @@ Do not treat an experimental Cartographer bridge or unvalidated mixed-probe sett
 
 Moonraker expects the Kalico Git working tree to remain clean. Files that belong to this fork, such as `klippy/extras/gcode_shell_command.py`, should stay tracked from Git rather than being overwritten by third-party installers.
 
-Cartographer is not part of this fork. Install the dedicated [cartographer3d-plugin-k2openhost](https://github.com/MzTechnology97/cartographer3d-plugin-k2openhost) (for example through [K2-OpenHost Installer Helper](https://github.com/MzTechnology97/k2-openhost-installer-helper)); its installer puts the package in `~/klippy-env` and the loader in `klippy/plugins/cartographer.py`, which Git ignores.
+Cartographer is not part of this fork. Install the official [Cartographer3D plugin](https://github.com/Cartographer3D/cartographer3d-plugin), which supports Kalico and the K2 directly (for example through [K2-OpenHost Installer Helper](https://github.com/MzTechnology97/k2-openhost-installer-helper)); its installer puts the package in `~/klippy-env` and the loader in `klippy/plugins/cartographer.py`, which Git ignores. See the [K2-OpenHost Cartographer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/CARTOGRAPHER.md).
 
 Locally installed extras such as ShakeTune can be kept outside Git tracking (for example through `.git/info/exclude`) so the `k2-pro-openhost` branch remains updateable from Mainsail.
 
@@ -115,7 +115,7 @@ Locally installed extras such as ShakeTune can be kept outside Git tracking (for
 - [K2 configuration context](config/k2/README.md)
 - [Canonical K2-OpenHost documentation](https://github.com/MzTechnology97/K2-OpenHost)
 - [K2 extra source/patch history](https://github.com/MzTechnology97/k2-pro-custom-firmware/tree/k2-openhost)
-- [Cartographer K2/OpenHost plugin](https://github.com/MzTechnology97/cartographer3d-plugin-k2openhost)
+- [Cartographer3D plugin (official)](https://github.com/Cartographer3D/cartographer3d-plugin) and the [K2-OpenHost Cartographer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/CARTOGRAPHER.md)
 
 For generic Kalico documentation and original project information, use:
 
