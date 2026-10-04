@@ -2208,32 +2208,39 @@ POLL_TIMEOUT = 0.25
 class Mot2AxisTempSensor:
     def __init__(self):
         self.temperature = 0.0
-        self.measured_min = 99999999.0
-        self.measured_max = 0.0
+        self.measured_min = None
+        self.measured_max = None
 
     def note(self, temp: float):
-        self.temperature = float(temp)
-        if temp:
-            self.measured_min = min(self.measured_min, self.temperature)
-            self.measured_max = max(self.measured_max, self.temperature)
+        temp = float(temp)
+        if not math.isfinite(temp):
+            raise ValueError("Non-finite motor MCU temperature")
+        self.temperature = temp
+        if self.measured_min is None:
+            self.measured_min = self.measured_max = temp
+        else:
+            self.measured_min = min(self.measured_min, temp)
+            self.measured_max = max(self.measured_max, temp)
 
     def get_status(self, _eventtime):
         return {
             "temperature": round(self.temperature, 2),
-            "measured_min_temp": round(self.measured_min, 2),
-            "measured_max_temp": round(self.measured_max, 2),
+            "measured_min_temp": round(self.measured_min, 2) if self.measured_min is not None else 0.0,
+            "measured_max_temp": round(self.measured_max, 2) if self.measured_max is not None else 0.0,
         }
 
 
 class Mot2TempSensorHub:
-    def __init__(self, replacement):
+    def __init__(self, replacement, config):
         self.replacement = replacement
         self.reactor = replacement.reactor
         self.sensors = {}
+        heaters = replacement.printer.load_object(config, "heaters")
         for axis in ALL_AXES:
             sensor = Mot2AxisTempSensor()
             name = "temperature_sensor motor_%s_MCU" % (axis.upper(),)
             replacement.printer.add_object(name, sensor)
+            heaters.register_sensor(config.getsection(name), sensor)
             self.sensors[axis] = sensor
         self._timer = self.reactor.register_timer(self._poll)
         self._started = False
@@ -2753,7 +2760,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self._startup_auto_retry_count = 0
         self._startup_allow_auto_retry = True
         self._startup_timer = self.reactor.register_timer(self._startup_handler)
-        self.temp_sensors = Mot2TempSensorHub(self)
+        self.temp_sensors = Mot2TempSensorHub(self, config)
 
         for axis, pin_cfg in self.stall_monitor.pin_map.items():
             if pin_cfg is not None:
