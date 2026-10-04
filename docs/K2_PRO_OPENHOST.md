@@ -209,6 +209,62 @@ The CM5 can become ready before the K2 motor controllers. The OpenHost integrati
 
 The production transport must have exactly one owner per UART/gadget endpoint. A duplicate GS2 bridge was discovered during the experimental Cartographer multiplexing work and caused RS-485 instability; after returning to a single bridge, motor-control operation returned to normal.
 
+## Losing a serial link behind the T113
+
+The external host sees the K2's three buses as USB gadget serial ports bridged by the T113 (ttyGS0 → Main MCU, ttyGS1 → Nozzle MCU, ttyGS2 → RS-485). Measured on the development K2 Pro, in standby, on 2026-10-04:
+
+| What was lost | What the host did | Why it is safe or not |
+| --- | --- | --- |
+| Main or Nozzle MCU bridge | shutdown after 5.2 s: `Lost communication with MCU 'nozzle_mcu'` | Klipper's own MCU protocol notices. Heater outputs are configured with a 3 s `max_duration`, so an MCU that stops getting host updates turns its heaters off by itself. |
+| RS-485 bridge (CFS, X/Y motor boards) | nothing: Klipper stayed `ready`, `motor_ready` stayed true, only request timeouts in the log | a print would go on with the CFS and the motor diagnostics silent |
+
+Notes from those tests:
+- An MCU that lost its link may not be in shutdown: it never received the command. The first `FIRMWARE_RESTART` can then fail with `Failed automated reset of MCU`. Here a second one worked; a power cycle of the MCU rail (below) always resets the MCUs cleanly.
+- Motor faults still stop the printer during an RS-485 outage. The stall pins go to the Main and Nozzle MCUs, not to RS-485, and a stall whose protection query fails is handled as an unverified fault (X/Y shutdown).
+- When the RS-485 bridge comes back, traffic resumes on its own, with no restart.
+
+### RS-485 link watchdog (`serial_485`)
+
+`[serial_485 serial485]` now tracks whether any device on the bus answers.
+
+**When the link counts as lost:** no device has answered for `link_lost_timeout` seconds (10 by default) and at least `link_lost_timeouts` requests in a row timed out (3). A single absent device, such as a CFS that is not connected, does not count while the others answer.
+
+**What happens then:**
+- **During a print:** `link_lost_action` applies. `pause` is the default: the print is paused the same way the extruder fault pause does it. `warn` only reports; `shutdown` stops Klipper.
+- **When idle:** only a console warning.
+- **Always:** the event `serial_485:link_lost` is sent.
+
+**When it comes back:** the first answer from any device logs `RS-485 link restored` and sends `serial_485:link_restored`.
+
+**Status:** `serial_485 serial485` and `SERIAL_STATUS` add:
+- `link_state` (`unknown`, `ok`, `degraded`, `lost`);
+- `link_ok_age`, `consecutive_timeouts`, `link_lost_count`, `link_lost_for`, `link_lost_action`.
+
+### The T113 from Kalico (`[k2_t113]`)
+
+`config/k2/k2_t113.cfg` talks to `k2oh-ctl`, the control service of the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) (slot B). Every request runs in a worker thread, so the reactor never waits for the network. With `host` empty the section does nothing; the installer helper fills in `host` and copies the shared token to `token_file`.
+
+| G-code | Effect |
+| --- | --- |
+| `T113_STATUS` | last T113 telemetry: slot, MCU power, SoC temperature, uptime, UDISK, USB gadget, bridges |
+| `T113_BEEP [MS=200] [COUNT=1]`, `M300 [P<ms>]` | the printer buzzer (GPIO164, fixed tone). `M300` is registered only if no macro defines it. |
+| `T113_BRIDGES_RESTART CONFIRM=1` | restarts the three USB bridges. It takes under 5 s, so Klipper stays connected (tested). |
+| `T113_SCREEN_RESTART` | restarts HelixScreen |
+| `T113_MCU_POWER_CYCLE CONFIRM=1` | cuts the MCU rail (GPIO140) for 2 s with the bridges stopped, then `FIRMWARE_RESTART`. It also works while Klipper is shut down. Tested: ready in 9 s, CFS in 16 s, motors in 21 s. |
+
+The T113 refuses the power cycle and the bridge restart unless the host's Moonraker reports a known idle print state. When Klippy is already shut down, these G-codes pass `force`, which the T113 accepts only in that state.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `estop_on_shutdown` | `off` | `m112`: an emergency stop also cuts the MCU power rail, so heaters and motors lose power even if an MCU stopped answering. `any`: every shutdown does. |
+| `auto_power_cycle` | `False` | after `Lost communication with MCU` while no print was running, power-cycle the MCUs and restart, at most once every 10 minutes |
+
+`get_status` (`k2_t113`) carries `enabled`, `connected`, `age`, `error`, `telemetry` and `last_action`.
+
+**External RFID beep:** `[external_rfid_reader] beep_backend` can be `local` (the stock PWM buzzer on the host board), `t113` (through `[k2_t113]`) or `none`. `config/k2/box.cfg` sets `t113`, because on OpenHost the buzzer is wired to the T113, not to the host.
+
+The MCU power rail is also available as a Moonraker power device; the installer helper writes it.
+
 ## Motor readiness
 
 `motor_ready` only says that startup finished. `motor_control.readiness.<axis>` says what was verified on the way, without reading hardware from `get_status`.

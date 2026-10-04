@@ -86,6 +86,12 @@ class ExternalRfidReader:
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object("gcode")
         self.beep_enabled = config.getboolean("beep_enabled", True)
+        # local: the PWM buzzer of the board Klipper runs on (stock K2).
+        # t113: the T113 buzzer through [k2_t113] (K2-OpenHost external host,
+        # where the buzzer is not wired to the host). none: no beep.
+        self.beep_backend = config.getchoice(
+            "beep_backend", {"local": "local", "t113": "t113", "none": "none"},
+            "local")
 
         self._serial = None
         self._reading = False
@@ -211,7 +217,13 @@ class ExternalRfidReader:
             self._beep_lock.release()
 
     def _start_beep(self):
-        if not self.beep_enabled:
+        if not self.beep_enabled or self.beep_backend == "none":
+            return
+        if self.beep_backend == "t113":
+            t113 = self.printer.lookup_object("k2_t113", None)
+            if t113 is None or not t113.beep(int(BEEP_DURATION * 1000)):
+                _klog("beep skipped: [k2_t113] is missing or disabled",
+                      level=logging.warning)
             return
         threading.Thread(
             target=self._beep_worker,
