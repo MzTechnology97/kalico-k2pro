@@ -268,6 +268,40 @@ An unverified answer raises `ProtectionResponseError`, the same as a failed quer
 
 Hardware still to confirm: the real latch-bit behaviour after a clear, with the printer idle.
 
+### Protection validity and clears
+
+`motor_control.faults.<axis>.validity` says how far the cached protection data can be trusted. It is filled only by queries the controller already makes: the 60 s periodic poll, stall-pin queries, startup, homing recovery and the clear commands. `get_status` never sends a packet.
+
+`state` is one of these, checked in this order:
+
+| state | meaning |
+| --- | --- |
+| `clear_pending` | a clear was sent and no valid query has confirmed its outcome yet |
+| `query_failed` | the last query of this axis failed (timeout, unverified answer) |
+| `unknown` | no valid answer in this session; every motor startup or retry opens a new session |
+| `stale` | the last valid answer is older than 126 s |
+| `current` | a valid answer in this session, recent enough; `valid: true` only here |
+
+126 s is two 60 s polls plus the worst case of one poll round: 3 axes × 2 attempts × 1 s. One missed poll does not make the data stale; two do. The 36 s temperature threshold is not reused.
+
+`validity` has these fields:
+- `last_attempt`, `last_success`, `query_age` (reactor monotonic seconds);
+- `last_error`, `total_errors`, `consecutive_errors`;
+- `session` and `current_session`;
+- `source` of the last valid answer (`query`, `periodic_poll`, `stall_pin:<n>`, `manual`, `clear-postcheck`, ...);
+- `last_confirmed_fault`, kept as history after a clear: codes, time, session, source;
+- `clear`: `requested_at`, `result`, `verified_at`, `unexpected_response`, `recheck_errors`, `last_recheck_error`.
+
+**Clears:** the MOT2 clear command has no ACK. `clear_fault_latches()` therefore keeps the cached fault and marks the axis `clear_pending`. The next valid query sets `clear.result`:
+- `confirmed`: the axis answered healthy;
+- `persistent`: the fault is still there.
+
+A failed or unverified recheck leaves it `pending` and counts in `recheck_errors`. A new startup session turns a pending clear into `abandoned`.
+
+**Group queries:** axes are queried one at a time. If one axis fails, the axes that replied are still applied, and the error (`ProtectionQueryError`) carries both `partial` and `errors`. A single-axis query raises the original error.
+
+A failed poll never shuts the printer down by itself. The policies on confirmed faults are unchanged.
+
 ## Probe baseline and Cartographer
 
 The current known-good Z-homing baseline is the stock PRTouch stack. Full homing has been tested successfully with Cartographer disabled.

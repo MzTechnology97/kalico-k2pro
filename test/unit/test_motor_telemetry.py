@@ -276,12 +276,15 @@ def test_poll_waits_for_motor_readiness(h):
 def test_motor_control_status_is_cached_and_serializable(h):
     h.hub.start()
     h.poll_round()
+    validity = mc.ProtectionValidity(mc.ALL_AXES, mc.PROTECTION_STALE_AFTER)
+    validity.new_session()
+    validity.success("e", 95.0, {"active": True, "error_code": 256}, "test")
     fake = SimpleNamespace(
         reactor=h.replacement.reactor,
         motor_fault_detail={
             "e": {"error_code": 256, "warning_code": 4, "active": True}
         },
-        _protection_last_query={"e": 95.0},
+        protection_validity=validity,
         is_check_cut_pos_start=False,
         cut_state=False,
         _transport_ready_status=lambda: {},
