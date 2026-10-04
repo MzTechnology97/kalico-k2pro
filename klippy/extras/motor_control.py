@@ -437,15 +437,20 @@ FRAME_STATUS_KNOWN = (
     FRAME_STATUS_STALL | FRAME_STATUS_ERROR | FRAME_STATUS_WARNING)
 
 
-def decode_protection_payload(payload: bytes) -> dict:
-    error_code = int.from_bytes(payload[:4].ljust(4, b"\x00"), "little")
-    warning_code = int.from_bytes(payload[4:8].ljust(4, b"\x00"), "little")
-    return {
-        "error_code": error_code,
-        "warning_code": warning_code,
-        "has_error": bool(error_code),
-        "active": bool(error_code or warning_code),
-    }
+# Protection query (FUNC_PROTECTION, data=11) answer: error_code then
+# warning_code, each a little-endian uint32. motor_map.json types the matching
+# firmware parameters (protection_param_err_code_mask/_warning_code_mask and
+# protection_err_code_backup/_warning_code_backup) as uint32_t. No other
+# query data value or payload length is verified, so none is accepted.
+PROTECTION_PAYLOAD_FORMATS = {11: "<II"}
+
+
+class ProtectionResponseError(RuntimeError):
+    """A protection answer that cannot be trusted.
+
+    Callers treat it like a failed query: the previous fault stays cached and
+    the axis is never reported healthy because of it.
+    """
 
 
 def decode_frame_status(status) -> dict:
@@ -458,6 +463,50 @@ def decode_frame_status(status) -> dict:
         "warned": bool(value & FRAME_STATUS_WARNING),
         "unknown": unknown,
     }
+
+
+def decode_protection_payload(payload: bytes, frame_status=None,
+                              data: int = 11) -> dict:
+    payload = bytes(payload)
+    fmt = PROTECTION_PAYLOAD_FORMATS.get(int(data))
+    if fmt is None:
+        raise ProtectionResponseError(
+            "no verified answer format for protection query data=%d"
+            % (int(data),))
+    if len(payload) != struct.calcsize(fmt):
+        raise ProtectionResponseError(
+            "protection answer is %d bytes, expected %d (payload_hex=%s)"
+            % (len(payload), struct.calcsize(fmt), payload.hex()))
+    error_code, warning_code = struct.unpack(fmt, payload)
+    result = {
+        "error_code": error_code,
+        "warning_code": warning_code,
+        "has_error": bool(error_code),
+        "active": bool(error_code or warning_code),
+    }
+    if frame_status is None:
+        return result
+    status = decode_frame_status(frame_status)
+    if status["unknown"]:
+        raise ProtectionResponseError(
+            "protection answer has unknown status bits 0x%02X (status=0x%02X)"
+            % (status["unknown"], status["status"]))
+    # A latch bit without the matching mask cannot say which fault is
+    # active, so it is not read as healthy. A mask without its latch bit
+    # still counts: the mask is the more conservative reading.
+    if status["faulted"] and not error_code:
+        raise ProtectionResponseError(
+            "protection status reports an error but error_code is 0")
+    if status["warned"] and not warning_code:
+        raise ProtectionResponseError(
+            "protection status reports a warning but warning_code is 0")
+    result.update(
+        frame_status=status["status"],
+        stalled=status["stalled"],
+        status_mismatch=bool(
+            (error_code and not status["faulted"])
+            or (warning_code and not status["warned"])))
+    return result
 
 
 def _decode_mask(mask: int, labels_map: dict[int, str]) -> dict:
@@ -1255,7 +1304,8 @@ class MotorFirmwareClient:
         return {
             **public,
             "data": int(data),
-            **decode_protection_payload(frame["payload"]),
+            **decode_protection_payload(
+                frame["payload"], frame["status"], data=data),
         }
 
     def protection_clear(
