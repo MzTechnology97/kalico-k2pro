@@ -2230,11 +2230,16 @@ class Mot2TempSensorHub:
         self.replacement = replacement
         self.reactor = replacement.reactor
         self.sensors = {}
+        self.samples = {}
         for axis in ALL_AXES:
             sensor = Mot2AxisTempSensor()
             name = "temperature_sensor motor_%s_MCU" % (axis.upper(),)
             replacement.printer.add_object(name, sensor)
             self.sensors[axis] = sensor
+            self.samples[axis] = {
+                "last_update": None, "last_error": None,
+                "read_errors": 0, "consecutive_errors": 0,
+            }
         self._timer = self.reactor.register_timer(self._poll)
         self._started = False
         self._axis_index = 0
@@ -2247,6 +2252,23 @@ class Mot2TempSensorHub:
         self._started = False
         self.reactor.update_timer(self._timer, self.reactor.NEVER)
 
+    def get_status(self, eventtime):
+        result = {}
+        max_age = 2 * POLL_INTERVAL * len(ALL_AXES)
+        for axis, sample in self.samples.items():
+            updated = sample["last_update"]
+            age = None if updated is None else max(0.0, eventtime - updated)
+            result[axis] = {
+                **sample,
+                "temperature": (None if updated is None
+                                else self.sensors[axis].temperature),
+                "sample_age": age,
+                "valid": bool(self._started and age is not None
+                              and age <= max_age
+                              and sample["consecutive_errors"] == 0),
+            }
+        return result
+
     def _poll(self, _eventtime):
         if not self._started:
             return self.reactor.NEVER
@@ -2255,11 +2277,20 @@ class Mot2TempSensorHub:
             self._axis_index = (self._axis_index + 1) % len(ALL_AXES)
             try:
                 target = self.replacement.axes.target(axis)
-                self.sensors[axis].note(target.client.get_value(
+                temp = target.client.get_value(
                     target.addr, GET_MCU_TEMP_INDEX,
-                    timeout=POLL_TIMEOUT, attempts=1))
-            except Exception:
-                pass
+                    timeout=POLL_TIMEOUT, attempts=1)
+                if not math.isfinite(temp):
+                    raise ValueError("Non-finite motor MCU temperature")
+                self.sensors[axis].note(temp)
+                self.samples[axis].update(
+                    last_update=self.reactor.monotonic(), last_error=None,
+                    consecutive_errors=0)
+            except Exception as exc:
+                sample = self.samples[axis]
+                sample["last_error"] = str(exc)
+                sample["read_errors"] += 1
+                sample["consecutive_errors"] += 1
         return self.reactor.monotonic() + POLL_INTERVAL
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -2753,6 +2784,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self._startup_auto_retry_count = 0
         self._startup_allow_auto_retry = True
         self._startup_timer = self.reactor.register_timer(self._startup_handler)
+        self._protection_last_query = {}
         self.temp_sensors = Mot2TempSensorHub(self)
 
         for axis, pin_cfg in self.stall_monitor.pin_map.items():
@@ -3738,6 +3770,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         result = self.axes.check_protection(
             axes, data=data, timeout=timeout)
         for axis, detail in result.items():
+            self._protection_last_query[axis] = self.reactor.monotonic()
             if detail.get("active"):
                 self._update_fault_state(axis, detail)
             else:
@@ -4399,7 +4432,25 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 "active fault had no runtime policy target detail=%s",
                 detail, level=logging.warning)
 
-    def get_status(self, _eventtime=None):
+    def get_status(self, eventtime=None):
+        # Only cached state here: Moonraker subscriptions must not send packets.
+        if eventtime is None:
+            eventtime = self.reactor.monotonic()
+        faults = {}
+        for axis in ALL_AXES:
+            detail = dict(self.motor_fault_detail.get(axis, {}))
+            updated = self._protection_last_query.get(axis)
+            faults[axis] = {
+                **detail,
+                **describe_fault_detail({
+                    "error_code": detail.get("error_code", 0),
+                    "warning_code": detail.get("warning_code", 0),
+                }),
+                "last_query": updated,
+                "query_age": (None if updated is None
+                              else max(0.0, eventtime - updated)),
+                "queried": updated is not None,
+            }
         return {
             "cut": {
                 "active": bool(self.is_check_cut_pos_start),
@@ -4408,6 +4459,15 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             **self._transport_ready_status(),
             "is_homing": self.is_homing,
             "motor_ready": self.is_ready and self.motor_params_init,
+            "startup": {
+                "started": self._startup_started,
+                "complete": self._startup_complete,
+                "step_index": self._startup_step_index,
+                "error": self._startup_error,
+            },
+            "faults": faults,
+            "stall_state": dict(self.stall_monitor.read_all()),
+            "temperatures": self.temp_sensors.get_status(eventtime),
         }
 
     def note_stall_pin_event(self, axis: str, active: int, eventtime: float):
