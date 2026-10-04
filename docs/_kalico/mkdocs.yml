@@ -95,6 +95,7 @@ nav:
   - FAQ.md
   - Releases: https://github.com/KalicoCrew/kalico/releases
   - Config_Changes.md
+  - K2 Pro OpenHost: K2_PRO_OPENHOST.md
   - Configuration:
     - Config_Reference.md
     - Kalico_Additions.md
