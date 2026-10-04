@@ -12,6 +12,8 @@ import logging
 import math
 import re
 import struct
+import time
+from collections import deque
 from dataclasses import asdict, dataclass
 from extras import motion_limits, serial_485
 from functools import partial
@@ -61,6 +63,7 @@ CONTROL_OPTIONS = (
     "retry_delay",
     "motor_closed_loop",
     "override_policy",
+    "event_history",
 )
 
 
@@ -83,6 +86,7 @@ class MotorControlConfigModel:
     switch: int
     overcurrent_switch: int
     override_policy: str = "warn"
+    event_history: int = 50
 
     @staticmethod
     def _parse_pin(config, option, default_desc, default_startup):
@@ -170,6 +174,8 @@ class MotorControlConfigModel:
             override_policy=config.getchoice(
                 "override_policy", {"warn": "warn", "block": "block"},
                 "warn"),
+            event_history=config.getint(
+                "event_history", 50, minval=10, maxval=500),
         )
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1010,6 +1016,8 @@ def finite_copy(value):
 # starting new axes once this many seconds have passed, so one dead axis
 # cannot hold the G-code queue for its full retry time on every axis.
 MOTOR_STATUS_REFRESH_BUDGET = 6.0
+# get_status carries only the newest events; MOTOR_EVENTS prints them all.
+MOTOR_EVENTS_IN_STATUS = 20
 
 _OVERRIDE_OP_RESULT = {
     # op: (phase, match)
@@ -1104,6 +1112,76 @@ class MotorParamCache:
                     if key != "entries"}),
             }
         return finite_copy({"session": self.session, "axes": result})
+
+
+_RAW_HEX_RE = re.compile(r"\b[0-9a-fA-F]{8,}\b")
+
+
+def scrub_error_text(text) -> str | None:
+    """Error text for history/export, without raw packet bytes."""
+    if text is None:
+        return None
+    return _RAW_HEX_RE.sub("<hex>", str(text))[:300]
+
+
+class MotorEventLog:
+    """Bounded history of motor protection events and recovery steps.
+
+    In memory only, no I/O. An event identical to the previous one of the
+    same axis (same type and codes) is not added again: its ``count`` and
+    ``last_at`` grow instead, so an unchanged fault seen by every poll does
+    not flood the history. ``at``/``last_at`` are reactor monotonic seconds;
+    ``wall`` is the wall-clock time of the first occurrence.
+    """
+
+    def __init__(self, capacity: int = 50, clock=time.time):
+        self.events = deque(maxlen=int(capacity))
+        self.seq = 0
+        self.session = 0
+        self.clock = clock
+        self._last_key = {}
+
+    def new_session(self):
+        self.session += 1
+        self._last_key = {}
+
+    def record(self, kind: str, axis: str | None, now: float, *,
+               source: str | None = None, context: str | None = None,
+               error_code: int = 0, warning_code: int = 0,
+               result: str | None = None, error=None) -> dict:
+        key = (kind, axis, int(error_code or 0), int(warning_code or 0),
+               result, scrub_error_text(error))
+        last = self._last_key.get(axis)
+        if last is not None and last[0] == key:
+            for event in reversed(self.events):
+                if event["seq"] == last[1]:
+                    event["count"] += 1
+                    event["last_at"] = now
+                    return event
+        self.seq += 1
+        described = describe_fault_detail(
+            {"error_code": error_code, "warning_code": warning_code})
+        event = {
+            "seq": self.seq, "type": kind, "axis": axis,
+            "error_code": described["error_code"],
+            "warning_code": described["warning_code"],
+            "error_labels": described["error_labels"],
+            "warning_labels": described["warning_labels"],
+            "source": source, "context": context, "result": result,
+            "error": scrub_error_text(error), "session": self.session,
+            "at": now, "last_at": now, "wall": self.clock(), "count": 1,
+        }
+        self.events.append(event)
+        self._last_key[axis] = (key, self.seq)
+        return event
+
+    def snapshot(self, limit: int | None = None) -> list[dict]:
+        events = list(self.events)
+        if limit is not None:
+            events = events[-int(limit):] if limit > 0 else []
+        return [dict(event, error_labels=list(event["error_labels"]),
+                     warning_labels=list(event["warning_labels"]))
+                for event in events]
 
 
 def blank_axis_readiness() -> dict:
@@ -3071,6 +3149,32 @@ class MotorControlDebugSurfaceMixin:
             "calibration_source": "refresh" if refresh else "cache",
         }
 
+    def cmd_MOTOR_EVENTS(self, gcmd):
+        count = gcmd.get_int("COUNT", 0, minval=0)
+        events = self.event_log.snapshot(count or None)
+        if self._gcmd_raw_detail(gcmd):
+            gcmd.respond_info("MOTOR_EVENTS %s" % (json.dumps(
+                {"session": self.event_log.session, "events": events},
+                allow_nan=False),))
+            return events
+        if not events:
+            gcmd.respond_info("MOTOR_EVENTS: no events")
+            return events
+        now = self.reactor.monotonic()
+        for event in events:
+            labels = event["error_labels"] + event["warning_labels"]
+            gcmd.respond_info(
+                "#%d %s %s %s%s%s%s (%.0fs ago, %s, session %d)" % (
+                    event["seq"], event["type"],
+                    (event["axis"] or "-").upper(),
+                    ", ".join(labels) or "",
+                    " x%d" % event["count"] if event["count"] > 1 else "",
+                    " result=%s" % event["result"] if event["result"] else "",
+                    " err=%s" % event["error"] if event["error"] else "",
+                    max(0.0, now - event["last_at"]), event["context"],
+                    event["session"]))
+        return events
+
     def cmd_MOTOR_STATUS(self, gcmd):
         refresh = bool(gcmd.get_int("REFRESH", 0, minval=0, maxval=1))
         status = self._build_status_snapshot(refresh=refresh)
@@ -3338,6 +3442,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self.override_policy = self.config_model.override_policy
         self.axis_readiness = {axis: blank_axis_readiness() for axis in ALL_AXES}
         self.param_cache = MotorParamCache(ALL_AXES)
+        self.event_log = MotorEventLog(self.config_model.event_history)
         self.temp_sensors = Mot2TempSensorHub(self, config)
 
         for axis, pin_cfg in self.stall_monitor.pin_map.items():
@@ -3368,6 +3473,9 @@ class MotorControl(MotorControlDebugSurfaceMixin):
 
     def _register_runtime_commands(self):
         self._register_command_specs((
+            ("MOTOR_EVENTS", self.cmd_MOTOR_EVENTS,
+             "MOTOR_EVENTS [COUNT=n] [VERBOSE=1] Motor protection event "
+             "history (VERBOSE=1: JSON for a report)"),
             ("MOTOR_STATUS", self.cmd_MOTOR_STATUS,
              "MOTOR_STATUS [VERBOSE=1] [REFRESH=1] Print readable "
              "motor-control state (REFRESH=1 rereads calibration)"),
@@ -4263,6 +4371,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self.protection_validity.new_session()
         self.axis_readiness = {axis: blank_axis_readiness() for axis in ALL_AXES}
         self.param_cache.new_session()
+        self.event_log.new_session()
         if reset_retry_state:
             self._startup_auto_retry_count = 0
             self._startup_allow_auto_retry = True
@@ -4372,9 +4481,25 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             except Exception as exc:
                 validity.failure(axis, self.reactor.monotonic(), exc)
                 errors[axis] = exc
+                self._record_event("query_failed", axis, source=source,
+                                   error=repr(exc))
                 continue
+            clear = validity.axes[axis]["clear"]
+            pending = bool(clear and clear["result"] == "pending")
             validity.success(axis, self.reactor.monotonic(), detail, source)
             result[axis] = detail
+            if detail.get("active"):
+                self._record_event(
+                    "fault_detected" if detail.get("has_error")
+                    else "warning_detected",
+                    axis, source=source,
+                    error_code=detail.get("error_code"),
+                    warning_code=detail.get("warning_code"))
+            if pending:
+                self._record_event(
+                    "clear_" + validity.axes[axis]["clear"]["result"], axis,
+                    source=source, error_code=detail.get("error_code"),
+                    warning_code=detail.get("warning_code"))
             if detail.get("active"):
                 self._update_fault_state(axis, detail)
             else:
@@ -4396,7 +4521,37 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         now = self.reactor.monotonic()
         for axis in result:
             self.protection_validity.clear_requested(axis, now, result[axis])
+            self._record_event(
+                "clear_requested", axis, result="not_acknowledged",
+                error_code=self.motor_error_code.get(
+                    AXIS_TO_NUM_MAP.get(axis), 0),
+                warning_code=self.motor_warning_code.get(
+                    AXIS_TO_NUM_MAP.get(axis), 0))
         return result
+
+    def _event_context(self) -> str:
+        if self._startup_started and not self._startup_complete:
+            return "startup"
+        try:
+            if self._is_homing_context_active():
+                return "homing"
+        except Exception:
+            pass
+        print_stats = self.printer.lookup_object("print_stats", None)
+        state = getattr(print_stats, "state", None)
+        if state in ("printing", "paused"):
+            return state
+        return "idle"
+
+    def _record_event(self, kind: str, axis: str | None, **fields):
+        # History must never break the fault path it describes.
+        try:
+            fields.setdefault("context", self._event_context())
+            self.event_log.record(
+                kind, axis, self.reactor.monotonic(), **fields)
+        except Exception:
+            _klog("failed recording motor event %s", kind,
+                  level=logging.exception)
 
     def recover_faults_for_homing_start(self, axes=KINEMATIC_AXES,
                                         query_data: int = PROTECTION_QUERY_DATA,
@@ -4793,6 +4948,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         # macro runs later through the reactor.
         try:
             if not self.pause_resume.pause_command_sent:
+                self._record_event("pause_requested", EXTRUDER_AXES[0])
                 self.pause_resume.send_pause_command()
                 self.reactor.register_async_callback(
                     lambda e: self.gcode.run_script("PAUSE"))
@@ -5002,6 +5158,17 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         _klog(
             "active protection fault detail=%s",
             detail, level=logging.error)
+        for axis, item in errors.items():
+            action = ("startup_cleanup" if startup_active
+                      else RUNTIME_FAULT_ACTION_BY_AXIS.get(
+                          axis, RUNTIME_FAULT_ACTION_SHUTDOWN))
+            if during_homing and action == RUNTIME_FAULT_ACTION_SHUTDOWN:
+                action = "homing_abort"
+            self._record_event(
+                "policy_" + str(action), axis,
+                source=detail.get("source"),
+                error_code=item.get("error_code"),
+                warning_code=item.get("warning_code"))
         if startup_active:
             msg = ("motor control startup found a persisted protection fault; "
                    "attempting deferred clear before ready")
@@ -5103,6 +5270,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             "faults": faults,
             "readiness": self._readiness_status(),
             "param_cache": self.param_cache.snapshot(eventtime),
+            "events": self.event_log.snapshot(MOTOR_EVENTS_IN_STATUS),
             "stall_state": dict(self.stall_monitor.read_all()),
             "temperatures": self.temp_sensors.get_status(eventtime),
         }
