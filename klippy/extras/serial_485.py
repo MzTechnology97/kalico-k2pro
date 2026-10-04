@@ -285,6 +285,9 @@ class Serial_485_Wrapper:
         self.link_lost_action = config.getchoice(
             "link_lost_action", LINK_LOST_ACTIONS, "pause")
         self._link_timer = None
+        # Request round trips for [link_monitor] (write -> matched answer).
+        self._rtt_samples = deque(maxlen=20000)
+        self._rtt_lock = threading.Lock()
 
         self._serial = None
         self._reader_thread = None
@@ -333,6 +336,17 @@ class Serial_485_Wrapper:
             desc="Show RS485 transport status and counters")
         _klog("init section=%s name=%s port=%s baud=%s",
               self.section_name, self.name, self.serial_port, self.baud)
+    def _note_rtt(self, seconds):
+        with self._rtt_lock:
+            self._rtt_samples.append(seconds)
+
+    def take_rtt_samples(self):
+        """Request round trips since the last call (for [link_monitor])."""
+        with self._rtt_lock:
+            samples = list(self._rtt_samples)
+            self._rtt_samples.clear()
+        return samples
+
     # --- link watchdog ------------------------------------------------------
 
     def _start_link_watch(self):
@@ -864,6 +878,7 @@ class Serial_485_Wrapper:
             with self._tx_lock:
                 self._ensure_connected()
                 self._clear_pending_frames()
+                sent_at = time.monotonic()
                 try:
                     self._write_frame(request["wire"])
                 except Exception:
@@ -878,6 +893,7 @@ class Serial_485_Wrapper:
                 response = self._wait_for_response(
                     request["addr"], request["func"], pending.timeout)
                 if response is not None:
+                    self._note_rtt(time.monotonic() - sent_at)
                     pending.response = response
                     return
 
