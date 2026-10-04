@@ -1006,6 +1006,106 @@ def finite_copy(value):
     return value
 
 
+# MOTOR_STATUS REFRESH=1 reads calibration (2 params per axis). It stops
+# starting new axes once this many seconds have passed, so one dead axis
+# cannot hold the G-code queue for its full retry time on every axis.
+MOTOR_STATUS_REFRESH_BUDGET = 6.0
+
+_OVERRIDE_OP_RESULT = {
+    # op: (phase, match)
+    "read_ok": ("read", True),
+    "read_error": ("read", None),
+    "write_error": ("write", False),
+    "verify_error": ("verify", None),
+    "verify_mismatch": ("verify", False),
+    "skip_no_value": ("skip", None),
+}
+
+
+class MotorParamCache:
+    """Last known board values of overrides and calibration; no I/O.
+
+    Filled only from reads the controller already makes (startup apply,
+    MOTOR_CFG_OVERRIDE_STATUS, MOTOR_STATUS REFRESH=1). A value from the
+    registry or the config file is a target, never a readback. Every
+    startup/retry opens a new session; older entries stay with
+    ``current: false``.
+    """
+
+    def __init__(self, axes):
+        self.session = 0
+        self.overrides = {axis: {} for axis in axes}
+        self.calibration = {axis: None for axis in axes}
+        self.apply_errors = {axis: None for axis in axes}
+
+    def new_session(self):
+        self.session += 1
+
+    def record_override(self, axis, key, *, target, read, match, error,
+                        phase, source, now):
+        self.overrides[axis][key] = {
+            "target": target, "read": read, "match": match, "error": error,
+            "phase": phase, "source": source, "at": now,
+            "session": self.session,
+        }
+
+    def record_override_actions(self, axis, actions, source, now):
+        # The executor reports a successful post-write readback by adding
+        # nothing after "write"; a failed one adds verify_error/_mismatch.
+        last = {}
+        for action in actions:
+            key = action.get("key")
+            if action.get("op") == "apply_error":
+                self.apply_errors[axis] = {
+                    "error": action.get("wrote_value"), "at": now,
+                    "session": self.session, "source": source}
+                continue
+            last[key] = action
+        for key, action in last.items():
+            op = action.get("op")
+            target = action.get("override_value")
+            if op == "write":
+                self.record_override(
+                    axis, key, target=target, read=target, match=True,
+                    error=None, phase="verify", source=source, now=now)
+                continue
+            phase, match = _OVERRIDE_OP_RESULT.get(op, (op, None))
+            read = action.get("current_value")
+            error = action.get("wrote_value") if op in (
+                "read_error", "write_error", "verify_error") else None
+            self.record_override(
+                axis, key, target=target, read=read, match=match,
+                error=error, phase=phase, source=source, now=now)
+
+    def record_calibration(self, axis, entries, source, now):
+        entries = [dict(entry) for entry in entries]
+        self.calibration[axis] = {
+            "entries": entries,
+            "summary": summarize_calibration(entries),
+            "source": source, "at": now, "session": self.session,
+        }
+
+    def snapshot(self, now) -> dict:
+        def stamp(entry):
+            if entry is None:
+                return None
+            return {**entry, "age": max(0.0, now - entry["at"]),
+                    "current": entry["session"] == self.session}
+
+        result = {}
+        for axis in self.overrides:
+            calibration = self.calibration[axis]
+            result[axis] = {
+                "overrides": {key: stamp(entry) for key, entry
+                              in sorted(self.overrides[axis].items())},
+                "apply_error": stamp(self.apply_errors[axis]),
+                "calibration": None if calibration is None else stamp({
+                    key: value for key, value in calibration.items()
+                    if key != "entries"}),
+            }
+        return finite_copy({"session": self.session, "axes": result})
+
+
 def blank_axis_readiness() -> dict:
     return {
         "reachable": None,
@@ -2743,6 +2843,12 @@ class MotorControlDebugSurfaceMixin:
                 }
                 errors += 1
             results.append(entry)
+            self.param_cache.record_override(
+                param.axis, param.key, target=target,
+                read=entry["current_value"],
+                match=None if entry.get("error") else entry["matches"],
+                error=entry.get("error"), phase="read", source="manual",
+                now=self.reactor.monotonic())
         return {
             "count": len(results),
             "ok": ok,
@@ -2772,6 +2878,9 @@ class MotorControlDebugSurfaceMixin:
                 axis,
                 timeout=MOTOR_COMMAND_TIMEOUT)
         except Exception as exc:
+            self.param_cache.record_calibration(
+                axis, [{"axis": axis, "key": "__read__", "error": repr(exc)}],
+                "refresh", self.reactor.monotonic())
             return {
                 "axis": axis,
                 "axis_label": axis_label,
@@ -2780,7 +2889,13 @@ class MotorControlDebugSurfaceMixin:
                 "unsafe_entries": [],
                 "error": repr(exc),
             }
+        self.param_cache.record_calibration(
+            axis, entries, "refresh", self.reactor.monotonic())
+        return self._calibration_status_from_entries(axis, entries)
 
+    def _calibration_status_from_entries(self, axis: str,
+                                         entries: list[dict]) -> dict:
+        axis_label = self._format_axis_label(axis)
         values = {}
         errors = {}
         unsafe_entries = []
@@ -2810,14 +2925,67 @@ class MotorControlDebugSurfaceMixin:
             result["errors"] = errors
         return result
 
-    def _collect_calibration_status(self) -> list[dict]:
-        return [
-            self._read_axis_calibration_status(axis)
-            for axis in ALL_AXES
-        ]
+    def _collect_calibration_status(
+            self, budget: float = MOTOR_STATUS_REFRESH_BUDGET) -> list[dict]:
+        start = self.reactor.monotonic()
+        result = []
+        for axis in ALL_AXES:
+            if self.reactor.monotonic() - start > budget:
+                result.append({
+                    "axis": axis,
+                    "axis_label": self._format_axis_label(axis),
+                    "values": {}, "near_zero": False, "unsafe_entries": [],
+                    "skipped": "refresh budget of %.0f s used up" % (budget,),
+                })
+                continue
+            result.append(self._read_axis_calibration_status(axis))
+        return result
+
+    def _cached_calibration_status(self) -> list[dict]:
+        now = self.reactor.monotonic()
+        result = []
+        for axis in ALL_AXES:
+            cached = self.param_cache.calibration.get(axis)
+            if cached is None:
+                result.append({
+                    "axis": axis,
+                    "axis_label": self._format_axis_label(axis),
+                    "values": {}, "near_zero": False, "unsafe_entries": [],
+                    "cached": True,
+                    "skipped": "not read yet (MOTOR_STATUS REFRESH=1 reads it)",
+                })
+                continue
+            read_errors = [e for e in cached["entries"]
+                           if e.get("key") == "__read__"]
+            if read_errors:
+                entry = {
+                    "axis": axis,
+                    "axis_label": self._format_axis_label(axis),
+                    "values": {}, "near_zero": False, "unsafe_entries": [],
+                    "error": read_errors[0].get("error"),
+                }
+            else:
+                entry = self._calibration_status_from_entries(
+                    axis, cached["entries"])
+            entry.update(
+                cached=True, age=max(0.0, now - cached["at"]),
+                source=cached["source"],
+                current=cached["session"] == self.param_cache.session)
+            result.append(entry)
+        return result
 
     def _format_calibration_status_line(self, entry: dict) -> str:
+        line = self._format_calibration_status_text(entry)
+        if entry.get("cached") and entry.get("age") is not None:
+            line += " | cached %.0fs ago (%s%s)" % (
+                entry["age"], entry.get("source"),
+                "" if entry.get("current") else ", previous startup")
+        return line
+
+    def _format_calibration_status_text(self, entry: dict) -> str:
         axis_label = entry["axis_label"]
+        if entry.get("skipped"):
+            return "Calibration %s: %s" % (axis_label, entry["skipped"])
         if entry.get("error"):
             return "Calibration %s: ERROR %s" % (axis_label, entry["error"])
 
@@ -2856,7 +3024,7 @@ class MotorControlDebugSurfaceMixin:
                 and self.extruder_transport.is_configured()),
         }
 
-    def _build_status_snapshot(self) -> dict:
+    def _build_status_snapshot(self, refresh: bool = False) -> dict:
         homing_session = self._get_homing_session_state()
         decoded_fault_detail = {
             axis: describe_fault_detail(detail)
@@ -2898,11 +3066,14 @@ class MotorControlDebugSurfaceMixin:
             "motor_warning_code": self.motor_warning_code,
             "motor_fault_detail": self.motor_fault_detail,
             "motor_fault_detail_decoded": decoded_fault_detail,
-            "calibration": self._collect_calibration_status(),
+            "calibration": (self._collect_calibration_status() if refresh
+                            else self._cached_calibration_status()),
+            "calibration_source": "refresh" if refresh else "cache",
         }
 
     def cmd_MOTOR_STATUS(self, gcmd):
-        status = self._build_status_snapshot()
+        refresh = bool(gcmd.get_int("REFRESH", 0, minval=0, maxval=1))
+        status = self._build_status_snapshot(refresh=refresh)
         if self._gcmd_raw_detail(gcmd):
             gcmd.respond_info(
                 "MOTOR_STATUS %s" % (
@@ -3166,6 +3337,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             ALL_AXES, PROTECTION_STALE_AFTER)
         self.override_policy = self.config_model.override_policy
         self.axis_readiness = {axis: blank_axis_readiness() for axis in ALL_AXES}
+        self.param_cache = MotorParamCache(ALL_AXES)
         self.temp_sensors = Mot2TempSensorHub(self, config)
 
         for axis, pin_cfg in self.stall_monitor.pin_map.items():
@@ -3197,7 +3369,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
     def _register_runtime_commands(self):
         self._register_command_specs((
             ("MOTOR_STATUS", self.cmd_MOTOR_STATUS,
-             "MOTOR_STATUS [VERBOSE=1] Print readable motor-control state"),
+             "MOTOR_STATUS [VERBOSE=1] [REFRESH=1] Print readable "
+             "motor-control state (REFRESH=1 rereads calibration)"),
             ("MOTOR_CLEAR_ERROR", self.cmd_MOTOR_CLEAR_ERROR,
              "MOTOR_CLEAR_ERROR Query active faults, clear them, and report the result"),
             ("MOTOR_FLASH_PARAM", self.cmd_MOTOR_FLASH_PARAM,
@@ -3924,6 +4097,11 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 "actions": actions,
                 "calibration": calibration,
             }
+            now = self.reactor.monotonic()
+            self.param_cache.record_override_actions(
+                axis, actions, "startup", now)
+            self.param_cache.record_calibration(
+                axis, calibration, "startup", now)
             record = self.axis_readiness[axis]
             if axis in failures:
                 record["parameters"] = {
@@ -4084,6 +4262,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self._startup_protection_active = {}
         self.protection_validity.new_session()
         self.axis_readiness = {axis: blank_axis_readiness() for axis in ALL_AXES}
+        self.param_cache.new_session()
         if reset_retry_state:
             self._startup_auto_retry_count = 0
             self._startup_allow_auto_retry = True
@@ -4923,6 +5102,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             },
             "faults": faults,
             "readiness": self._readiness_status(),
+            "param_cache": self.param_cache.snapshot(eventtime),
             "stall_state": dict(self.stall_monitor.read_all()),
             "temperatures": self.temp_sensors.get_status(eventtime),
         }

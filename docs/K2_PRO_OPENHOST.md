@@ -243,6 +243,32 @@ Problems are listed as `critical_problems`, `diagnostic_problems` and `unclassif
 
 Every startup or retry resets readiness.
 
+### Cached override and calibration values
+
+`motor_control.param_cache` keeps the last value read from each motor board, so clients and `MOTOR_STATUS` do not send packets to show them.
+
+Per axis it holds:
+- `overrides.<key>`: `target`, `read`, `match` (true, false, or null when unknown), `error`, `phase` (`read`, `write`, `verify`, `skip`), `source`, `at`, `session`, `age` and `current`;
+- `apply_error`, when the apply command after writes failed;
+- `calibration`: the `summary` (state, values, errors, suspect keys), `source`, `at`, `age` and `current`.
+
+Each part is filled by:
+
+| source | when |
+| --- | --- |
+| `startup` | the startup override apply and calibration read |
+| `manual` | `MOTOR_CFG_OVERRIDE_STATUS` |
+| `refresh` | `MOTOR_STATUS REFRESH=1` |
+
+No write is made to fill the cache. A value from `motor_control.cfg` or the registry is only a `target`, never a readback. Every startup or retry opens a new session: older values stay, with `current: false`.
+
+**`MOTOR_STATUS`:**
+- By default it shows the cached calibration, with `cached Ns ago (source)`, and reads nothing.
+- `MOTOR_STATUS REFRESH=1` rereads calibration only: 2 parameters per axis, as before this change. It stops starting new axes after 6 s, so one silent axis cannot hold the G-code queue for every axis's retries; skipped axes say so.
+- `VERBOSE=1` still prints the JSON, with `calibration_source: cache|refresh`.
+
+`MOTOR_CFG_OVERRIDE_STATUS` still reads every override from the boards, and now also updates the cache.
+
 ## Motor MCU temperatures
 
 `motor_control` reads the MCU temperature of X, Y and E (GET index 17), one axis every 6 s, so each axis is read every 18 s. The polling is unchanged; subscriptions never send packets.
