@@ -199,7 +199,9 @@ Moonraker/Mainsail update management expects this repository to remain clean. Fi
 
 Fixes tested directly on the CM5 must be committed to this branch. A modified tracked file blocks Moonraker updates, and a hard recovery from the update manager discards it.
 
-The CFS extras are mirrored to `MzTechnology97/k2-pro-custom-firmware:k2-openhost`. The read-only `K2 OpenHost - check extras drift` workflow fails when the two trees diverge; it never syncs files.
+The K2 extras, CFS stack included, are maintained here. They used to be mirrored to `MzTechnology97/k2-pro-custom-firmware:k2-openhost`, checked by a drift workflow. That repository is archived since 2026-10-04 as read-only history, and the mirror and its workflow are gone.
+
+Upstream changes from Jacob10383 are reviewed directly against [Jacob10383/k2-plus-custom-firmware](https://github.com/Jacob10383/k2-plus-custom-firmware) (`extras/`) and [Jacob10383/kalico](https://github.com/Jacob10383/kalico), then ported here as before.
 
 ## Next milestones
 
