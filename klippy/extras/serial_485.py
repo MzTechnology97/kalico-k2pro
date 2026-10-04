@@ -803,6 +803,10 @@ class Serial_485_Wrapper:
             "reader_errors": self._stats["reader_errors"],
         }
 
+    def get_status(self, eventtime):
+        # Reuse the local diagnostic snapshot; never enqueue bus requests.
+        return self._status_fields()
+
     def cmd_SERIAL_STATUS(self, gcmd):
         fields = self._status_fields()
         gcmd.respond_info(
