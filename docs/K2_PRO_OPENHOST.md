@@ -209,6 +209,40 @@ The CM5 can become ready before the K2 motor controllers. The OpenHost integrati
 
 The production transport must have exactly one owner per UART/gadget endpoint. A duplicate GS2 bridge was discovered during the experimental Cartographer multiplexing work and caused RS-485 instability; after returning to a single bridge, motor-control operation returned to normal.
 
+## Motor readiness
+
+`motor_ready` only says that startup finished. `motor_control.readiness.<axis>` says what was verified on the way, without reading hardware from `get_status`.
+
+| field | meaning |
+| --- | --- |
+| `reachable` | the axis answered target discovery in this startup |
+| `parameters.state` | `verified`: every `motor_control.cfg` override read back equal to its value; `degraded`: some read, write, apply or readback failed or differed; `failed`: the overrides could not be applied at all; `unknown`: not checked yet |
+| `calibration.state` | `read`; `suspect`: the electrical offset is near 0; `read_failed`; `unknown` |
+| `configured` / `calibration_verified` | `parameters.state == verified` / `calibration.state == read` |
+| `operational` | startup finished and the axis is not blocked by the policy |
+| `degraded` | operational, but parameters or calibration are not verified |
+| `reasons` | short texts for everything that is not verified |
+
+Problems are listed as `critical_problems`, `diagnostic_problems` and `unclassified_problems`. Each entry has `key`, `op`, `target`, `read`, `error` and `confirmed_mismatch`.
+
+**Critical overrides:** control-loop gains and filters (`controller_pos/spd/cur_loop_*`, `controller_cur_filter_*`, `controller_leso_*`) and protection thresholds (`protection_param_prt_*`, `pos_over_limit_*`, `encoder_mutation_*`, `power_voltage_min`, `mcu_temp_max`, `err_code_mask`). They set how the closed loop behaves and when a fault trips.
+
+**Diagnostic overrides:** `protection_param_protect_report` and `protection_param_warning_code_mask`, which only change what is reported.
+
+**Unclassified overrides:** any other key keeps the previous behaviour, a warning only.
+
+**Policy** (`override_policy` in `[motor_control]`, set to `warn` in `config/k2/motor_control.cfg`):
+- `warn` (default): as before, problems are warnings and the axis runs `degraded`.
+- `block`: startup fails, and retries, only when a critical override is confirmed wrong. A confirmed wrong value means a write failed after reading a different value, or the readback after writing differs. Read, verify or apply errors leave the value unknown and do not block. Calibration never blocks.
+
+**Tuning is unchanged.** Edit the values in `motor_control.cfg` and restart: the overrides are read, written when different, applied and read back exactly as before. A tuned value that the board accepts is `verified` under both policies.
+
+**Calibration ids 9 and 25:**
+- 9 is `param_elec_offset`. A value near 0 may be an uncalibrated motor, so it is reported as `suspect`.
+- 25 is `param_elec_offset_err_deg`, the residual error of the calibration. Near 0 is a good result, so it is reported raw and no longer triggers the near-zero warning.
+
+Every startup or retry resets readiness.
+
 ## Motor MCU temperatures
 
 `motor_control` reads the MCU temperature of X, Y and E (GET index 17), one axis every 6 s, so each axis is read every 18 s. The polling is unchanged; subscriptions never send packets.
