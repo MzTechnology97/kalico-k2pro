@@ -246,18 +246,18 @@ Notes from those tests:
 
 | G-code | Effect |
 | --- | --- |
-| `T113_STATUS` | last T113 telemetry: slot, MCU power, SoC temperature, uptime, UDISK, USB gadget, bridges |
-| `T113_BEEP [MS=200] [COUNT=1]`, `M300 [P<ms>]` | the printer buzzer (GPIO164, fixed tone). `M300` is registered only if no macro defines it. |
-| `T113_BRIDGES_RESTART CONFIRM=1` | restarts the three USB bridges. It takes under 5 s, so Klipper stays connected (tested). |
-| `T113_SCREEN_RESTART` | restarts HelixScreen |
-| `T113_MCU_POWER_CYCLE CONFIRM=1` | cuts the MCU rail (GPIO140) for 2 s with the bridges stopped, then `FIRMWARE_RESTART`. It also works while Klipper is shut down. Tested: ready in 9 s, CFS in 16 s, motors in 21 s. |
+| `BOARD_STATUS` | last T113 telemetry: slot, MCU power, SoC temperature, uptime, UDISK, USB gadget, bridges |
+| `BUZZER [MS=200] [COUNT=1]`, `M300 [P<ms>]` | the printer buzzer (GPIO164, fixed tone). `M300` is registered only if no macro defines it. |
+| `USB_BRIDGES_RESTART CONFIRM=1` | restarts the three USB bridges. It takes under 5 s, so Klipper stays connected (tested). |
+| `SCREEN_RESTART` | restarts HelixScreen |
+| `MCU_POWER_CYCLE CONFIRM=1` | cuts the MCU rail (GPIO140) for 2 s with the bridges stopped, then `FIRMWARE_RESTART`. It also works while Klipper is shut down. Tested: ready in 9 s, CFS in 16 s, motors in 21 s. |
 
 The T113 refuses the power cycle and the bridge restart unless the host's Moonraker reports a known idle print state. When Klippy is already shut down, these G-codes pass `force`, which the T113 accepts only in that state.
 
 | Option | Default | Effect |
 | --- | --- | --- |
 | `estop_on_shutdown` | `m112` | an emergency stop (M112, the UI's stop button) also acts on the MCU power rail, so heaters and motors lose power even if an MCU stopped answering. `any`: every shutdown does. `off`: nothing. |
-| `estop_power` | `cycle` | `cycle`: the rail comes back after 2 s, so the MCUs restart from reset with every output off, ready for `FIRMWARE_RESTART`. `off`: it stays cut until the power device or `T113_MCU_POWER_CYCLE` turns it on. |
+| `estop_power` | `cycle` | `cycle`: the rail comes back after 2 s, so the MCUs restart from reset with every output off, ready for `FIRMWARE_RESTART`. `off`: it stays cut until the power device or `MCU_POWER_CYCLE` turns it on. |
 | `sound_print_complete`, `sound_pause`, `sound_error`, `sound_cancel`, `sound_shutdown`, `sound_rfid` | see `k2_t113.cfg` | buzzer patterns, `on,off,on,...` in ms (at most 16 steps, 10 s); empty = silent |
 | `auto_power_cycle` | `False` | after `Lost communication with MCU` while no print was running, power-cycle the MCUs and restart, at most once every 10 minutes |
 
@@ -268,7 +268,7 @@ The T113 refuses the power cycle and the bridge restart unless the host's Moonra
 - a Klipper shutdown or emergency stop;
 - an external spool RFID read, from the reader or from `RFID_READER_READ` in the UI.
 
-Each sound is a pattern of beeps and pauses, so finished, pause and error sound different. Try them with `T113_BEEP SOUND=print_complete` (`pause`, `error`, `cancel`, `shutdown`, `rfid`) or any pattern with `T113_BEEP PATTERN=200,100,200`. Macros can use `T113_BEEP` too.
+Each sound is a pattern of beeps and pauses, so finished, pause and error sound different. Try them with `BUZZER SOUND=print_complete` (`pause`, `error`, `cancel`, `shutdown`, `rfid`) or any pattern with `BUZZER PATTERN=200,100,200`. Macros can use `BUZZER` too.
 
 **External RFID beep:** `[external_rfid_reader] beep_backend` can be `local` (the stock PWM buzzer on the host board), `t113` (through `[k2_t113]`) or `none`. `config/k2/box.cfg` sets `t113`, because on OpenHost the buzzer is wired to the T113, not to the host.
 
@@ -331,11 +331,11 @@ The first run calibrates nothing. It turns the motors off and asks you to put th
 
 ```text
 MOTOR_CALIBRATE AXIS=E STAGE=encoder
-T113_MCU_POWER_CYCLE CONFIRM=1
+MCU_POWER_CYCLE CONFIRM=1
 MOTOR_CALIBRATE AXIS=E STAGE=offset
 ```
 
-Jacob's guide says to power-cycle the printer between the two stages. On OpenHost, `T113_MCU_POWER_CYCLE CONFIRM=1` power-cycles the MCU rail, which includes the extruder board, and restarts Klipper, so the host and the T113 keep running. Without `[k2_t113]`, switch the printer off and on.
+Jacob's guide says to power-cycle the printer between the two stages. On OpenHost, `MCU_POWER_CYCLE CONFIRM=1` power-cycles the MCU rail, which includes the extruder board, and restarts Klipper, so the host and the T113 keep running. Without `[k2_t113]`, switch the printer off and on.
 
 **Afterwards:** `MOTOR_STATUS REFRESH=1` should show the new offsets and no `UNSAFE`, and `G28` works again.
 
