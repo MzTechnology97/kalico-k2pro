@@ -176,7 +176,7 @@ The production transport must have exactly one owner per UART/gadget endpoint. A
 
 The current known-good Z-homing baseline is the stock PRTouch stack. Full homing has been tested successfully with Cartographer disabled.
 
-Cartographer support lives in `MzTechnology97/cartographer3d-plugin-k2openhost`. The plugin now supports:
+Cartographer uses the official [Cartographer3D plugin](https://github.com/Cartographer3D/cartographer3d-plugin) (see the [K2-OpenHost Cartographer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/CARTOGRAPHER.md)). It supports:
 
 - `register_as_probe: true` for standalone Cartographer-as-probe operation;
 - `register_as_probe: false` as the basis for optional mixed mode, where PRTouch remains the primary Z-reference probe and Cartographer is used for scanning/mesh work.

@@ -82,7 +82,7 @@ The current K2-OpenHost Box contract deliberately keeps `api_version: 1` and add
 
 The current known-good homing baseline uses **PRTouch** with Cartographer disabled. Full homing has been verified in that state.
 
-The companion Cartographer plugin supports:
+The official Cartographer3D plugin supports:
 
 - `register_as_probe: true` for normal Cartographer-as-probe mode;
 - `register_as_probe: false` for future optional mixed mode with PRTouch retaining the canonical Z-reference probe.
