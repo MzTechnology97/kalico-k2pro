@@ -12,9 +12,16 @@ reactor never waits for the network.
     port: 7130
     token_file: ~/printer_data/config/k2oh_t113.token
     poll_interval: 10       # telemetry period in seconds, 0 = off
-    estop_on_shutdown: off  # off | m112 | any: cut the MCU rail on shutdown
+    estop_on_shutdown: m112 # off | m112 | any: act on the MCU rail on shutdown
+    estop_power: cycle      # cycle: cut and restore (MCU reset) | off: keep cut
     auto_power_cycle: False # power-cycle the MCUs after a lost MCU link
                             # when no print was running, then restart
+    sound_print_complete: 150,100,150,100,150,100,600
+                            # buzzer patterns: on,off,on,... in ms; empty = mute
+
+Sounds play on print state changes (complete, pause, error, cancel), on a
+Klipper shutdown and on an external RFID scan, like the stock firmware's
+buzzer. T113_BEEP SOUND=<name> plays one; T113_BEEP PATTERN=... any pattern.
 """
 
 from __future__ import annotations
@@ -28,6 +35,44 @@ import urllib.error
 import urllib.request
 
 ESTOP_CHOICES = {"off": "off", "m112": "m112", "any": "any"}
+ESTOP_POWER_CHOICES = {"cycle": "cycle", "off": "off"}
+SOUND_DEFAULTS = {
+    "print_complete": "150,100,150,100,150,100,600",
+    "pause": "500,250,500",
+    "error": "1000,300,1000,300,1000",
+    "cancel": "400",
+    "shutdown": "2000,400,2000",
+    "rfid": "200",
+}
+MAX_PATTERN_STEPS = 16
+MAX_STEP_MS = 3000
+MAX_PATTERN_MS = 10000
+
+
+def parse_pattern(text):
+    """'on,off,on,...' in ms -> list of ints; '' -> [] (mute)."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    try:
+        steps = [int(part) for part in text.replace(" ", "").split(",")]
+    except ValueError:
+        raise ValueError("pattern %r: use on,off,on,... in milliseconds" % text)
+    if len(steps) > MAX_PATTERN_STEPS:
+        raise ValueError(
+            "pattern %r: at most %d steps" % (text, MAX_PATTERN_STEPS)
+        )
+    if any(step < 0 or step > MAX_STEP_MS for step in steps):
+        raise ValueError("pattern %r: each step 0..%d ms" % (text, MAX_STEP_MS))
+    if steps[0] < 20:
+        raise ValueError("pattern %r: the first beep must be >= 20 ms" % text)
+    if sum(steps) > MAX_PATTERN_MS:
+        raise ValueError(
+            "pattern %r: at most %d ms in total" % (text, MAX_PATTERN_MS)
+        )
+    return steps
+
+
 REQUEST_TIMEOUT = 5.0
 CYCLE_TIMEOUT = 30.0
 AUTO_CYCLE_DELAY = 3.0
@@ -79,8 +124,19 @@ class K2T113:
             "poll_interval", 10.0, minval=0.0, maxval=3600.0
         )
         self.estop_on_shutdown = config.getchoice(
-            "estop_on_shutdown", ESTOP_CHOICES, "off"
+            "estop_on_shutdown", ESTOP_CHOICES, "m112"
         )
+        self.estop_power = config.getchoice(
+            "estop_power", ESTOP_POWER_CHOICES, "cycle"
+        )
+        self.sounds = {}
+        for name, default in SOUND_DEFAULTS.items():
+            try:
+                self.sounds[name] = parse_pattern(
+                    config.get("sound_" + name, default)
+                )
+            except ValueError as exc:
+                raise config.error("[k2_t113] sound_%s: %s" % (name, exc))
         self.auto_power_cycle = config.getboolean("auto_power_cycle", False)
         token = config.get("token", "").strip()
         if not token:
@@ -109,6 +165,7 @@ class K2T113:
         )
         self.last_action = None
         self._last_idle = False
+        self._last_print_state = None
         self._auto_cycle_at = None
         self._stop = threading.Event()
         self._poll_thread = None
@@ -134,7 +191,8 @@ class K2T113:
                 "T113_BEEP",
                 self.cmd_T113_BEEP,
                 False,
-                "Sound the printer buzzer: T113_BEEP [MS=200] [COUNT=1]",
+                "Buzzer: T113_BEEP [MS=200] [COUNT=1] | PATTERN=on,off,..."
+                " | SOUND=print_complete|pause|error|cancel|shutdown|rfid",
             ),
             (
                 "T113_BRIDGES_RESTART",
@@ -221,10 +279,16 @@ class K2T113:
     def _sample_idle(self, eventtime):
         # Remember whether a print was running, for auto_power_cycle: at the
         # shutdown event print_stats may already have moved to "error".
+        # Also plays the print state sounds, like the stock buzzer.
         print_stats = self.printer.lookup_object("print_stats", None)
         state = getattr(print_stats, "state", None)
         self._last_idle = state in ("standby", "complete", "cancelled", "error")
-        return eventtime + 2.0
+        previous, self._last_print_state = self._last_print_state, state
+        if previous != state and not self.printer.is_shutdown():
+            sound = print_state_sound(previous, state)
+            if sound:
+                self.play(sound)
+        return eventtime + 1.0
 
     # --- actions (worker threads) ----------------------------------------------
     def _action(
@@ -252,21 +316,30 @@ class K2T113:
             raise self.gcode.error("k2_t113 is disabled: %s" % self.last_error)
         self._spawn(work)
 
-    def beep(self, ms=200, count=1):
-        """Non-blocking beep; safe to call from any extras code."""
-        if not self.enabled:
+    def beep_pattern(self, pattern):
+        """Non-blocking: play on,off,on,... (ms). Safe from any extras code."""
+        if not self.enabled or not pattern:
             return False
+        pattern = [int(step) for step in pattern]
 
         def work():
             try:
-                self.client.request(
-                    "POST", "/beep", {"ms": int(ms), "count": int(count)}
-                )
+                self.client.request("POST", "/beep", {"pattern": pattern})
             except T113Error as exc:
                 logging.warning("k2_t113: beep failed: %s", exc)
 
         self._spawn(work)
         return True
+
+    def beep(self, ms=200, count=1, gap_ms=120):
+        steps = []
+        for _ in range(max(1, int(count))):
+            steps += [int(ms), int(gap_ms)]
+        return self.beep_pattern(steps[:-1])
+
+    def play(self, sound):
+        """Play a configured sound by name (print_complete, pause, ...)."""
+        return self.beep_pattern(self.sounds.get(sound) or [])
 
     def _request_firmware_restart(self, _result=None):
         # Runs on the worker thread: give the MCUs a moment to boot after the
@@ -280,6 +353,7 @@ class K2T113:
         if not self.enabled:
             return
         message = self.printer.get_state_message()[0]
+        self.play("shutdown")
         if self.estop_on_shutdown == "any" or (
             self.estop_on_shutdown == "m112" and "M112" in message
         ):
@@ -304,9 +378,13 @@ class K2T113:
             self._spawn(self._auto_cycle)
 
     def _estop(self):
+        cycle = self.estop_power == "cycle"
         try:
-            self.client.request("POST", "/estop", {})
-            logging.error("k2_t113: MCU rail cut after shutdown (estop)")
+            self.client.request("POST", "/estop", {"cycle": cycle})
+            logging.error(
+                "k2_t113: MCU rail %s after shutdown (estop)",
+                "power-cycled" if cycle else "cut",
+            )
         except T113Error as exc:
             logging.error("k2_t113: estop request failed: %s", exc)
 
@@ -344,6 +422,10 @@ class K2T113:
             "telemetry": self.telemetry,
             "last_action": self.last_action,
             "estop_on_shutdown": self.estop_on_shutdown,
+            "estop_power": self.estop_power,
+            "sounds": {
+                name: list(steps) for name, steps in self.sounds.items()
+            },
             "auto_power_cycle": self.auto_power_cycle,
         }
 
@@ -383,10 +465,27 @@ class K2T113:
         )
 
     def cmd_T113_BEEP(self, gcmd):
+        if not self.enabled:
+            raise gcmd.error("k2_t113 is disabled: %s" % self.last_error)
+        sound = gcmd.get("SOUND", None)
+        pattern = gcmd.get("PATTERN", None)
+        if sound is not None:
+            if sound not in self.sounds:
+                raise gcmd.error(
+                    "SOUND must be one of %s" % ", ".join(sorted(self.sounds))
+                )
+            if not self.play(sound):
+                gcmd.respond_info("sound_%s is muted" % sound)
+            return
+        if pattern is not None:
+            try:
+                self.beep_pattern(parse_pattern(pattern))
+            except ValueError as exc:
+                raise gcmd.error(str(exc))
+            return
         ms = gcmd.get_int("MS", 200, minval=20, maxval=3000)
         count = gcmd.get_int("COUNT", 1, minval=1, maxval=5)
-        if not self.beep(ms, count):
-            raise gcmd.error("k2_t113 is disabled: %s" % self.last_error)
+        self.beep(ms, count)
 
     def cmd_M300(self, gcmd):
         ms = gcmd.get_int("P", 200, minval=20, maxval=3000)
@@ -423,6 +522,19 @@ class K2T113:
             timeout=CYCLE_TIMEOUT,
             after=self._request_firmware_restart,
         )
+
+
+def print_state_sound(previous, state):
+    """Sound for a print_stats transition, or None."""
+    if previous == "printing" and state == "complete":
+        return "print_complete"
+    if previous == "printing" and state == "paused":
+        return "pause"
+    if previous in ("printing", "paused") and state == "error":
+        return "error"
+    if previous in ("printing", "paused") and state == "cancelled":
+        return "cancel"
+    return None
 
 
 def load_config(config):

@@ -113,22 +113,27 @@ def h():
     return Harness()
 
 
-def test_sensors_are_registered_with_heaters(h):
-    names = [name for name, _sensor in h.printer.heaters.sensors]
-    assert names == [
-        "temperature_sensor motor_X_MCU",
-        "temperature_sensor motor_Y_MCU",
-        "temperature_sensor motor_E_MCU",
-    ]
-    assert (
-        h.printer.objects["temperature_sensor motor_X_MCU"]
-        is h.hub.sensors["x"]
-    )
+def test_motor_control_creates_no_printer_objects(h):
+    # Standard [temperature_sensor ...] sections (sensor_type: motor_mcu)
+    # provide the UI sensors; motor_control itself adds none.
+    assert h.printer.objects == {}
+    assert h.printer.heaters.sensors == []
 
 
-def test_name_collision_has_a_readable_error():
-    with pytest.raises(ConfigError, match=r"created by \[motor_control\]"):
-        Harness(existing=["temperature_sensor motor_Y_MCU"])
+def test_listeners_get_each_good_read(h):
+    seen = []
+    listener = type("L", (), {"note_sample": lambda self, t: seen.append(t)})()
+    h.hub.attach("y", listener)
+    h.hub.start()
+    h.poll_round()
+    h.fail = True
+    h.poll_round()
+    assert seen == [42.0]
+
+
+def test_attach_rejects_unknown_axis(h):
+    with pytest.raises(ValueError):
+        h.hub.attach("z", object())
 
 
 def test_never_read_and_stopped(h):
