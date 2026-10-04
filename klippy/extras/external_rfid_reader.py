@@ -152,8 +152,14 @@ class ExternalRfidReader:
             "record_ascii": parsed["record_ascii"],
             "fields": dict(parsed["fields"]),
         }
-        self.printer.send_event(
-            "external_rfid_reader:record", dict(self._last_record))
+        # A failing consumer must not turn a spool scan into an internal
+        # error that shuts Klipper down and drops the RS-485 transport.
+        try:
+            self.printer.send_event(
+                "external_rfid_reader:record", dict(self._last_record))
+        except Exception as exc:
+            self._last_error = "record handler failed: %s" % exc
+            logging.exception("external_rfid_reader: record handler failed")
 
     def _button_handler(self, _eventtime, state):
         if not state or self._serial is None:
