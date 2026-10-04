@@ -2127,6 +2127,78 @@ method for full motor firmware packets.
 
 
 
+class TransparentTransportStats:
+    """Counters of the E motor's transport through the Nozzle MCU.
+
+    send()       one call from the motor firmware client: a logical command
+                 attempt (the client owns retries and calls send() again)
+    wire         one transparent_send on the Nozzle MCU link; a send() with
+                 attempts=N may make up to N
+    response     a wire attempt that got a transparent_response
+    timeout      a wire attempt with no response before the host deadline
+    no_response  a send() whose every wire attempt timed out
+    busy         a send() refused because another one was in progress
+    send_error   the host could not send (not configured, link error)
+    protocol_error  a response with an unexpected payload type
+    Latency is measured on wire attempts that got a response, from send to
+    response, in host monotonic time. Only bounded aggregates are kept.
+    """
+
+    def __init__(self):
+        self.sends = 0
+        self.wire_attempts = 0
+        self.responses = 0
+        self.timeouts = 0
+        self.no_response = 0
+        self.busy = 0
+        self.send_errors = 0
+        self.protocol_errors = 0
+        self.last_result = None
+        self.last_error = None
+        self.last_at = None
+        self.latency_last = None
+        self.latency_min = None
+        self.latency_max = None
+        self._latency_sum = 0.0
+
+    def note(self, result, now, error=None):
+        self.last_result = result
+        self.last_at = now
+        self.last_error = None if error is None else scrub_error_text(error)
+
+    def latency(self, seconds):
+        seconds = float(seconds)
+        if not math.isfinite(seconds) or seconds < 0.0:
+            return
+        self.latency_last = seconds
+        self.latency_min = seconds if self.latency_min is None else min(
+            self.latency_min, seconds)
+        self.latency_max = seconds if self.latency_max is None else max(
+            self.latency_max, seconds)
+        self._latency_sum += seconds
+
+    def snapshot(self, configured, busy):
+        def ms(value):
+            return None if value is None else round(value * 1000.0, 3)
+
+        return {
+            "configured": bool(configured), "busy": bool(busy),
+            "sends": self.sends, "wire_attempts": self.wire_attempts,
+            "responses": self.responses, "timeouts": self.timeouts,
+            "no_response": self.no_response, "busy_rejections": self.busy,
+            "send_errors": self.send_errors,
+            "protocol_errors": self.protocol_errors,
+            "last_result": self.last_result, "last_error": self.last_error,
+            "last_at": self.last_at,
+            "latency_ms": {
+                "last": ms(self.latency_last), "min": ms(self.latency_min),
+                "max": ms(self.latency_max),
+                "avg": (ms(self._latency_sum / self.responses)
+                        if self.responses else None),
+            },
+        }
+
+
 class NozzleTransparentTransportAdapter:
     QUERY_FORMAT = "transparent_send oid=%c write=%*s timeout_ms=%u"
     RESPONSE_FORMAT = "transparent_response oid=%c read=%*s"
@@ -2139,7 +2211,15 @@ class NozzleTransparentTransportAdapter:
         self._cmd_queue = None
         self._send_cmd = None
         self._send_busy = False
+        self.stats = TransparentTransportStats()
         self.nozzle_mcu.register_config_callback(self._build_config)
+
+    def _now(self):
+        return self.nozzle_mcu.get_printer().get_reactor().monotonic()
+
+    def stats_status(self) -> dict:
+        # Cached counters only; never touches the MCU.
+        return self.stats.snapshot(self.is_configured(), self._send_busy)
 
     @classmethod
     def lookup_nozzle_mcu(cls, printer):
@@ -2211,22 +2291,36 @@ class NozzleTransparentTransportAdapter:
     def _send_once(
             self, packet: bytes, timeout: float,
             response_timeout: float) -> bytes | None:
+        stats = self.stats
+        stats.wire_attempts += 1
         timeout_ms = max(1, int(float(timeout) * 1000.0))
-        params = self._wait_for_response(
-            self.get_send_cmd()._cmd.encode(
-                [self.oid, bytes(packet), timeout_ms]),
-            response_timeout,
-        )
+        started = self._now()
+        try:
+            params = self._wait_for_response(
+                self.get_send_cmd()._cmd.encode(
+                    [self.oid, bytes(packet), timeout_ms]),
+                response_timeout,
+            )
+        except Exception as exc:
+            stats.send_errors += 1
+            stats.note("send_error", self._now(), repr(exc))
+            raise
         if params is None:
+            stats.timeouts += 1
+            stats.note("timeout", self._now())
             return None
         payload = params["read"]
-        if isinstance(payload, bytes):
-            return payload
-        if isinstance(payload, bytearray):
+        if isinstance(payload, (bytes, bytearray)):
+            now = self._now()
+            stats.responses += 1
+            stats.latency(now - started)
+            stats.note("response", now)
             return bytes(payload)
-        raise RuntimeError(
-            "unexpected transparent response payload type: %s"
-            % (payload.__class__.__name__,))
+        stats.protocol_errors += 1
+        error = ("unexpected transparent response payload type: %s"
+                 % (payload.__class__.__name__,))
+        stats.note("protocol_error", self._now(), error)
+        raise RuntimeError(error)
 
     def send(self, packet: bytes,
              timeout: float = MOTOR_COMMAND_TIMEOUT, attempts: int = 1,
@@ -2236,13 +2330,17 @@ class NozzleTransparentTransportAdapter:
         attempts = self._coerce_attempts(attempts)
         host_timeout = self._host_response_timeout(timeout, response_timeout)
         if self._send_busy:
+            self.stats.busy += 1
+            self.stats.note("busy", self._now())
             raise RuntimeError("transparent transport send already in progress")
         self._send_busy = True
+        self.stats.sends += 1
         try:
             for _attempt in range(attempts):
                 response = self._send_once(packet, timeout, host_timeout)
                 if response is not None:
                     return response
+            self.stats.no_response += 1
             return None
         finally:
             self._send_busy = False
@@ -5271,6 +5369,10 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             "readiness": self._readiness_status(),
             "param_cache": self.param_cache.snapshot(eventtime),
             "events": self.event_log.snapshot(MOTOR_EVENTS_IN_STATUS),
+            "nozzle_transport": (
+                self.extruder_transport.stats_status()
+                if hasattr(self.extruder_transport, "stats_status")
+                else {"configured": False}),
             "stall_state": dict(self.stall_monitor.read_all()),
             "temperatures": self.temp_sensors.get_status(eventtime),
         }
