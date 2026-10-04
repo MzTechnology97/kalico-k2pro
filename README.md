@@ -114,7 +114,8 @@ Locally installed extras such as ShakeTune can be kept outside Git tracking (for
 - [K2 Pro/OpenHost integration notes](docs/K2_PRO_OPENHOST.md)
 - [K2 configuration context](config/k2/README.md)
 - [Canonical K2-OpenHost documentation](https://github.com/MzTechnology97/K2-OpenHost)
-- [K2 extra source/patch history](https://github.com/MzTechnology97/k2-pro-custom-firmware/tree/k2-openhost)
+- [T113 bootstrap for the printer side](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap)
+- K2 extras upstream: [Jacob10383/k2-plus-custom-firmware](https://github.com/Jacob10383/k2-plus-custom-firmware). The former mirror `MzTechnology97/k2-pro-custom-firmware` is archived (read-only history).
 - [Cartographer3D plugin (official)](https://github.com/Cartographer3D/cartographer3d-plugin) and the [K2-OpenHost Cartographer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/CARTOGRAPHER.md)
 
 For generic Kalico documentation and original project information, use:
