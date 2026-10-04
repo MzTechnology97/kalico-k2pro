@@ -243,6 +243,38 @@ Problems are listed as `critical_problems`, `diagnostic_problems` and `unclassif
 
 Every startup or retry resets readiness.
 
+### Motor event history
+
+`motor_control` keeps a bounded, in-memory history of protection events and recovery steps, so a pause or recovery can be explained after the fact. The cached fault itself is cleared after a confirmed recovery; the history is not.
+
+| type | when |
+| --- | --- |
+| `fault_detected` / `warning_detected` | a valid protection answer reports an error or a warning |
+| `query_failed` | a protection query timed out or was unverified |
+| `policy_shutdown` / `policy_recover` / `policy_homing_abort` / `policy_startup_cleanup` | the action chosen for a confirmed error (X/Y shutdown, E pause and clear, abort during homing, deferred clear during startup) |
+| `pause_requested` | the extruder fault paused the print |
+| `clear_requested` | a clear was sent; `result: not_acknowledged`, because the command has no ACK |
+| `clear_confirmed` / `clear_persistent` | the next valid query found the axis healthy, or still faulted |
+
+Each event has:
+- `seq`, `type` and `axis`;
+- the codes with their labels;
+- `source` (`periodic_poll`, `stall_pin:<n>`, ...) and `context` (`startup`, `homing`, `printing`, `paused`, `idle`);
+- `result`, `error` and `session`;
+- `at` and `last_at` (reactor monotonic seconds), `wall` (wall-clock time of the first occurrence) and `count`.
+
+An event identical to the previous one of the same axis is not repeated: its `count` and `last_at` grow. An unchanged fault seen by every 60 s poll is therefore one line.
+
+**Limits:**
+- `event_history` in `[motor_control]` sets the size: 50 by default, 10 to 500. The oldest events drop out first.
+- Nothing is written to disk.
+- A new startup session starts a new deduplication.
+
+**Reading it:**
+- `get_status` carries the newest 20 events (`motor_control.events`), with no I/O.
+- `MOTOR_EVENTS [COUNT=n]` prints the history.
+- `MOTOR_EVENTS VERBOSE=1` prints it as JSON for a report. Error texts have raw packet bytes replaced by `<hex>`; there are no serial numbers or credentials.
+
 ### Cached override and calibration values
 
 `motor_control.param_cache` keeps the last value read from each motor board, so clients and `MOTOR_STATUS` do not send packets to show them.

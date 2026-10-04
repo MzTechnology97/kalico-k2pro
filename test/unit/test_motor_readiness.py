@@ -290,6 +290,7 @@ def test_retry_resets_readiness():
     m.temp_sensors = SimpleNamespace(stop=lambda: None)
     m._fault_cleanup_timer = m._protection_poll_timer = object()
     m.protection_validity = mc.ProtectionValidity(mc.ALL_AXES, 126.0)
+    m.event_log = mc.MotorEventLog()
     m._reset_startup_state(reset_retry_state=False)
     assert m.axis_readiness["y"] == mc.blank_axis_readiness()
     assert rig.status()["y"]["operational"] is False
