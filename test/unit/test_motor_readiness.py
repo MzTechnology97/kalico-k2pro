@@ -157,6 +157,8 @@ class Rig:
         self.messages = []
         self.mc.gcode = SimpleNamespace(respond_raw=self.messages.append)
         self.mc.override_policy = policy
+        self.mc.calibration_policy = "warn"
+        self.mc._calibration_accepted = set()
         self.mc.axis_readiness = {
             axis: mc.blank_axis_readiness() for axis in mc.ALL_AXES
         }
@@ -310,3 +312,133 @@ def test_tuned_config_value_is_written_and_verified(policy):
     assert status["configured"] is True and status["operational"] is True
     assert status["parameters"]["writes"] == 2
     assert rig.messages == []
+
+
+# --- calibration policy and the homing gate -------------------------------------
+
+
+def calib_rig(policy="block", offsets=None):
+    rig = Rig()
+    m = rig.mc
+    m.calibration_policy = policy
+    m._calibration_accepted = set()
+    m.event_log = mc.MotorEventLog()
+    m._startup_started = m._startup_complete = True
+    m._is_homing_context_active = lambda: True
+    m.printer = SimpleNamespace(
+        lookup_object=lambda name, default=None: default,
+        command_error=RuntimeError,
+    )
+    m.param_cache.new_session()
+    for axis, offset in (offsets or {}).items():
+        entries = calibration(axis, offset=offset)
+        m.param_cache.record_calibration(axis, entries, "startup", 1.0)
+    return rig
+
+
+def rails(*axes):
+    return [
+        SimpleNamespace(
+            get_steppers=lambda a=axis: [
+                SimpleNamespace(get_name=lambda a=a: "stepper_" + a)
+            ]
+        )
+        for axis in axes
+    ]
+
+
+def test_calibrated_motors_home():
+    rig = calib_rig(offsets={"x": 443.8, "y": 164.6})
+    assert rig.mc.calibration_blockers() == {}
+    rig.mc._handle_home_rails_begin(None, rails("x", "y"))
+
+
+def test_uncalibrated_axis_blocks_homing():
+    rig = calib_rig(offsets={"x": 443.8, "y": 0.0})
+    assert rig.mc.calibration_blockers() == {
+        "y": "calibration offset near zero"
+    }
+    with pytest.raises(RuntimeError, match="MOTOR_CALIBRATE AXIS=Y"):
+        rig.mc._handle_home_rails_begin(None, rails("x", "y"))
+    # homing Z alone is not affected
+    rig.mc._handle_home_rails_begin(None, rails("z"))
+    events = rig.mc.event_log.snapshot()
+    assert events[0]["type"] == "homing_blocked"
+
+
+def test_unreadable_calibration_blocks_homing():
+    rig = calib_rig()
+    rig.mc.param_cache.record_calibration(
+        "x",
+        [{"axis": "x", "key": "__read__", "error": "timeout"}],
+        "startup",
+        1.0,
+    )
+    assert rig.mc.calibration_blockers() == {
+        "x": "calibration could not be read"
+    }
+
+
+def test_warn_policy_never_blocks():
+    rig = calib_rig("warn", offsets={"x": 0.0})
+    assert rig.mc.calibration_blockers() == {}
+    rig.mc._handle_home_rails_begin(None, rails("x"))
+
+
+def test_previous_session_calibration_does_not_block():
+    rig = calib_rig(offsets={"x": 0.0})
+    rig.mc.param_cache.new_session()
+    assert rig.mc.calibration_blockers() == {}
+
+
+def test_accept_calibration_allows_homing():
+    rig = calib_rig(offsets={"x": 0.0})
+    gcmd = SimpleNamespace(
+        get=lambda name, default=None: "X" if name == "AXIS" else default,
+        respond_info=lambda line: None,
+        error=RuntimeError,
+    )
+    rig.mc._parse_axis_selection = lambda raw: ("x",)
+    rig.mc.cmd_MOTOR_ACCEPT_CALIBRATION(gcmd)
+    assert rig.mc.calibration_blockers() == {}
+    rig.mc._handle_home_rails_begin(None, rails("x"))
+
+
+def test_calibration_is_reread_after_motor_calibrate():
+    rig = calib_rig(offsets={"y": 0.0})
+    rig.mc.axis_readiness["y"]["reasons"] = ["calibration offset near zero"]
+    rig.mc.axes.read_calibration_params = lambda axis, timeout: calibration(
+        axis, offset=164.6
+    )
+    rig.mc._refresh_calibration_after(("y",))
+    assert rig.mc.calibration_blockers() == {}
+    assert rig.mc.axis_readiness["y"]["calibration"]["state"] == "read"
+    assert rig.mc.axis_readiness["y"]["reasons"] == []
+    assert rig.mc.param_cache.calibration["y"]["source"] == "calibrate"
+
+
+def test_readiness_reports_homing_block():
+    rig = calib_rig(offsets={"x": 0.0})
+    rig.run()  # startup apply records fresh calibration for every axis
+    rig.mc.param_cache.record_calibration(
+        "x", calibration("x", offset=0.0), "startup", 1.0
+    )
+    status = rig.status()
+    assert status["x"]["homing_blocked"] is True
+    assert status["y"]["homing_blocked"] is False
+    assert status["x"]["calibration_policy"] == "block"
+
+
+def test_policy_defaults_are_block():
+    assert (
+        mc.MotorControlConfigModel.__dataclass_fields__[
+            "override_policy"
+        ].default
+        == "block"
+    )
+    assert (
+        mc.MotorControlConfigModel.__dataclass_fields__[
+            "calibration_policy"
+        ].default
+        == "block"
+    )

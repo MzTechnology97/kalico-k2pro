@@ -64,6 +64,7 @@ CONTROL_OPTIONS = (
     "motor_closed_loop",
     "override_policy",
     "event_history",
+    "calibration_policy",
 )
 
 
@@ -85,8 +86,9 @@ class MotorControlConfigModel:
     retry_delay: float
     switch: int
     overcurrent_switch: int
-    override_policy: str = "warn"
+    override_policy: str = "block"
     event_history: int = 50
+    calibration_policy: str = "block"
 
     @staticmethod
     def _parse_pin(config, option, default_desc, default_startup):
@@ -173,7 +175,10 @@ class MotorControlConfigModel:
                 "overcurrent_switch", 0, minval=0, maxval=1),
             override_policy=config.getchoice(
                 "override_policy", {"warn": "warn", "block": "block"},
-                "warn"),
+                "block"),
+            calibration_policy=config.getchoice(
+                "calibration_policy", {"warn": "warn", "block": "block"},
+                "block"),
             event_history=config.getint(
                 "event_history", 50, minval=10, maxval=500),
         )
@@ -2848,23 +2853,21 @@ class Mot2AxisTempSensor:
 
 
 class Mot2TempSensorHub:
-    def __init__(self, replacement, config):
+    """Polls the X/Y/E motor MCU temperatures (GET index 17).
+
+    The readings feed motor_control.temperatures and every standard
+    [temperature_sensor ...] declared with sensor_type: motor_mcu
+    (motor_mcu_temperature.py), which attach themselves with attach().
+    """
+
+    def __init__(self, replacement, config=None):
         self.replacement = replacement
         self.reactor = replacement.reactor
-        printer = replacement.printer
         self.sensors = {}
         self.samples = {}
-        heaters = printer.load_object(config, "heaters")
+        self.listeners = {axis: [] for axis in ALL_AXES}
         for axis in ALL_AXES:
-            name = "temperature_sensor motor_%s_MCU" % (axis.upper(),)
-            if printer.lookup_object(name, None) is not None:
-                raise config.error(
-                    "[%s] is created by [motor_control]; remove that section "
-                    "from your configuration" % (name,))
-            sensor = Mot2AxisTempSensor(self, axis)
-            printer.add_object(name, sensor)
-            heaters.register_sensor(config.getsection(name), sensor)
-            self.sensors[axis] = sensor
+            self.sensors[axis] = Mot2AxisTempSensor(self, axis)
             self.samples[axis] = {
                 "last_update": None, "last_attempt": None,
                 "last_error": None, "read_errors": 0,
@@ -2874,6 +2877,12 @@ class Mot2TempSensorHub:
         self._started = False
         self._session = 0
         self._axis_index = 0
+
+    def attach(self, axis, listener):
+        """listener.note_sample(temp) runs on the reactor after each good read."""
+        if axis not in self.listeners:
+            raise ValueError("unknown motor axis %r" % (axis,))
+        self.listeners[axis].append(listener)
 
     def start(self):
         # A new acquisition session: earlier readings stay as history but
@@ -2935,6 +2944,12 @@ class Mot2TempSensorHub:
                 sample.update(
                     last_update=self.reactor.monotonic(), last_error=None,
                     consecutive_errors=0, session=self._session)
+                for listener in self.listeners[axis]:
+                    try:
+                        listener.note_sample(self.sensors[axis].temperature)
+                    except Exception:
+                        _klog("motor %s temperature listener failed", axis,
+                              level=logging.exception)
             except Exception as exc:
                 sample["last_error"] = str(exc)
                 sample["read_errors"] += 1
@@ -3538,6 +3553,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self.protection_validity = ProtectionValidity(
             ALL_AXES, PROTECTION_STALE_AFTER)
         self.override_policy = self.config_model.override_policy
+        self.calibration_policy = self.config_model.calibration_policy
+        self._calibration_accepted = set()
         self.axis_readiness = {axis: blank_axis_readiness() for axis in ALL_AXES}
         self.param_cache = MotorParamCache(ALL_AXES)
         self.event_log = MotorEventLog(self.config_model.event_history)
@@ -3546,6 +3563,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         for axis, pin_cfg in self.stall_monitor.pin_map.items():
             if pin_cfg is not None:
                 setattr(self, f"motor_{axis}_stall", pin_cfg.raw)
+        self.printer.register_event_handler(
+            "homing:home_rails_begin", self._handle_home_rails_begin)
         self.printer.register_event_handler(
             "homing:homing_move_begin", self._handle_homing_move_begin)
         self.printer.register_event_handler(
@@ -3574,6 +3593,9 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             ("MOTOR_EVENTS", self.cmd_MOTOR_EVENTS,
              "MOTOR_EVENTS [COUNT=n] [VERBOSE=1] Motor protection event "
              "history (VERBOSE=1: JSON for a report)"),
+            ("MOTOR_ACCEPT_CALIBRATION", self.cmd_MOTOR_ACCEPT_CALIBRATION,
+             "MOTOR_ACCEPT_CALIBRATION AXIS=X|Y|X,Y Allow homing with a "
+             "calibration the startup flagged (until the next startup)"),
             ("MOTOR_STATUS", self.cmd_MOTOR_STATUS,
              "MOTOR_STATUS [VERBOSE=1] [REFRESH=1] Print readable "
              "motor-control state (REFRESH=1 rereads calibration)"),
@@ -4470,6 +4492,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self.axis_readiness = {axis: blank_axis_readiness() for axis in ALL_AXES}
         self.param_cache.new_session()
         self.event_log.new_session()
+        self._calibration_accepted = set()
         if reset_retry_state:
             self._startup_auto_retry_count = 0
             self._startup_allow_auto_retry = True
@@ -4749,6 +4772,81 @@ class MotorControl(MotorControlDebugSurfaceMixin):
 
     def _set_homing_move_active(self, active: bool):
         self.is_homing = bool(active)
+
+    def calibration_blockers(self) -> dict:
+        """{axis: reason} for X/Y whose calibration this session looks wrong.
+
+        An uncalibrated motor board reports an electrical offset of ~0; homing
+        it can crash the gantry. Read failures count too. Axes accepted with
+        MOTOR_ACCEPT_CALIBRATION, or calibration_policy: warn, never block.
+        """
+        if self.calibration_policy != "block":
+            return {}
+        blockers = {}
+        for axis in KINEMATIC_AXES:
+            if axis in self._calibration_accepted:
+                continue
+            cached = self.param_cache.calibration.get(axis)
+            if not cached or cached.get("session") != self.param_cache.session:
+                continue  # not read yet: the motor is not ready either
+            state = cached["summary"].get("state")
+            if state == "suspect":
+                blockers[axis] = "calibration offset near zero"
+            elif state == "read_failed":
+                blockers[axis] = "calibration could not be read"
+        return blockers
+
+    def _handle_home_rails_begin(self, _homing_state, rails):
+        axes = set()
+        for rail in rails:
+            for stepper in rail.get_steppers():
+                name = stepper.get_name()
+                if name in ("stepper_x", "stepper_y"):
+                    axes.add(name[-1])
+        blocked = {axis: reason for axis, reason
+                   in self.calibration_blockers().items() if axis in axes}
+        if not blocked:
+            return
+        names = ",".join(sorted(axis.upper() for axis in blocked))
+        details = "; ".join("%s: %s" % (axis.upper(), reason)
+                            for axis, reason in sorted(blocked.items()))
+        self._record_event("homing_blocked", ",".join(sorted(blocked)),
+                           result=details)
+        raise self.printer.command_error(
+            "Homing refused, motor calibration not verified (%s). Run "
+            "MOTOR_CALIBRATE AXIS=%s, or MOTOR_ACCEPT_CALIBRATION AXIS=%s if "
+            "you know the values are right (calibration_policy: block)."
+            % (details, names, names))
+
+    def cmd_MOTOR_ACCEPT_CALIBRATION(self, gcmd):
+        axes = self._parse_axis_selection(gcmd.get("AXIS", None))
+        accepted = [axis for axis in axes if axis in KINEMATIC_AXES]
+        if not accepted:
+            raise gcmd.error("MOTOR_ACCEPT_CALIBRATION: AXIS=X, Y or X,Y")
+        self._calibration_accepted.update(accepted)
+        self._record_event("calibration_accepted", ",".join(accepted))
+        gcmd.respond_info(
+            "Motor calibration accepted for %s until the next motor startup"
+            % (",".join(axis.upper() for axis in accepted),))
+
+    def _refresh_calibration_after(self, axes, source="calibrate"):
+        # After MOTOR_CALIBRATE: read the new values so a block clears
+        # without a restart. Best effort; a failure is reported, not raised.
+        for axis in axes:
+            try:
+                entries = self._read_startup_axis_calibration(
+                    axis, timeout=MOTOR_COMMAND_TIMEOUT)
+            except Exception as exc:
+                entries = [{"axis": axis, "key": "__read__",
+                            "error": repr(exc)}]
+            self.param_cache.record_calibration(
+                axis, entries, source, self.reactor.monotonic())
+            record = self.axis_readiness.get(axis)
+            if record is not None:
+                record["calibration"] = summarize_calibration(entries)
+                record["reasons"] = [
+                    reason for reason in record["reasons"]
+                    if not reason.startswith("calibration")]
 
     def _handle_homing_move_begin(self, _hmove):
         self._homing_move_depth += 1
@@ -5312,6 +5410,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
 
     def _readiness_status(self) -> dict:
         ready = bool(self.is_ready and self.motor_params_init)
+        blockers = self.calibration_blockers()
         result = {}
         for axis in ALL_AXES:
             record = self.axis_readiness.get(axis, blank_axis_readiness())
@@ -5329,6 +5428,9 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                                        or calibration != "read"),
                 "reasons": list(record["reasons"]),
                 "policy": self.override_policy,
+                "calibration_policy": self.calibration_policy,
+                "homing_blocked": axis in blockers,
+                "calibration_accepted": axis in self._calibration_accepted,
             }
         return result
 
@@ -5636,6 +5738,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 gcmd.respond_info(line)
                 gcmd.respond_info(
                     "MOTOR_CALIBRATE: completed AXIS=E STAGE=%s" % (stage_name,))
+                if stage_name != CALIBRATION_STAGE_ENCODER:
+                    self._refresh_calibration_after(staged_axes)
                 return result
             if stage is not None:
                 self._raise_calibration_usage(
@@ -5672,6 +5776,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             labels = ",".join(self._format_axis_label(axis) for axis in axes)
             gcmd.respond_info(
                 "MOTOR_CALIBRATE: completed axes=%s" % (labels,))
+            self._refresh_calibration_after(axes)
             return result
         except Exception as exc:
             raise gcmd.error(str(exc))

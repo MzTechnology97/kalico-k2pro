@@ -241,6 +241,9 @@ class Config:
     def getchoice(self, name, choices, default=None):
         return choices[self.values.get(name, default)]
 
+    def error(self, msg):
+        return RuntimeError(msg)
+
 
 class FakeClient:
     def __init__(self, host, port, token):
@@ -328,6 +331,9 @@ class Gcmd:
         self.params = params
         self.lines = []
 
+    def get(self, name, default=None):
+        return self.params.get(name, default)
+
     def get_int(self, name, default=None, **_kw):
         return int(self.params.get(name, default))
 
@@ -364,7 +370,7 @@ def test_refresh_failure_is_recorded(t113):
 def test_beep(t113):
     obj, _p = t113()
     assert obj.beep(150, 2) is True
-    assert obj.client.calls == [("POST", "/beep", {"ms": 150, "count": 2})]
+    assert obj.client.calls == [("POST", "/beep", {"pattern": [150, 120, 150]})]
 
 
 def test_m300_only_without_a_macro(t113):
@@ -407,6 +413,94 @@ def test_bridges_restart(t113):
     assert obj.client.calls == [("POST", "/bridges/restart", {"force": False})]
 
 
+# --- sounds ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, steps",
+    [
+        ("", []),
+        ("200", [200]),
+        ("150, 100,150", [150, 100, 150]),
+    ],
+)
+def test_parse_pattern(text, steps):
+    assert k2_t113.parse_pattern(text) == steps
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["abc", "10", "200," * 17 + "200", "3001", "3000,0,3000,0,3000,0,3000"],
+)
+def test_parse_pattern_rejects(text):
+    with pytest.raises(ValueError):
+        k2_t113.parse_pattern(text)
+
+
+def test_bad_sound_is_a_config_error(t113):
+    with pytest.raises(RuntimeError, match="sound_pause"):
+        t113(sound_pause="nope")
+
+
+@pytest.mark.parametrize(
+    "previous, state, sound",
+    [
+        ("printing", "complete", "print_complete"),
+        ("printing", "paused", "pause"),
+        ("printing", "error", "error"),
+        ("paused", "error", "error"),
+        ("paused", "cancelled", "cancel"),
+        ("standby", "printing", None),
+        ("paused", "printing", None),
+        ("complete", "standby", None),
+    ],
+)
+def test_print_state_sound(previous, state, sound):
+    assert k2_t113.print_state_sound(previous, state) == sound
+
+
+def test_transitions_play_sounds_once(t113):
+    obj, printer = t113()
+    for state in ("standby", "printing", "printing", "complete", "complete"):
+        printer.print_stats.state = state
+        obj._sample_idle(0.0)
+    beeps = [c for c in obj.client.calls if c[1] == "/beep"]
+    assert beeps == [
+        ("POST", "/beep", {"pattern": [150, 100, 150, 100, 150, 100, 600]})
+    ]
+
+
+def test_no_transition_sound_while_shut_down(t113):
+    obj, printer = t113()
+    printer.print_stats.state = "printing"
+    obj._sample_idle(0.0)
+    printer.shutdown = True
+    printer.print_stats.state = "error"
+    obj._sample_idle(0.0)
+    assert obj.client.calls == []
+
+
+def test_muted_sound(t113):
+    obj, _p = t113(sound_cancel="")
+    assert obj.play("cancel") is False and obj.client.calls == []
+
+
+def test_t113_beep_sound_and_pattern(t113):
+    obj, _p = t113()
+    obj.cmd_T113_BEEP(Gcmd(SOUND="pause"))
+    obj.cmd_T113_BEEP(Gcmd(PATTERN="100,50,100"))
+    obj.cmd_T113_BEEP(Gcmd(MS=300, COUNT=2))
+    assert [c[2] for c in obj.client.calls] == [
+        {"pattern": [500, 250, 500]},
+        {"pattern": [100, 50, 100]},
+        {"pattern": [300, 120, 300]},
+    ]
+    with pytest.raises(RuntimeError, match="SOUND must be"):
+        obj.cmd_T113_BEEP(Gcmd(SOUND="party"))
+    with pytest.raises(RuntimeError):
+        obj.cmd_T113_BEEP(Gcmd(PATTERN="x"))
+
+
 @pytest.mark.parametrize(
     "setting, message, cut",
     [
@@ -420,7 +514,28 @@ def test_estop_on_shutdown(t113, setting, message, cut):
     obj, printer = t113(estop_on_shutdown=setting)
     printer.message = (message, "shutdown")
     obj._handle_shutdown()
-    assert (("POST", "/estop", {}) in obj.client.calls) is cut
+    estops = [c for c in obj.client.calls if c[1] == "/estop"]
+    assert (estops == [("POST", "/estop", {"cycle": True})]) is cut
+    assert obj.client.calls[0] == (
+        "POST",
+        "/beep",
+        {"pattern": [2000, 400, 2000]},
+    )
+
+
+def test_estop_defaults_are_m112_with_power_restore(t113):
+    obj, printer = t113()
+    assert obj.estop_on_shutdown == "m112" and obj.estop_power == "cycle"
+    printer.message = ("Shutdown due to M112 command", "shutdown")
+    obj._handle_shutdown()
+    assert ("POST", "/estop", {"cycle": True}) in obj.client.calls
+
+
+def test_estop_power_off_keeps_the_rail_cut(t113):
+    obj, printer = t113(estop_power="off")
+    printer.message = ("Shutdown due to M112 command", "shutdown")
+    obj._handle_shutdown()
+    assert ("POST", "/estop", {"cycle": False}) in obj.client.calls
 
 
 def test_auto_power_cycle_only_when_idle_and_rate_limited(t113):
@@ -428,13 +543,14 @@ def test_auto_power_cycle_only_when_idle_and_rate_limited(t113):
     printer.message = ("Lost communication with MCU 'nozzle_mcu'", "shutdown")
     obj._last_idle = False
     obj._handle_shutdown()
-    assert obj.client.calls == []
+    cycles = lambda: [c for c in obj.client.calls if c[1] == "/mcu/cycle"]  # noqa: E731
+    assert cycles() == []
     obj._last_idle = True
     obj._handle_shutdown()
-    assert obj.client.calls == [("POST", "/mcu/cycle", {"force": True})]
+    assert cycles() == [("POST", "/mcu/cycle", {"force": True})]
     assert printer.exits == ["firmware_restart"]
     obj._handle_shutdown()
-    assert len(obj.client.calls) == 1
+    assert len(cycles()) == 1
 
 
 def test_idle_sampling(t113):
@@ -469,10 +585,10 @@ def reader(backend, t113_obj=None):
 def test_rfid_beep_through_t113():
     calls = []
     r = reader(
-        "t113", SimpleNamespace(beep=lambda ms: calls.append(ms) or True)
+        "t113", SimpleNamespace(play=lambda name: calls.append(name) or True)
     )
     r._start_beep()
-    assert calls == [200] and r.local == []
+    assert calls == ["rfid"] and r.local == []
 
 
 def test_rfid_beep_none_and_missing_t113():

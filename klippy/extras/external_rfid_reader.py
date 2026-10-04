@@ -221,7 +221,7 @@ class ExternalRfidReader:
             return
         if self.beep_backend == "t113":
             t113 = self.printer.lookup_object("k2_t113", None)
-            if t113 is None or not t113.beep(int(BEEP_DURATION * 1000)):
+            if t113 is None or not t113.play("rfid"):
                 _klog("beep skipped: [k2_t113] is missing or disabled",
                       level=logging.warning)
             return
@@ -238,6 +238,8 @@ class ExternalRfidReader:
         elif parsed["state"] == "unknown":
             message = "unknown"
         else:
+            # A scan from the UI is a scan too: beep like the reader button.
+            self._start_beep()
             fields = parsed["fields"]
             message = "record supplier=%s mat_id=%s color=%s reserve=%s" % (
                 fields["supplier"], fields["mat_id"],

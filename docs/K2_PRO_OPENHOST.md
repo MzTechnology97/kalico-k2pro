@@ -256,10 +256,19 @@ The T113 refuses the power cycle and the bridge restart unless the host's Moonra
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `estop_on_shutdown` | `off` | `m112`: an emergency stop also cuts the MCU power rail, so heaters and motors lose power even if an MCU stopped answering. `any`: every shutdown does. |
+| `estop_on_shutdown` | `m112` | an emergency stop (M112, the UI's stop button) also acts on the MCU power rail, so heaters and motors lose power even if an MCU stopped answering. `any`: every shutdown does. `off`: nothing. |
+| `estop_power` | `cycle` | `cycle`: the rail comes back after 2 s, so the MCUs restart from reset with every output off, ready for `FIRMWARE_RESTART`. `off`: it stays cut until the power device or `T113_MCU_POWER_CYCLE` turns it on. |
+| `sound_print_complete`, `sound_pause`, `sound_error`, `sound_cancel`, `sound_shutdown`, `sound_rfid` | see `k2_t113.cfg` | buzzer patterns, `on,off,on,...` in ms (at most 16 steps, 10 s); empty = silent |
 | `auto_power_cycle` | `False` | after `Lost communication with MCU` while no print was running, power-cycle the MCUs and restart, at most once every 10 minutes |
 
-`get_status` (`k2_t113`) carries `enabled`, `connected`, `age`, `error`, `telemetry` and `last_action`.
+`get_status` (`k2_t113`) carries `enabled`, `connected`, `age`, `error`, `telemetry`, `last_action` and the sounds.
+
+**Buzzer sounds:** like the stock firmware, the buzzer plays on:
+- print state changes: printing → complete, printing → paused (also a filament runout pause), printing or paused → error, printing or paused → cancelled;
+- a Klipper shutdown or emergency stop;
+- an external spool RFID read, from the reader or from `RFID_READER_READ` in the UI.
+
+Each sound is a pattern of beeps and pauses, so finished, pause and error sound different. Try them with `T113_BEEP SOUND=print_complete` (`pause`, `error`, `cancel`, `shutdown`, `rfid`) or any pattern with `T113_BEEP PATTERN=200,100,200`. Macros can use `T113_BEEP` too.
 
 **External RFID beep:** `[external_rfid_reader] beep_backend` can be `local` (the stock PWM buzzer on the host board), `t113` (through `[k2_t113]`) or `none`. `config/k2/box.cfg` sets `t113`, because on OpenHost the buzzer is wired to the T113, not to the host.
 
@@ -287,9 +296,48 @@ Problems are listed as `critical_problems`, `diagnostic_problems` and `unclassif
 
 **Unclassified overrides:** any other key keeps the previous behaviour, a warning only.
 
-**Policy** (`override_policy` in `[motor_control]`, set to `warn` in `config/k2/motor_control.cfg`):
-- `warn` (default): as before, problems are warnings and the axis runs `degraded`.
-- `block`: startup fails, and retries, only when a critical override is confirmed wrong. A confirmed wrong value means a write failed after reading a different value, or the readback after writing differs. Read, verify or apply errors leave the value unknown and do not block. Calibration never blocks.
+**Override policy** (`override_policy` in `[motor_control]`, default `block`):
+- `block`: startup fails, and retries, only when a critical override is confirmed wrong. A confirmed wrong value means a write failed after reading a different value, or the readback after writing differs. This is the case, for example, when a motor firmware update rejects a value. Read, verify or apply errors leave the value unknown and do not block.
+- `warn`: problems are warnings and the axis runs `degraded`.
+
+**Calibration policy** (`calibration_policy`, default `block`): `override_policy` checks the tuning values in `motor_control.cfg`, not the motor calibration. This separate gate checks the calibration:
+- `G28` refuses to home X or Y while that motor's calibration from this startup is `suspect` (electrical offset near 0, as on a board that was never calibrated) or could not be read.
+- Homing an uncalibrated closed-loop motor can crash the printhead into the frame.
+- The refusal names the axis and the fix. The event `homing_blocked` is logged, and `readiness.<axis>.homing_blocked` is true.
+- Fix it with a motor calibration (below). After a successful `MOTOR_CALIBRATE` the calibration is read again, so the block clears without a restart.
+- If you know the values are right, `MOTOR_ACCEPT_CALIBRATION AXIS=X` accepts them until the next motor startup.
+- `warn`: only the startup warning, no block.
+
+### Motor calibration
+
+From Jacob's [calibration guide](https://jacob10383.github.io/k2-plus-custom-firmware/calibration/#motor-calibration), with the OpenHost power cycle.
+
+**When to calibrate:**
+- the startup or a refused `G28` says a motor is not calibrated;
+- after a motor board or motor firmware change;
+- when troubleshooting print or motor problems.
+
+Check the current values first with `MOTOR_STATUS REFRESH=1`. A calibrated motor shows an offset of hundreds of pulses: the development K2 Pro reads X 443, Y 164 and E 508.
+
+**X and Y**, one axis at a time:
+
+```text
+MOTOR_CALIBRATE AXIS=X
+```
+
+The first run calibrates nothing. It turns the motors off and asks you to put the printhead near the middle and the bed at the bottom. Move them there by hand, then run the same command again. Repeat with `AXIS=Y`.
+
+**Extruder (E)**, in two stages, with the filament unloaded:
+
+```text
+MOTOR_CALIBRATE AXIS=E STAGE=encoder
+T113_MCU_POWER_CYCLE CONFIRM=1
+MOTOR_CALIBRATE AXIS=E STAGE=offset
+```
+
+Jacob's guide says to power-cycle the printer between the two stages. On OpenHost, `T113_MCU_POWER_CYCLE CONFIRM=1` power-cycles the MCU rail, which includes the extruder board, and restarts Klipper, so the host and the T113 keep running. Without `[k2_t113]`, switch the printer off and on.
+
+**Afterwards:** `MOTOR_STATUS REFRESH=1` should show the new offsets and no `UNSAFE`, and `G28` works again.
 
 **Tuning is unchanged.** Edit the values in `motor_control.cfg` and restart: the overrides are read, written when different, applied and read back exactly as before. A tuned value that the board accepts is `verified` under both policies.
 
@@ -383,11 +431,20 @@ No write is made to fill the cache. A value from `motor_control.cfg` or the regi
 
 `motor_control` reads the MCU temperature of X, Y and E (GET index 17), one axis every 6 s, so each axis is read every 18 s. The polling is unchanged; subscriptions never send packets.
 
-Each axis appears in two places:
-- `temperature_sensor motor_X_MCU` (`_Y_`, `_E_`) is registered with `heaters`, so Mainsail and Moonraker show it like any temperature sensor;
-- `motor_control.temperatures.<axis>` carries the full sample.
+**Standard temperature sensors:** each motor MCU can be declared as a normal temperature sensor. It then appears in the UI's sensor list like the host temperature (`CM5-temp`):
 
-The standard sensor keeps the last `temperature` so graphs stay continuous. Its `valid`, `state` and `sample_age` fields say whether that value is a current measurement.
+```ini
+[temperature_sensor motor_X_MCU]
+sensor_type: motor_mcu   # K2 Pro closed-loop motor board MCU
+motor_axis: x            # x, y or e
+```
+
+- `config/k2/motor_control.cfg` declares X, Y and E.
+- The sensor takes its value from `motor_control`'s polling, so it adds no bus traffic.
+- Optional `min_temp` / `max_temp` shut the printer down outside the range, as for `temperature_host`.
+- The `motor_mcu` type is registered in `klippy/extras/temperature_sensors.cfg` (`motor_mcu_temperature.py`).
+
+**Full sample:** `motor_control.temperatures.<axis>` carries the sample with its validity. The standard sensors keep the last value, so graphs stay continuous; the `state` below says whether it is current.
 
 `state` is one of these, checked in this order:
 
@@ -410,7 +467,6 @@ Every stop/start opens a new acquisition session (`current_session`). Earlier va
 
 Zero and negative readings are accepted as measurements. NaN, infinity and non-numeric answers count as failed reads.
 
-A `[temperature_sensor motor_X_MCU]` section in the configuration conflicts with these objects and is rejected with a clear error.
 
 ## MOT2 protection answers
 
@@ -487,7 +543,7 @@ Direct-USB Cartographer validation on the CM5 is the next probe milestone. Mixed
 
 Upstream `power_loss_recovery.py` re-references Z through `[z_align]`: the MCU drops the bed onto the bottom photoelectric switch, away from the nozzle and the part, and the checkpoint stores where that switch sits in the print's Z coordinates. The K2 Pro has the same bottom switch with a single Z motor (Creality F012 stock: `endstop_pin_z: PA15`), so OpenHost enables `[z_align]` with the stock K2 Pro values and adapts `z_align.py` to accept a one-stepper reference frame.
 
-`PLR_RECOVER CONFIRM=1` then follows the upstream flow: drop to the switch, home X/Y, rise to `max_print_z + recovery_lift` (capped by `maximum_recovery_z` and `zmax`) at the K2 Pro `max_z_velocity` of 10 mm/s, and restore heaters, CFS, mesh and position. Because `[z_align]` is configured, the first `G28` after boot also drops the bed to the switch before the fast rise and PRTouch homing, as on the stock firmware. State files default to `~/printer_data` on the CM5.
+`PLR_RECOVER CONFIRM=1` then follows the upstream flow: drop to the switch, home X/Y, rise to `max_print_z + recovery_lift` (capped by `maximum_recovery_z` and `zmax`) at the K2 Pro `max_z_velocity` of 10 mm/s, and restore heaters, CFS, mesh and position. Because `[z_align]` is configured, the first `G28` after boot also drops the bed to the switch before the fast rise and PRTouch homing, as on the stock firmware. State files default to `~/printer_data` on the CM5. `config/k2/printer.cfg` lists every option of Jacob's [config reference](https://jacob10383.github.io/k2-plus-custom-firmware/config-reference/) (`state_path`, `candidate_interval`, `checkpoint_interval`, `recovery_lift`, `maximum_recovery_z`, `recovery_travel_speed`, `recovery_z_speed`, `nozzle_standby`) plus OpenHost's `z_reference`, each with a comment. The K2 Pro values (`z_align`, `maximum_recovery_z: 295`, `recovery_z_speed: 10`) are the validated ones.
 
 For single-Z printers without a bottom switch, `z_reference: trusted_position` restores the physical Z stored with each checkpoint instead; it is not used on the K2 Pro.
 
