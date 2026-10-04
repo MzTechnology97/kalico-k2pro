@@ -124,3 +124,52 @@ def test_runout_prefers_compatible_spool_with_lowest_remaining():
     assert status["chain"] == [3, 2]
     assert status["sequence"] == [1, 3, 2]
     assert status["strategy"] == "lowest_remaining_first"
+
+
+def _duplicate_k2rfid_fields():
+    # K2-RFID tags written with serial 000000 share one fingerprint.
+    return {
+        "supplier": "1B3D",
+        "mat_id": "105628",
+        "color": "0FFFFFF",
+        "len": "0330",
+        "number": "000000",
+        "reserve": "000000",
+    }
+
+
+def test_external_slot_duplicate_rfid_spool_does_not_crash(tmp_path):
+    box, _stats = make_tracking_box(tmp_path)
+    box.drivers = {1: object()}
+    fields = _duplicate_k2rfid_fields()
+    box._remember_rfid_spool(1, fields)
+
+    box._remember_rfid_spool("external", fields)
+
+    fingerprint = box._rfid_spool_fingerprint(fields)
+    assert box.rfid_spools["external"]["key"] == (
+        "%s:slot:external" % fingerprint)
+    assert box._rfid_slot_keys()["external"] == (
+        "%s:slot:external" % fingerprint)
+
+
+def test_external_rfid_record_handler_error_is_contained():
+    from extras.external_rfid_reader import ExternalRfidReader
+
+    class RaisingPrinter:
+        def send_event(self, _event, *_params):
+            raise ValueError("boom")
+
+    reader = ExternalRfidReader.__new__(ExternalRfidReader)
+    reader.printer = RaisingPrinter()
+    reader._last_record = None
+    reader._last_error = None
+
+    reader._publish_record({
+        "record_hex": "00",
+        "record_ascii": "x",
+        "fields": {"mat_id": "105628"},
+    })
+
+    assert reader._last_record["fields"] == {"mat_id": "105628"}
+    assert reader._last_error == "record handler failed: boom"
