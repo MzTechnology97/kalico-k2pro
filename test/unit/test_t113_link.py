@@ -235,8 +235,9 @@ def test_session_snapshot_and_deltas():
     assert s.current(stats(), 0) is None
     s.update("printing", stats(tx_frames=50, timeouts=2), 1)
     clock.now += 3600
-    cur = s.current(stats(tx_frames=1050, rx_frames=990, timeouts=5,
-                          rx_invalid_crc=1), 2)
+    cur = s.current(
+        stats(tx_frames=1050, rx_frames=990, timeouts=5, rx_invalid_crc=1), 2
+    )
     assert cur["duration_s"] == 3600.0
     assert cur["deltas"]["tx_frames"] == 1000
     assert cur["deltas"]["rx_frames"] == 990
@@ -258,8 +259,9 @@ def test_print_end_returns_the_summary_once():
     s = serial_485.PrintSessionCounters(clock=clock)
     s.update("printing", stats(), 0)
     clock.now += 67 * 60
-    done = s.update("complete", stats(tx_frames=500, rx_frames=498,
-                                      timeouts=2), 0)
+    done = s.update(
+        "complete", stats(tx_frames=500, rx_frames=498, timeouts=2), 0
+    )
     assert done["result"] == "complete" and done["deltas"]["timeouts"] == 2
     assert s.last is done and s.current(stats(), 0) is None
     assert s.update("complete", stats(), 0) is None
