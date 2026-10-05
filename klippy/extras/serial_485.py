@@ -110,10 +110,6 @@ def check_485_frame_crc(frame):
 def get_address_desc(addr):
     if 0x01 <= addr <= 0x04:
         return f"CFS Box {addr}"
-    elif addr == 0x21:
-        return "MDLX (X-Belt)"
-    elif addr == 0x22:
-        return "MDLY (Y-Belt)"
     elif addr == 0x81:
         return "Motor X"
     elif addr == 0x82:
@@ -160,11 +156,6 @@ def get_func_desc(addr, func):
         }
         if func in motor_funcs:
             return motor_funcs[func]
-    # Belt functions
-    if addr in (0x21, 0x22):
-        belt_funcs = {0: "READ_VERSION", 2: "READ_FLASH", 4: "WRITE_FLASH", 6: "READ_ADC", 8: "MOVE_SLIDER"}
-        if func in belt_funcs:
-            return belt_funcs[func]
     return f"0x{func:02X}"
 
 
