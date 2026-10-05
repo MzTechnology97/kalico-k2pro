@@ -26,11 +26,17 @@ The code base is inherited from `Jacob10383/kalico`, itself based on `KalicoCrew
 ## Current transport
 
 ```text
-Main MCU   -> /dev/ttyUSB0 -> T113 ttyGS0 -> ttyS2
-Nozzle MCU -> /dev/ttyUSB1 -> T113 ttyGS1 -> ttyS3
-RS-485/CFS -> /dev/ttyUSB2 -> T113 ttyGS2 -> ttyS5
+Main MCU   -> /dev/serial/by-id/...Gadget_Serial-if00-port0 -> T113 ttyGS0 -> ttyS2
+Nozzle MCU -> /dev/serial/by-id/...Gadget_Serial-if01-port0 -> T113 ttyGS1 -> ttyS3
+RS-485/CFS -> /dev/serial/by-id/...Gadget_Serial-if02-port0 -> T113 ttyGS2 -> ttyS5
 Cartographer -> direct USB on CM5 (preferred target)
 ```
+
+Use the `by-id` names (full form in `config/k2/printer.cfg`), not `/dev/ttyUSB0/1/2`.
+
+- When the gadget reconnects (USB glitch, T113 bridge restart with a rebind) while Klipper still holds the old ports, the new ports come up as `ttyUSB2/3/4`.
+- With `ttyUSBn` names, `FIRMWARE_RESTART` then fails until Klipper is stopped and the gadget re-enumerated. With `by-id`, it reconnects.
+- Measured in the [USB bridge tests](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/USB_BRIDGE.md).
 
 On the printer side the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) runs these three bridges from the T113's slot B at every boot, installed from the [K2-OpenHost Installer Helper](https://github.com/MzTechnology97/k2-openhost-installer-helper). It was prepared on stock firmware 1.1.0.94 and is not yet hardware-validated.
 
