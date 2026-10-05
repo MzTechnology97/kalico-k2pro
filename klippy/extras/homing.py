@@ -841,8 +841,7 @@ class PrinterHoming:
                 reason, detail, level=logging.warning)
             if abort_z_align and z_align is not None:
                 self._abort_z_align_aborted = bool(z_align.abort_internal(
-                    reason=reason, motor_off=False,
-                    restore_motor_mode=False))
+                    reason=reason, motor_off=False))
             self._abort_had_active_hmove = self.active_hmove is not None
             self._abort_cleanup_pending = True
             if self.active_hmove is not None:

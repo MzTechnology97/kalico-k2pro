@@ -796,8 +796,7 @@ class ZAlign:
         self._learn_delta = None
         self._bottom_anchor = None
 
-    def abort_internal(self, reason='Z prep aborted', motor_off=False,
-                       restore_motor_mode=False, wait_until_safe=False):
+    def abort_internal(self, reason='Z prep aborted', motor_off=False):
         if self._state in ('idle', 'error'):
             return False
         self._force_stop_mcu_z_align()

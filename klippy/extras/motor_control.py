@@ -926,7 +926,6 @@ OVERRIDE_ERROR_OPS = (
 # Ops that prove the board does not hold the configured value. The others
 # (read/verify/apply errors) leave the value unknown.
 OVERRIDE_CONFIRMED_MISMATCH_OPS = ("write_error", "verify_mismatch")
-OVERRIDE_POLICIES = ("warn", "block")
 
 
 def classify_override_key(key: str) -> str:
@@ -2545,12 +2544,6 @@ class MotorAxisController:
         }
         self._extruder_target = self._make_extruder_target()
 
-    def set_extruder_transport(self, transport):
-        self.extruder_transport = transport
-        self.extruder_client = MotorFirmwareClient(transport, framed=True)
-        self.extruder_addr = EXTRUDER_BOOTSTRAP_ADDR
-        self._extruder_target = self._make_extruder_target()
-
     def _make_serial_target(self, axis: str) -> MotorAxisTarget:
         return MotorAxisTarget(
             axis=axis,
@@ -2609,14 +2602,6 @@ class MotorAxisController:
         return {
             **self.serial_client.startup_prepare_probe_bus(timeout=timeout),
             "transport": "serial485",
-            "probe_addr": 0xFF,
-        }
-
-    def prepare_extruder_bus(
-            self, timeout: float = MOTOR_NO_ACK_TIMEOUT) -> dict:
-        return {
-            **self.extruder_client.startup_prepare_probe_bus(timeout=timeout),
-            "transport": "extruder",
             "probe_addr": 0xFF,
         }
 
@@ -2994,7 +2979,7 @@ class MotorControlDebugSurfaceMixin:
 
     def _iter_runtime_cfg_override_params(self, axes: tuple[str, ...] | None = None):
         allowed = set(axes) if axes is not None else None
-        for (axis, key), param in self.registry.by_axis_key.items():
+        for (axis, _key), param in self.registry.by_axis_key.items():
             if not param.override_active:
                 continue
             if allowed is not None and axis not in allowed:
@@ -3416,8 +3401,6 @@ def _klog(msg, *args, level=logging.info):
 
 
 DEFAULT_REGISTRY_PATH = Path(__file__).parent / "motor_map.json"
-DEFAULT_STARTUP_DELAY = 5.0
-DEFAULT_RETRY_DELAY = 3.0
 PROTECTION_QUERY_DATA = 11
 STALL_EVENT_MIN_INTERVAL = 0.100
 FAULT_CLEANUP_RETRY_DELAY = 0.100
@@ -5586,7 +5569,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                             axes=(axis,), data=PROTECTION_QUERY_DATA,
                             timeout=MOTOR_COMMAND_TIMEOUT,
                             source="periodic_poll"))
-                except Exception as exc:
+                except Exception:
                     _klog(
                         "periodic protection poll failed axis=%s",
                         axis, level=logging.exception)
