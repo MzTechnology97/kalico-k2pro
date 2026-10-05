@@ -311,12 +311,6 @@ class LinkMonitor:
             c = channel.counters(eventtime)
             last = channel.last_counters or {}
             channel.last_counters = c
-
-            def delta(key):
-                if key not in c:
-                    return ""
-                return c[key] - last.get(key, c[key])
-
             self._log.write(
                 ",".join(
                     str(v)
@@ -331,8 +325,8 @@ class LinkMonitor:
                         fmt_ms(s["max"]),
                         fmt_ms(c.get("srtt")),
                         fmt_ms(c.get("rttvar")),
-                        delta("bytes_retransmit"),
-                        delta("bytes_invalid"),
+                        counter_delta(c, last, "bytes_retransmit"),
+                        counter_delta(c, last, "bytes_invalid"),
                         c.get("mcu_awake", ""),
                         fmt_us(c.get("mcu_task_avg")),
                         fmt_us(c.get("mcu_task_stddev")),
@@ -428,6 +422,13 @@ class LinkMonitor:
 
 def fmt_ms(value):
     return "" if value is None else "%.3f" % (float(value) * 1000.0)
+
+
+def counter_delta(current, last, key):
+    """Increase of a cumulative counter since the last row ("" if absent)."""
+    if key not in current:
+        return ""
+    return current[key] - last.get(key, current[key])
 
 
 def fmt_us(value):

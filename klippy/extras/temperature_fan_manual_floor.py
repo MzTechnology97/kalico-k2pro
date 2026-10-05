@@ -30,7 +30,6 @@ class TemperatureFanManualFloor:
         self.last_effective_speed = 0.0
         self.last_raw_speed = 0.0
         self.temperature_fan = None
-        self._original_set_speed = None
         self._original_get_status = None
 
         gcode = self.printer.lookup_object("gcode")
@@ -55,10 +54,8 @@ class TemperatureFanManualFloor:
             )
         self.new_api = hasattr(self.temperature_fan, "set_tf_speed")
         if self.new_api:
-            self._original_set_speed = self.temperature_fan.set_tf_speed
             self.temperature_fan.set_tf_speed = self._set_speed
         else:
-            self._original_set_speed = self.temperature_fan.set_speed
             self.temperature_fan.set_speed = self._set_speed
         self._original_get_status = self.temperature_fan.get_status
         self.temperature_fan.get_status = self._get_temperature_fan_status
