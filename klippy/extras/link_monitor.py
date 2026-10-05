@@ -57,6 +57,70 @@ def summarize(samples):
     }
 
 
+class RttHistogram:
+    """Round trips since start in fixed log buckets (2% wide, 10 us .. 100 s).
+
+    Memory and cost stay constant however long the print runs: adding a
+    sample is one log(), a summary walks about 800 counters. Percentiles are
+    the upper edge of their bucket (at most 2% high); the maximum is exact.
+    The first version kept every sample and sorted them all on every
+    get_status, which Moonraker calls several times a second: after three
+    hours of 10 Hz probing klippy used half a CPU core."""
+
+    LOW = 1e-5
+    STEP = math.log(1.02)
+    BUCKETS = int(math.log(100.0 / 1e-5) / math.log(1.02)) + 2
+
+    def __init__(self):
+        self.counts = [0] * self.BUCKETS
+        self.total = 0
+        self.max = None
+
+    def add(self, value):
+        if value <= self.LOW:
+            bucket = 0
+        else:
+            bucket = min(self.BUCKETS - 1,
+                         1 + int(math.log(value / self.LOW) / self.STEP))
+        self.counts[bucket] += 1
+        self.total += 1
+        if self.max is None or value > self.max:
+            self.max = value
+
+    def extend(self, values):
+        for value in values:
+            self.add(value)
+
+    def copy(self):
+        other = RttHistogram()
+        other.counts = list(self.counts)
+        other.total = self.total
+        other.max = self.max
+        return other
+
+    def _edge(self, bucket):
+        return self.LOW * math.exp(self.STEP * bucket)
+
+    def summary(self):
+        result = {"samples": self.total, "p50": None, "p95": None,
+                  "p99": None, "p999": None, "max": self.max}
+        if not self.total:
+            return result
+        wanted = [(key, max(1, int(math.ceil(fraction * self.total))))
+                  for key, fraction in (("p50", 0.50), ("p95", 0.95),
+                                        ("p99", 0.99), ("p999", 0.999))]
+        seen = 0
+        for bucket, count in enumerate(self.counts):
+            if not count:
+                continue
+            seen += count
+            while wanted and seen >= wanted[0][1]:
+                result[wanted.pop(0)[0]] = min(self._edge(bucket), self.max)
+            if not wanted:
+                break
+        return result
+
+
 def read_proc_self():
     """(cpu seconds, voluntary ctx, involuntary ctx, rss kB) of this process."""
     try:
@@ -138,6 +202,7 @@ class LinkMonitor:
         self._last_proc = None
         self._last_time = None
         self.cumulative = {}
+        self._status = {"rtt_ms": {}}
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler(
             "klippy:disconnect", self._handle_disconnect
@@ -202,10 +267,10 @@ class LinkMonitor:
 
     # --- output ----------------------------------------------------------------
     def _accumulate(self, name, samples):
-        self.cumulative.setdefault(name, []).extend(samples)
-        # keep memory bounded on multi-day runs
-        if len(self.cumulative[name]) > 500000:
-            self.cumulative[name] = self.cumulative[name][-250000:]
+        hist = self.cumulative.get(name)
+        if hist is None:
+            hist = self.cumulative[name] = RttHistogram()
+        hist.extend(samples)
 
     def _flush(self, eventtime):
         try:
@@ -307,15 +372,28 @@ class LinkMonitor:
                 )
                 + "\n"
             )
+        self._update_status()
+
+    def _update_status(self):
+        # Computed once per interval; get_status only returns it.
+        result = {}
+        for name, hist in self.cumulative.items():
+            result[name] = {
+                k: (None if v is None else round(v * 1000.0, 3))
+                if k != "samples"
+                else v
+                for k, v in hist.summary().items()
+            }
+        self._status = {"rtt_ms": result}
 
     def cmd_LINK_MONITOR_REPORT(self, gcmd):
         lines = []
-        for name, samples in sorted(self.cumulative.items()):
-            current = []
+        for name, hist in sorted(self.cumulative.items()):
+            hist = hist.copy()
             for channel in self.channels:
                 if channel.name == name:
-                    current = channel.samples
-            s = summarize(samples + current)
+                    hist.extend(channel.samples)
+            s = hist.summary()
             lines.append(
                 "%s: n=%d p50=%s p95=%s p99=%s p99.9=%s max=%s ms"
                 % (
@@ -331,16 +409,7 @@ class LinkMonitor:
         gcmd.respond_info("\n".join(lines) or "link_monitor: no samples yet")
 
     def get_status(self, eventtime):
-        result = {}
-        for name, samples in self.cumulative.items():
-            s = summarize(samples)
-            result[name] = {
-                k: (None if v is None else round(v * 1000.0, 3))
-                if k != "samples"
-                else v
-                for k, v in s.items()
-            }
-        return {"rtt_ms": result}
+        return self._status
 
 
 def fmt_ms(value):
