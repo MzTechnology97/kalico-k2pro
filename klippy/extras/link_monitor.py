@@ -80,8 +80,10 @@ class RttHistogram:
         if value <= self.LOW:
             bucket = 0
         else:
-            bucket = min(self.BUCKETS - 1,
-                         1 + int(math.log(value / self.LOW) / self.STEP))
+            bucket = min(
+                self.BUCKETS - 1,
+                1 + int(math.log(value / self.LOW) / self.STEP),
+            )
         self.counts[bucket] += 1
         self.total += 1
         if self.max is None or value > self.max:
@@ -102,13 +104,25 @@ class RttHistogram:
         return self.LOW * math.exp(self.STEP * bucket)
 
     def summary(self):
-        result = {"samples": self.total, "p50": None, "p95": None,
-                  "p99": None, "p999": None, "max": self.max}
+        result = {
+            "samples": self.total,
+            "p50": None,
+            "p95": None,
+            "p99": None,
+            "p999": None,
+            "max": self.max,
+        }
         if not self.total:
             return result
-        wanted = [(key, max(1, int(math.ceil(fraction * self.total))))
-                  for key, fraction in (("p50", 0.50), ("p95", 0.95),
-                                        ("p99", 0.99), ("p999", 0.999))]
+        wanted = [
+            (key, max(1, int(math.ceil(fraction * self.total))))
+            for key, fraction in (
+                ("p50", 0.50),
+                ("p95", 0.95),
+                ("p99", 0.99),
+                ("p999", 0.999),
+            )
+        ]
         seen = 0
         for bucket, count in enumerate(self.counts):
             if not count:
