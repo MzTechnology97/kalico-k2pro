@@ -7,6 +7,7 @@ from statistics import median
 from types import SimpleNamespace
 
 from . import probe
+from .prtouch_codec import decode_frame
 
 _POST_HOME_LIFT = 3.0
 
@@ -17,29 +18,7 @@ def _sample_range(values):
 
 def _decode_prtouch_frame(payload, signed_first):
     """Decode the nozzle firmware's delta-packed integer array."""
-    payload = bytes(payload)
-    if not payload:
-        return []
-    count = payload[0]
-    descriptor_len = (count + 3) // 4
-    data_pos = 1 + descriptor_len
-    if len(payload) < data_pos:
-        raise ValueError("truncated descriptor")
-    descriptors = payload[1:data_pos]
-    values = []
-    for index in range(count):
-        descriptor = descriptors[-1 - index // 4]
-        width = ((descriptor >> (2 * (index % 4))) & 3) + 1
-        if data_pos + width > len(payload):
-            raise ValueError("truncated data")
-        raw = payload[data_pos:data_pos + width]
-        data_pos += width
-        value = int.from_bytes(
-            raw, 'little', signed=signed_first if index == 0 else True)
-        if index:
-            value += values[-1]
-        values.append(value)
-    return values
+    return decode_frame(payload, signed_first)
 
 
 def _best_subset(values, size):
@@ -542,8 +521,10 @@ class PRTouchEndstopWrapper:
                 except Exception:
                     notes.append('invalid buf_len=%r' % page.get('buf_len'))
             try:
+                # Ticks: sign-extend the first value, then keep 32 bits
+                # (a tick just below 2^32 is packed in fewer bytes).
                 page_ticks = _decode_prtouch_frame(
-                    page.get('ticks', b''), False)
+                    page.get('ticks', b''), True)
             except Exception as exc:
                 page_ticks = []
                 notes.append('tick decode failed at idx=%d: %s' % (index, exc))

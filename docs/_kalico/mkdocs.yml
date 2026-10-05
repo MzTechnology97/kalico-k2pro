@@ -96,6 +96,7 @@ nav:
   - Releases: https://github.com/KalicoCrew/kalico/releases
   - Config_Changes.md
   - K2 Pro OpenHost: K2_PRO_OPENHOST.md
+  - K2 load cell capture: K2_Load_Cell.md
   - Configuration:
     - Config_Reference.md
     - Kalico_Additions.md

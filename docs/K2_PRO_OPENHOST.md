@@ -576,6 +576,8 @@ Cartographer uses the official [Cartographer3D plugin](https://github.com/Cartog
 
 Direct-USB Cartographer validation on the CM5 is the next probe milestone. Mixed mode is optional and should only be enabled after standalone Cartographer is stable.
 
+Optional: `[k2_load_cell]` records the nozzle load cell through the stock firmware's APAX stream (diagnostics, CSV, experimental pressure advance analysis). See [K2 load cell capture](K2_Load_Cell.md).
+
 ## Power-loss recovery on the K2 Pro
 
 Upstream `power_loss_recovery.py` re-references Z through `[z_align]`: the MCU drops the bed onto the bottom photoelectric switch, away from the nozzle and the part, and the checkpoint stores where that switch sits in the print's Z coordinates. The K2 Pro has the same bottom switch with a single Z motor (Creality F012 stock: `endstop_pin_z: PA15`), so OpenHost enables `[z_align]` with the stock K2 Pro values and adapts `z_align.py` to accept a one-stepper reference frame.
