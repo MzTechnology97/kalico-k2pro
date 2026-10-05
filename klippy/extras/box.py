@@ -67,6 +67,13 @@ POLL_START_DELAY = 5.0
 ACTIVE_POLL = 1.0
 IDLE_POLL = 5.0
 TOPOLOGY_POLL = 15.0
+# K2-OpenHost: when no CFS answered the startup enumeration (RS-485 down
+# behind the T113 bridge at boot), discovery is retried while idle, backing
+# off from REDISCOVERY_MIN to REDISCOVERY_MAX seconds, and at once when
+# serial_485 reports the link restored. The original code enumerated once,
+# so the CFS stayed missing until a manual RESTART.
+REDISCOVERY_MIN = 30.0
+REDISCOVERY_MAX = 300.0
 RFID_REFRESH = 30.0
 ERROR_BACKOFF = 10.0
 STATE_TIMEOUT = 5.0
@@ -1100,12 +1107,17 @@ class Box:
             import_database=self.auto_seed_material_database)
 
         self.poll_timer = self.reactor.register_timer(self._poll)
+        self.rediscovery_timer = self.reactor.register_timer(self._rediscover)
+        self.rediscovery_delay = REDISCOVERY_MIN
+        self.rediscovery_attempts = 0
         self.enumeration_started = False
         self.klippy_ready = False
         self.registered_tools = set()
         self.print_info = None
         self._register_commands()
         self.printer.register_event_handler("serial_485:ready", self._serial_ready)
+        self.printer.register_event_handler(
+            "serial_485:link_restored", self._link_restored)
         self.printer.register_event_handler("klippy:ready", self._klippy_ready)
         self.printer.register_event_handler("klippy:disconnect", self._disconnect)
         self.printer.register_event_handler("klippy:shutdown", self._disconnect)
@@ -1243,7 +1255,7 @@ class Box:
         self.enumeration_started = True
         self.reactor.register_callback(self._enumerate)
 
-    def _enumerate(self, eventtime):
+    def _enumerate(self, eventtime, retry=False):
         self._invalidate_tracking_session()
         base_serial = self.printer.lookup_object(
             "serial_485 serial485"
@@ -1275,6 +1287,49 @@ class Box:
         if self.klippy_ready:
             self.reactor.update_timer(
                 self.poll_timer, self.reactor.monotonic() + POLL_START_DELAY)
+        if not self.drivers and not retry:
+            _klog("no CFS answered the startup enumeration; retrying discovery "
+                  "while idle", level=logging.warning)
+            self.reactor.update_timer(
+                self.rediscovery_timer,
+                self.reactor.monotonic() + self.rediscovery_delay)
+
+    # K2-OpenHost: bounded rediscovery when the bus was down at startup.
+    def _discovery_idle(self):
+        if not self.klippy_ready or self.operation_depth:
+            return False
+        if self.printer.is_shutdown():
+            return False
+        print_stats = self.printer.lookup_object("print_stats", None)
+        state = getattr(print_stats, "state", None)
+        return state not in ("printing", "paused")
+
+    def _rediscover(self, eventtime):
+        if self.drivers:
+            return self.reactor.NEVER
+        if not self._discovery_idle():
+            return eventtime + REDISCOVERY_MIN
+        self.rediscovery_attempts += 1
+        _klog("CFS rediscovery attempt %d", self.rediscovery_attempts)
+        try:
+            self._enumerate(eventtime, retry=True)
+        except Exception:
+            _klog("CFS rediscovery failed", level=logging.exception)
+        if self.drivers:
+            self.rediscovery_delay = REDISCOVERY_MIN
+            self._info(
+                self.gcode,
+                "CFS found after the RS-485 link came back: box %s"
+                % ", ".join(str(a) for a in sorted(self.drivers)))
+            return self.reactor.NEVER
+        self.rediscovery_delay = min(REDISCOVERY_MAX, self.rediscovery_delay * 2)
+        return self.reactor.monotonic() + self.rediscovery_delay
+
+    def _link_restored(self, *args):
+        if self.drivers_ready and not self.drivers:
+            self.rediscovery_delay = REDISCOVERY_MIN
+            self.reactor.update_timer(
+                self.rediscovery_timer, self.reactor.monotonic() + 1.0)
 
     def _register_t_commands(self):
         if self.observation_mode:
@@ -1375,6 +1430,7 @@ class Box:
         self.spoolman_tokens.clear()
         self.serial = None
         self.reactor.update_timer(self.poll_timer, self.reactor.NEVER)
+        self.reactor.update_timer(self.rediscovery_timer, self.reactor.NEVER)
 
     def get_status(self, eventtime):
         snap = self.snapshot
