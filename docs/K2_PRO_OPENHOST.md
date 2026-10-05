@@ -160,7 +160,24 @@ _BOX_SET_RUNOUT_ORDER AUTO          # back to the automatic order
 
 The order is persisted as the `runout_order` setting. Each slot reports its `runout_rank`, and the strategy shows `manual_order`. The Mainsail Runout swap widget edits it with up/down arrows.
 
-Slot inventory persistence is deliberately event-driven. `filament_box.json` stores both manual and RFID slot assignments plus spool-identity remaining estimates. On startup K2-OpenHost performs one CFS slot-presence mask query, restores cached metadata only for occupied bays, and leaves per-tag RFID reads disabled by default. A live present→absent transition clears the corresponding slot immediately; a bay already absent during boot is cleared only after repeated topology confirmation to avoid destroying valid inventory because of a transient RS-485 startup sample. RFID records are read on insertion, explicit per-slot reread, or only when the optional startup-reread setting is enabled.
+Slot inventory persistence is deliberately event-driven. `filament_box.json` stores both manual and RFID slot assignments plus the RFID remaining estimates (see below). On startup K2-OpenHost performs one CFS slot-presence mask query, restores cached metadata only for occupied bays, and leaves per-tag RFID reads disabled by default. A live present→absent transition clears the corresponding slot immediately; a bay already absent during boot is cleared only after repeated topology confirmation to avoid destroying valid inventory because of a transient RS-485 startup sample. RFID records are read on insertion, explicit per-slot reread, or only when the optional startup-reread setting is enabled.
+
+**Where the state lives.** `state_path` defaults to `~/printer_data/filament_box.json`. It sits outside the `config` folder on purpose (it changes often), so Mainsail's file manager does not show it, and Moonraker backups take it from there. The custom filament library is the separate `library_path` file in `config/`. A `filament_box.json` inside `config/` is not used by anything.
+
+**RFID remaining estimates.** Many tags carry no spool serial: the stock ones with `000000`, and K2-RFID apps that write `000001`. Two spools with the same brand, material, color and length then have identical tags, and the earlier release made a new spool inherit a used one's estimate, down to 0%.
+
+How the estimate is kept now:
+- **Physical CFS slots, tag without serial:** the estimate belongs to the bay occupancy.
+  - While the spool stays in the bay (restart, manual reread), its estimate is kept.
+  - Once it is removed, its estimate is dropped. The next tag read, which the CFS makes on every insertion, starts a new estimate at 100% in any slot (or lower, if the CFS reports a lower remaining).
+- **Tag with a real serial:** the estimate still follows the spool across slots.
+- **External spool reader:** it has no removal event, so it keeps the earlier behaviour.
+
+To correct an estimate by hand, `_BOX_RFID_SPOOL_NEW SLOT=<n> [REMAINING=<percent>]` sets the spool in slot `n` (0-based, like `_BOX_RFID_READ_SLOT`) to 100% or to the given percentage, for that slot only. It is refused for a slot that is feeding the current print.
+
+A spool read with a saved estimate under 5% prints a reminder of both options.
+
+Keep these patches on upstream syncs of `box.py`: look for `RFID_LOW_ESTIMATE_HINT`, `_next_rfid_spool_serial` and `cmd_rfid_spool_new`.
 
 ## HelixScreen compatibility
 
