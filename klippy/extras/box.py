@@ -75,6 +75,10 @@ TOPOLOGY_POLL = 15.0
 REDISCOVERY_MIN = 30.0
 REDISCOVERY_MAX = 300.0
 RFID_REFRESH = 30.0
+# K2-OpenHost: tags written with the generic serial (000000/000001) carry no
+# spool identity, so a new spool identical to a used one inherits its saved
+# estimate. Below this percentage the tag read prints how to declare it new.
+RFID_LOW_ESTIMATE_HINT = 5.0
 ERROR_BACKOFF = 10.0
 STATE_TIMEOUT = 5.0
 STATE_POLL = 0.1
@@ -1205,6 +1209,8 @@ class Box:
              "Reload the filament library file and the K2-RFID import"),
             ("_BOX_SLOT_ASSIGN", self.cmd_slot_assign, "Assign a saved filament profile to a slot"),
             ("_BOX_RFID_READ_SLOT", self.cmd_rfid_read_slot, "Force an RFID reread for one CFS slot"),
+            ("_BOX_RFID_SPOOL_NEW", self.cmd_rfid_spool_new,
+             "Declare the RFID spool in a CFS slot new (resets its remaining estimate)"),
             ("BOX_RFID_SCAN", self.cmd_info_refresh,
              "Scan RFID records in all populated CFS slots"),
             ("BOX_INFO_REFRESH", self.cmd_info_refresh,
@@ -3186,6 +3192,24 @@ class Box:
         key = self._rfid_spool_key(fields, slot)
         if key is None:
             return
+        # K2-OpenHost: a generic-serial tag (000000/000001) does not identify
+        # the spool, so its estimate belongs to the bay occupancy, not to the
+        # tag. While the spool stays in the bay (startup restore, manual
+        # reread) the slot keeps its key; once it was removed the slot key is
+        # gone and the next read starts a new spool instance at 100% (or what
+        # the CFS reports). Tags with a real serial keep following the spool.
+        fresh = False
+        # The external reader has no removal event, so it keeps the
+        # tag-based key as before.
+        if (fingerprint and self.is_physical_slot(slot)
+                and self._generic_rfid_serial(fields)):
+            current = self._rfid_slot_keys().get(
+                str(self._runtime_slot_key(slot)))
+            if current and self._rfid_key_base(current) == fingerprint:
+                key = current
+            else:
+                key = "%s:spool:%d" % (fingerprint, self._next_rfid_spool_serial())
+                fresh = True
         self._set_rfid_slot_key(slot, key)
         try:
             total_m = int(self._clean_rfid(fields.get("len")))
@@ -3194,9 +3218,11 @@ class Box:
         total_mm = float(total_m * 1000) if total_m > 0 else None
         persisted = self.store.setting("rfid_estimates", {}) or {}
         saved = persisted.get(key, {}) if isinstance(persisted, dict) else {}
+        if fresh:
+            saved = {"remaining_mm": total_mm} if total_mm else {}
         # Migration from the earlier slot-scoped K2-RFID estimate format.
         # This keeps already tracked spools useful after upgrading.
-        if not saved and isinstance(persisted, dict):
+        if not saved and not fresh and isinstance(persisted, dict):
             supplier = self._clean_rfid(fields.get("supplier")).upper() or "?"
             material = self._clean_rfid(fields.get("mat_id")).upper()
             number = self._clean_rfid(fields.get("number")).upper() or "?"
@@ -3221,6 +3247,29 @@ class Box:
         }
         if total_mm and remaining_mm is not None:
             self.rfid_percent[slot] = 100.0 * remaining_mm / total_mm
+            percent = self.rfid_percent[slot]
+            if (not fresh and percent < RFID_LOW_ESTIMATE_HINT
+                    and self._generic_rfid_serial(fields)):
+                self._info(
+                    self.gcode,
+                    "%s: estimate %.1f%%. If this is a new spool, remove and "
+                    "reinsert it, or run _BOX_RFID_SPOOL_NEW SLOT=%d"
+                    % (self.slot_label(self._runtime_slot(slot)), percent, slot))
+        if fresh:
+            self.rfid_estimate_dirty = True
+
+    def _generic_rfid_serial(self, fields):
+        number = self._clean_rfid(fields.get("number")).upper()
+        return number in ("", "000000", "000001")
+
+    @staticmethod
+    def _rfid_key_base(key):
+        return str(key).split(":slot:", 1)[0].split(":spool:", 1)[0]
+
+    def _next_rfid_spool_serial(self):
+        serial = int(self.store.setting("rfid_spool_serial", 0) or 0) + 1
+        self.store.set_setting("rfid_spool_serial", serial)
+        return serial
 
     def _apply_reported_remaining(self, slot, value):
         if not isinstance(value, int) or not 0 <= value <= 100:
@@ -3259,9 +3308,57 @@ class Box:
                 "total_mm": round(float(spool["total_mm"]), 3),
                 "remaining_mm": round(float(remaining), 3),
             }
+        # Per-insertion estimates (generic tags) end with their bay
+        # occupancy: drop those no slot or live spool refers to any more.
+        live = set(self._rfid_slot_keys().values())
+        live.update(spool.get("key") for spool in self.rfid_spools.values())
+        for key in [k for k in persisted if ":spool:" in k and k not in live]:
+            del persisted[key]
         self.store.data["runtime"]["rfid_estimates"] = persisted
         self.store.save()
         self.rfid_estimate_dirty = False
+
+    def cmd_rfid_spool_new(self, gcmd):
+        """K2-OpenHost: declare the spool in a slot new.
+
+        Tags with the generic serial cannot tell a fresh spool from a used
+        one with the same brand, material, color and length, so the fresh
+        one inherits the used one's estimate (down to 0%). This sets the
+        estimate to REMAINING percent (default 100) for this slot only: when
+        another slot holds a spool with the same identity, this slot gets
+        its own key so the other estimate is left as it is.
+        """
+        slot = gcmd.get_int(
+            "SLOT", None, minval=0,
+            maxval=MAX_ADDRESSES * SLOTS_PER_BOX - 1)
+        percent = gcmd.get_float("REMAINING", 100.0, minval=0.0, maxval=100.0)
+        if slot is None or not self.is_physical_slot(slot):
+            raise gcmd.error("[BOX]: SLOT must select a physical CFS slot")
+        spool = self.rfid_spools.get(slot)
+        if not spool or not spool.get("total_mm") or not spool.get("key"):
+            raise gcmd.error(
+                "[BOX]: T%d has no RFID spool with a known length; read the "
+                "tag first (_BOX_RFID_READ_SLOT SLOT=%d)" % (slot, slot))
+        stats = self.printer.lookup_object("print_stats", None)
+        if (getattr(stats, "state", None) in ("printing", "paused")
+                and self.snapshot.loaded_slot == slot):
+            raise gcmd.error(
+                "[BOX]: T%d is feeding the current print" % slot)
+        key = spool["key"]
+        if any(other is not spool and other.get("key") == key
+               for other in self.rfid_spools.values()):
+            base = spool.get("fingerprint") or self._rfid_key_base(key)
+            key = "%s:spool:%d" % (base, self._next_rfid_spool_serial())
+            spool["key"] = key
+            self._set_rfid_slot_key(slot, key)
+        spool["remaining_mm"] = float(spool["total_mm"]) * percent / 100.0
+        self.rfid_percent[slot] = percent
+        self.rfid_reported_percent.pop(slot, None)
+        self.rfid_estimate_dirty = True
+        self._persist_rfid_estimates(force=True)
+        self._info(
+            gcmd, "%s: spool declared new, estimate %.0f%%"
+            % (self.slot_label(self._runtime_slot(slot)), percent))
 
     def _track_rfid_usage(self, eventtime, snap):
         stats = self.printer.lookup_object("print_stats", None)
