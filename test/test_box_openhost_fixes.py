@@ -507,3 +507,150 @@ def test_runout_order_command(tmp_path):
         box.cmd_runout_order(FakeGcmd({"ORDER": "two"}))
     box.cmd_runout_order(FakeGcmd({"ORDER": "AUTO"}))
     assert box.runout_order == []
+
+
+# --- K2-OpenHost: CFS rediscovery when RS-485 was down at startup ----------
+
+
+class FakeReactor:
+    NEVER = 9.9e99
+
+    def __init__(self):
+        self.now = 100.0
+        self.timers = {}
+
+    def monotonic(self):
+        return self.now
+
+    def update_timer(self, timer, when):
+        self.timers[timer] = when
+
+    def pause(self, when):
+        self.now = max(self.now, when)
+
+
+class FakePrinter:
+    def __init__(self, state="standby", shutdown=False):
+        self.print_stats = types.SimpleNamespace(state=state)
+        self.shutdown = shutdown
+        self.events = []
+
+    def lookup_object(self, name, default=None):
+        if name == "print_stats":
+            return self.print_stats
+        if name == "serial_485 serial485":
+            return object()
+        return default
+
+    def is_shutdown(self):
+        return self.shutdown
+
+    def send_event(self, name, *args):
+        self.events.append(name)
+
+
+class FakeAddressManager:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = 0
+
+    def enumerate(self, client, pause=None):
+        self.calls += 1
+        online = self.results.pop(0) if self.results else {}
+        return types.SimpleNamespace(online=online, known=dict(online), errors=())
+
+
+class FakeGcode:
+    def __init__(self):
+        self.messages = []
+
+    def respond_info(self, msg):
+        self.messages.append(msg)
+
+
+def make_discovery_box(results, state="standby"):
+    box = Box.__new__(Box)
+    box.reactor = FakeReactor()
+    box.printer = FakePrinter(state)
+    box.gcode = FakeGcode()
+    box.observation_mode = False
+    box.address_manager = FakeAddressManager(results)
+    box.store = types.SimpleNamespace(set_known_addresses=lambda known: None)
+    box.drivers, box.drivers_ready, box.klippy_ready = {}, False, True
+    box.operation_depth = 0
+    box.poll_timer, box.rediscovery_timer = "poll", "rediscovery"
+    box.rediscovery_delay = box_module.REDISCOVERY_MIN
+    box.rediscovery_attempts = 0
+    box.tracking_epoch, box.tracking_owner, box.path_owner = 0, None, None
+    box.fault_episodes = {}
+    box._clear_runout_state = lambda: None
+    box._initialize_rfid = lambda: None
+    box._register_t_commands = lambda: None
+    return box
+
+
+UID = bytes.fromhex("5f983b4d1454b01247343534")
+
+
+def test_startup_without_cfs_schedules_rediscovery():
+    box = make_discovery_box([{}])
+    box._enumerate(box.reactor.now)
+    assert box.drivers == {} and box.drivers_ready
+    assert box.reactor.timers["rediscovery"] == 100.0 + box_module.REDISCOVERY_MIN
+
+
+def test_startup_with_cfs_does_not_schedule_rediscovery():
+    box = make_discovery_box([{1: UID}])
+    box._enumerate(box.reactor.now)
+    assert list(box.drivers) == [1]
+    assert "rediscovery" not in box.reactor.timers
+
+
+def test_rediscovery_finds_the_cfs_when_the_link_is_back():
+    box = make_discovery_box([{}, {}, {1: UID}])
+    box._enumerate(box.reactor.now)
+    first = box._rediscover(box.reactor.now)  # still nothing: backs off
+    assert first == box.reactor.now + 2 * box_module.REDISCOVERY_MIN
+    assert box._rediscover(box.reactor.now) == box.reactor.NEVER
+    assert list(box.drivers) == [1] and box.address_manager.calls == 3
+    assert box.rediscovery_delay == box_module.REDISCOVERY_MIN
+    assert any("CFS found" in m for m in box.gcode.messages)
+    assert box.printer.events.count("box:ready") == 3  # one per enumeration
+
+
+def test_rediscovery_backoff_is_capped():
+    box = make_discovery_box([])
+    for _ in range(10):
+        box._rediscover(box.reactor.now)
+    assert box.rediscovery_delay == box_module.REDISCOVERY_MAX
+
+
+@pytest.mark.parametrize("state", ["printing", "paused"])
+def test_rediscovery_never_runs_during_a_print(state):
+    box = make_discovery_box([{1: UID}], state=state)
+    when = box._rediscover(box.reactor.now)
+    assert box.address_manager.calls == 0 and box.drivers == {}
+    assert when == box.reactor.now + box_module.REDISCOVERY_MIN
+
+
+def test_rediscovery_waits_for_running_operations_and_shutdown():
+    box = make_discovery_box([{1: UID}])
+    box.operation_depth = 1
+    box._rediscover(box.reactor.now)
+    box.operation_depth = 0
+    box.printer.shutdown = True
+    box._rediscover(box.reactor.now)
+    assert box.address_manager.calls == 0
+
+
+def test_link_restored_triggers_an_immediate_retry_only_without_cfs():
+    box = make_discovery_box([])
+    box.drivers_ready = True
+    box.rediscovery_delay = box_module.REDISCOVERY_MAX
+    box._link_restored({})
+    assert box.reactor.timers["rediscovery"] == box.reactor.now + 1.0
+    assert box.rediscovery_delay == box_module.REDISCOVERY_MIN
+    box.reactor.timers.clear()
+    box.drivers = {1: object()}
+    box._link_restored({})
+    assert "rediscovery" not in box.reactor.timers
