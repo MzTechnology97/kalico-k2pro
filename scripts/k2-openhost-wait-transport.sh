@@ -2,7 +2,9 @@
 set -euo pipefail
 
 timeout="${K2_OPENHOST_TRANSPORT_TIMEOUT:-60}"
-devices="${K2_OPENHOST_TRANSPORT_DEVICES:-/dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2}"
+# The T113 gadget channels by interface (if00 Main, if01 Nozzle, if02 RS-485),
+# the names printer.cfg uses: /dev/ttyUSBn numbers follow enumeration order.
+devices="${K2_OPENHOST_TRANSPORT_DEVICES:-/dev/serial/by-id/usb-Allwinner_Technology_Inc._Gadget_Serial-if00-port0 /dev/serial/by-id/usb-Allwinner_Technology_Inc._Gadget_Serial-if01-port0 /dev/serial/by-id/usb-Allwinner_Technology_Inc._Gadget_Serial-if02-port0}"
 started=$SECONDS
 
 echo "k2-openhost: waiting up to ${timeout}s for transport: ${devices}" >&2

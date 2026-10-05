@@ -33,6 +33,7 @@ Cartographer -> direct USB on CM5 (preferred target)
 ```
 
 Use the `by-id` names (full form in `config/k2/printer.cfg`), not `/dev/ttyUSB0/1/2`.
+The Klipper start gate (`scripts/install-k2-openhost-systemd-gate.sh`) waits for the same names by default.
 
 - When the gadget reconnects (USB glitch, T113 bridge restart with a rebind) while Klipper still holds the old ports, the new ports come up as `ttyUSB2/3/4`.
 - With `ttyUSBn` names, `FIRMWARE_RESTART` then fails until Klipper is stopped and the gadget re-enumerated. With `by-id`, it reconnects.
