@@ -269,6 +269,21 @@ class K2LoadCell:
             "pa_max_filament", 150.0, above=0.0, maxval=1000.0
         )
         self.pa_purge_gcode = config.get("pa_purge_gcode", "")
+        # Waste handling: with [box], pulses go into the wastebin and the
+        # box flush-clean-snap (fan, retract, scraper, pad) runs after them.
+        self.pa_box = config.getchoice(
+            "pa_box", {"auto": "auto", "yes": "yes", "no": "no"}, "auto"
+        )
+        self.pa_clean = config.getchoice(
+            "pa_clean",
+            {"capture": "capture", "end": "end", "never": "never"},
+            "capture",
+        )
+        self.pa_clean_gcode = config.get("pa_clean_gcode", "")
+        # flush_clean_snap retracts 1.2 mm; push it back before a pulse
+        self.pa_reprime = config.getfloat(
+            "pa_reprime", 1.2, minval=0.0, maxval=5.0
+        )
         mcu_name = self.mcu.get_name()
         mcu_section = "mcu" if mcu_name == "mcu" else "mcu " + mcu_name
         self.mcu_baud = config.getsection(mcu_section).getint(
@@ -848,7 +863,7 @@ class K2LoadCell:
     cmd_PA_CALIBRATE_help = (
         "EXPERIMENTAL: E-only pulses with load cell capture and a pressure "
         "advance candidate. K2_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] "
-        "[POSITION_CONFIRMED=1] [APPLY=0]"
+        "[POSITION_CONFIRMED=1] [CLEAN=capture|end|never] [APPLY=0]"
     )
 
     def cmd_PA_CALIBRATE(self, gcmd):
@@ -868,31 +883,62 @@ class K2LoadCell:
             "REPLICATES", self.pa_replicates, minval=1, maxval=10
         )
         apply = gcmd.get_int("APPLY", 0, minval=0, maxval=1)
+        clean = gcmd.get("CLEAN", self.pa_clean).lower()
+        if clean not in ("capture", "end", "never"):
+            raise gcmd.error(
+                "k2_load_cell_pa: CLEAN must be capture, end or never"
+            )
+        run = self.gcode.run_script_from_command
+        box = self._pa_box(gcmd)
+        cleaner = None
+        if clean != "never":
+            if self.pa_clean_gcode:
+
+                def cleaner():
+                    run(self.pa_clean_gcode)
+
+            elif box is not None:
+                cleaner = box.flush_clean_snap
         plan = PaPlan(
             flows,
             replicates,
             self.pa_pulse_time,
             self.pa_rest_time,
+            self.pa_reprime if cleaner and clean == "capture" else 0.0,
         )
         self._check_pa_preconditions(gcmd, plan)
         toolhead = self.printer.lookup_object("toolhead")
         extruder = self.printer.lookup_object("extruder")
         before = extruder.get_status(self.reactor.monotonic())
-        run = self.gcode.run_script_from_command
-        if self.pa_purge_gcode:
-            run(self.pa_purge_gcode)
-        elif not gcmd.get_int("POSITION_CONFIRMED", 0, minval=0, maxval=1):
+        position_confirmed = gcmd.get_int(
+            "POSITION_CONFIRMED", 0, minval=0, maxval=1
+        )
+        if not (self.pa_purge_gcode or box is not None or position_confirmed):
             raise gcmd.error(
                 "k2_load_cell_pa: move the nozzle over the purge area first and "
                 "pass POSITION_CONFIRMED=1 (or set pa_purge_gcode)"
             )
+        if self.pa_purge_gcode:
+            run(self.pa_purge_gcode)
+        elif box is not None:
+            box.move_to_wastebin()
         captures = []
+        primed = True
         run("SAVE_GCODE_STATE NAME=_K2_PA_CALIBRATE")
         try:
             run("M83")
             for flow in plan.flows:
                 for rep in range(plan.replicates):
                     toolhead.wait_moves()
+                    if not primed:
+                        # refill the nozzle after the cleaning retract and
+                        # let that pressure decay before the baseline
+                        run("G1 E%.4f F120" % plan.reprime)
+                        toolhead.wait_moves()
+                        self.reactor.pause(
+                            self.reactor.monotonic() + plan.rest_time
+                        )
+                        primed = True
                     # The duration is only a safety cap: the capture is
                     # stopped after the pulse has really ended plus a rest.
                     session = self.start_capture(
@@ -926,6 +972,11 @@ class K2LoadCell:
                         "k2_load_cell_pa: flow %g mm/s replicate %d/%d captured"
                         % (flow, rep + 1, plan.replicates)
                     )
+                    if cleaner is not None and clean == "capture":
+                        cleaner()
+                        primed = not plan.reprime
+            if cleaner is not None and clean == "end":
+                cleaner()
         except Exception:
             self.abort("calibration error")
             raise
@@ -947,6 +998,15 @@ class K2LoadCell:
                 "k2_load_cell_pa: no valid candidate; pressure advance unchanged "
                 "(%.4f)" % before.get("pressure_advance", 0.0)
             )
+
+    def _pa_box(self, gcmd):
+        """The [box] object used for the wastebin, or None."""
+        if self.pa_purge_gcode or self.pa_box == "no":
+            return None
+        box = self.printer.lookup_object("box", None)
+        if box is None and self.pa_box == "yes":
+            raise gcmd.error("k2_load_cell_pa: pa_box: yes needs a [box]")
+        return box
 
     def _check_pa_preconditions(self, gcmd, plan):
         self._check_can_start()
@@ -993,15 +1053,18 @@ class K2LoadCell:
 
 
 class PaPlan:
-    def __init__(self, flows, replicates, pulse_time, rest_time):
+    def __init__(self, flows, replicates, pulse_time, rest_time, reprime=0.0):
         self.flows = list(flows)
         self.replicates = replicates
         self.pulse_time = pulse_time
         self.rest_time = rest_time
-        # rest, pulse, rest again for the decay, plus margin
+        self.reprime = reprime
         # rest before, pulse, rest after for the decay, motion queue margin
         self.capture_time = 2.0 * rest_time + pulse_time + 0.5
-        self.filament_mm = sum(f * pulse_time for f in self.flows) * replicates
+        captures = len(self.flows) * replicates
+        self.filament_mm = sum(
+            f * pulse_time for f in self.flows
+        ) * replicates + reprime * max(0, captures - 1)
 
 
 def write_capture_csv(

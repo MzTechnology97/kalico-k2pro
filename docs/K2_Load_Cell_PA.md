@@ -101,7 +101,11 @@ Add to `printer.cfg` (or uncomment in `config/k2/prtouch.cfg`), then run `FIRMWA
 #pa_rest_time: 0.8       # seconds of rest before and after
 #pa_replicates: 3
 #pa_max_filament: 150    # mm, refused above this
-#pa_purge_gcode:         # e.g. BOX_GO_TO_WASTEBIN; empty = POSITION_CONFIRMED=1
+#pa_purge_gcode:         # custom moves to the purge spot; overrides the box
+#pa_box: auto            # auto/yes/no: use [box] for the wastebin and cleaning
+#pa_clean: capture       # capture/end/never: when the cleaning runs
+#pa_clean_gcode:         # custom cleaning; default: box flush-clean-snap
+#pa_reprime: 1.2         # mm pushed back after each cleaning retract
 ```
 
 When the nozzle firmware lacks APAX, the section stays loaded but reports `unavailable` with the missing messages, and nothing is sent. The same happens if the extruder stepper is not on the sensor's MCU.
@@ -114,7 +118,7 @@ When the nozzle firmware lacks APAX, the section stays loaded but reports `unava
 | `K2_LOAD_CELL_STOP` | Stops the running capture and prints its summary. |
 | `K2_LOAD_CELL_DIAGNOSTIC` | Availability, sensor setting, link baud, blocks received outside a session, and the last summary. The summary has samples, effective rate, baseline, noise, drift, range, link load, and decode/length/stale/gap/duplicate counters. |
 | `K2_PA_ANALYZE [FILES=a.csv,b.csv]` | Runs the analysis on the last calibration or on CSV files from the output directory. Changes nothing. |
-| `K2_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] [POSITION_CONFIRMED=1] [APPLY=0]` | Experimental, disabled unless `pa_calibration: experimental`. See below. |
+| `K2_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] [POSITION_CONFIRMED=1] [CLEAN=capture\|end\|never] [APPLY=0]` | Experimental, disabled unless `pa_calibration: experimental`. See below. |
 
 `printer["k2_load_cell_pa"]` reports `available`, `unavailable_reason`, `state`, `session`, the last summary and `pa_calibration`.
 
@@ -180,10 +184,21 @@ A candidate is valid only for the material, temperature, nozzle, feed rates and 
   - when a feed rate exceeds `max_extrude_only_velocity`, or a pulse exceeds `max_extrude_only_distance`;
   - when the plan exceeds `pa_max_filament`;
   - while printing or with the probe armed;
-- it moves only through `pa_purge_gcode`, if set. Otherwise it requires `POSITION_CONFIRMED=1`;
+- it moves only to purge and clean (see "Waste handling" below). Without a box and without `pa_purge_gcode` it requires `POSITION_CONFIRMED=1`;
 - G-code state is saved and restored (`SAVE_GCODE_STATE`/`RESTORE_GCODE_STATE`), including relative extrusion;
 - pressure advance changes only with `APPLY=1` and a valid candidate, for this Klipper session. It is never saved, and `SAVE_CONFIG` is never called. On error the capture is aborted, the state restored and PA left as it was;
 - it does not tune flow ratio, maximum flow, `smooth_time` or the motors.
+
+### Waste handling
+
+With a `[box]` (CFS) and `pa_box: auto`, the filament never lands on the bed:
+
+1. Before the first pulse the head goes to the wastebin (the same move as `BOX_GO_TO_WASTEBIN`). If X/Y are not homed, the box homes them first.
+2. Every pulse is extruded there.
+3. After each capture (`pa_clean: capture`) the box flush-clean-snap runs: part fan for 3 s to stiffen the blob, a 1.2 mm retract, then the scraper passes that push the waste out of the bin and the silicone pad wipe. This is the same routine the box runs between purge chunks during a color change.
+4. Before the next pulse the 1.2 mm retract is pushed back (`pa_reprime`) and the nozzle rests for `pa_rest_time`, so the baseline does not contain that small extrusion.
+
+The cleaning never runs during a capture. `CLEAN=end` cleans once after the last capture, `CLEAN=never` skips it. `pa_purge_gcode` and `pa_clean_gcode` replace the box moves with your own macros.
 
 ## Hardware validation procedure
 
@@ -200,7 +215,7 @@ Run the steps in order, and stop at the first failure.
    - Confirm that `e_interval_ticks` is non-zero only during the move and that its sign gives positive `e_velocity_mm_s_derived`.
    - If the sign is reversed, fix `e_dir_sign` before going on.
 6. Repeat step 5 three times, and at a second feed rate. The decay must be visible and repeatable.
-7. `pa_calibration: experimental`, then `K2_PA_CALIBRATE POSITION_CONFIRMED=1`. Read the report; `APPLY` stays 0.
+7. `pa_calibration: experimental`, then `K2_PA_CALIBRATE` (with the box) or `K2_PA_CALIBRATE POSITION_CONFIRMED=1` (without). Read the report; `APPLY` stays 0.
 8. Print a standard pressure advance test with the candidate and with a range around it. Only the printed result validates the value.
 
 **Rollback:** remove or comment out `[k2_load_cell_pa]`, then `FIRMWARE_RESTART`. Nothing else was changed: the probe configuration, thresholds and filters are untouched.

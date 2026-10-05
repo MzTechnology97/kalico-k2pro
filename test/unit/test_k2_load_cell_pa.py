@@ -321,6 +321,7 @@ class Printer:
         )
         self.extruder = Extruder(self.mcu)
         self.print_stats = SimpleNamespace(state="standby")
+        self.box = None
         self.events = {}
         self.shutdown = False
         self.log_file = str(tmp_path / "klippy.log")
@@ -334,7 +335,8 @@ class Printer:
             "extruder": self.extruder,
             "print_stats": self.print_stats,
             "toolhead": SimpleNamespace(wait_moves=lambda: None),
-        }.get(name, default)
+            "box": self.box,
+        }.get(name) or default
 
     def load_object(self, config, name):
         assert name == "prtouch"
@@ -704,6 +706,125 @@ def test_apply_only_with_a_valid_candidate(tmp_path, monkeypatch):
     printer.gcode.scripts.clear()
     lc.cmd_PA_CALIBRATE(GCmd({"POSITION_CONFIRMED": 1, "REPLICATES": 1}))
     assert not any("SET_PRESSURE_ADVANCE" in s for s in printer.gcode.scripts)
+
+
+class Box:
+    """Records the box calls in the G-code log, to check the order."""
+
+    def __init__(self, gcode):
+        self.gcode = gcode
+
+    def move_to_wastebin(self):
+        self.gcode.scripts.append("<wastebin>")
+
+    def flush_clean_snap(self, fan_after=None):
+        self.gcode.scripts.append("<clean>")
+
+
+def fake_captures(lc, monkeypatch, printer):
+    def fake_start(duration, label="", allow_printing=False):
+        printer.gcode.scripts.append("<capture %s>" % label)
+        session = k2_load_cell_pa.CaptureSession(1, 0, FREQ, 100, label)
+        session.state = "complete"
+        return session
+
+    monkeypatch.setattr(lc, "start_capture", fake_start)
+    monkeypatch.setattr(lc, "stop_capture", lambda reason=None: None)
+    monkeypatch.setattr(
+        k2_load_cell_pa.analysis,
+        "analyze_pa_captures",
+        lambda c: {
+            "per_capture": {},
+            "groups": {},
+            "candidate": {"ok": False, "reasons": ["x"], "candidate": None},
+        },
+    )
+
+
+def steps(printer):
+    keep = ("<", "G1 E1.2000")
+    return [s for s in printer.gcode.scripts if s.startswith(keep)]
+
+
+def test_box_wastebin_and_clean_after_each_capture(tmp_path, monkeypatch):
+    printer, lc = make(tmp_path, pa_calibration="experimental")
+    printer.box = Box(printer.gcode)
+    fake_captures(lc, monkeypatch, printer)
+    # no POSITION_CONFIRMED: the box provides the position
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "2,5", "REPLICATES": 1}))
+    assert steps(printer) == [
+        "<wastebin>",
+        "<capture flow=2>",
+        "<clean>",
+        "G1 E1.2000 F120",
+        "<capture flow=5>",
+        "<clean>",
+    ]
+    assert (
+        printer.gcode.scripts[-1] == "RESTORE_GCODE_STATE NAME=_K2_PA_CALIBRATE"
+    )
+
+
+def test_box_clean_only_at_the_end(tmp_path, monkeypatch):
+    printer, lc = make(tmp_path, pa_calibration="experimental")
+    printer.box = Box(printer.gcode)
+    fake_captures(lc, monkeypatch, printer)
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "2,5", "REPLICATES": 1, "CLEAN": "end"}))
+    assert steps(printer) == [
+        "<wastebin>",
+        "<capture flow=2>",
+        "<capture flow=5>",
+        "<clean>",
+    ]
+
+
+def test_clean_gcode_replaces_the_box_clean(tmp_path, monkeypatch):
+    printer, lc = make(
+        tmp_path,
+        pa_calibration="experimental",
+        pa_clean_gcode="MY_CLEAN",
+        pa_reprime=0.0,
+    )
+    printer.box = Box(printer.gcode)
+    fake_captures(lc, monkeypatch, printer)
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "2,5", "REPLICATES": 1}))
+    seq = [
+        s for s in printer.gcode.scripts if s.startswith(("<", "MY_", "G1 E1"))
+    ]
+    assert seq == [
+        "<wastebin>",
+        "<capture flow=2>",
+        "MY_CLEAN",
+        "<capture flow=5>",
+        "MY_CLEAN",
+    ]
+
+
+def test_pa_box_no_needs_a_position(tmp_path, monkeypatch):
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_box="no")
+    printer.box = Box(printer.gcode)
+    with pytest.raises(CommandError, match="POSITION_CONFIRMED"):
+        lc.cmd_PA_CALIBRATE(GCmd({}))
+    assert printer.gcode.scripts == []
+
+
+def test_pa_box_yes_without_a_box(tmp_path):
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_box="yes")
+    with pytest.raises(CommandError, match="needs a"):
+        lc.cmd_PA_CALIBRATE(GCmd({"POSITION_CONFIRMED": 1}))
+    assert printer.gcode.scripts == []
+
+
+def test_reprime_counts_in_the_filament_limit(tmp_path):
+    # 2+5 mm of pulses, plus one 1.2 mm reprime between the two captures
+    plan = k2_load_cell_pa.PaPlan([2.0, 5.0], 1, 1.0, 0.8, 1.2)
+    assert plan.filament_mm == pytest.approx(8.2)
+    printer, lc = make(
+        tmp_path, pa_calibration="experimental", pa_max_filament=8.0
+    )
+    printer.box = Box(printer.gcode)
+    with pytest.raises(CommandError, match="pa_max_filament"):
+        lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "2,5", "REPLICATES": 1}))
 
 
 def test_calibration_error_restores_state(tmp_path, monkeypatch):
