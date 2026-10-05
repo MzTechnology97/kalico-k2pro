@@ -1630,11 +1630,18 @@ class Box:
         spool = {} if external else self.rfid_spools.get(slot, {})
         total_mm = spool.get("total_mm")
         remaining_mm = spool.get("remaining_mm")
+        rfid_managed = (
+            not external
+            and (slot in self.rfid_live_slots
+                 or (bool(snap.slot_mask & (1 << slot))
+                     and profile.get("source") == "rfid"))
+        )
         return {
             "index": slot,
             "present": external or bool(snap.slot_mask & (1 << slot)),
             "loaded": snap.loaded_slot == slot or (
                 not external and bool(snap.loaded_mask & (1 << slot))),
+            "profile_clearable": external or not rfid_managed,
             "material": profile["material"],
             "color": profile["color"],
             "brand": profile["brand"],
@@ -1724,6 +1731,22 @@ class Box:
 
     def clear_profile(self, slot):
         self.store.clear_profile(self._runtime_slot_key(slot))
+
+    def clear_slot_assignment(self, slot):
+        """Clear one slot assignment without treating it as a spool removal.
+
+        Physical CFS RFID bays are protected by cmd_slot_clear() while a live
+        tag owns the slot. The external spool is different: the standalone
+        reader has no removal notification, so replacing an RFID spool with a
+        plain spool must be explicitly resettable. Invalidate any asynchronous
+        Spoolman lookup and stale unknown-RFID state before clearing the saved
+        external profile so an earlier scan cannot repopulate it.
+        """
+        slot_key = self._runtime_slot_key(slot)
+        if slot == self.external_slot:
+            self.unknown_rfid.pop(slot_key, None)
+            self._invalidate_spoolman(slot)
+        self.clear_profile(slot)
 
     def mark_slot_depleted(self, slot):
         """Persist a confirmed empty spool and clear its live slot assignment.
@@ -2594,7 +2617,10 @@ class Box:
         if self.is_physical_slot(slot) and slot in self.rfid_live_slots:
             raise gcmd.error(
                 "[BOX]: %s is managed by a live RFID tag; remove the tagged spool before clearing it" % self.slot_label(slot))
-        self.clear_profile(slot)
+        # The external spool is intentionally clearable even when its current
+        # profile came from RFID. Unlike a CFS bay, the standalone reader has
+        # no removal event to tell us that the spool was replaced.
+        self.clear_slot_assignment(slot)
         self._info(gcmd, "Cleared %s profile" % self.slot_label(slot))
 
     def cmd_material_set(self, gcmd):
