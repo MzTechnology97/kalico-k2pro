@@ -24,7 +24,7 @@ mkdir -p "${dropin_dir}"
 cat > "${dropin}" <<'DROPIN'
 [Service]
 Environment="K2_OPENHOST_TRANSPORT_TIMEOUT=60"
-Environment="K2_OPENHOST_TRANSPORT_DEVICES=/dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2"
+Environment="K2_OPENHOST_TRANSPORT_DEVICES=/dev/serial/by-id/usb-Allwinner_Technology_Inc._Gadget_Serial-if00-port0 /dev/serial/by-id/usb-Allwinner_Technology_Inc._Gadget_Serial-if01-port0 /dev/serial/by-id/usb-Allwinner_Technology_Inc._Gadget_Serial-if02-port0"
 ExecStartPre=/usr/local/libexec/k2-openhost/wait-transport.sh
 Restart=on-failure
 RestartSec=5
