@@ -235,6 +235,10 @@ The auto-mapper uses material family plus perceptual OKLab color matching derive
 Mapping rules added on 2026-10-04:
 - **Warnings that never block.** `mapping_warnings` (also in `box.auto_mapping.warnings`, logged to the console) reports:
   - `low_filament`: the estimated need, `length_mm/1000 * 1.1 + 1` m, is more than the slot plus its same-material, same-colour runout partners hold;
+  - `low_filament_live`: the same check repeated every minute during the print. It is added when a tool becomes short and dropped when it no longer is (for example after loading a fuller spool). The console reports it once per tool and slot.
+    - With one tool, the need is the slicer length with its margin minus `print_stats.filament_used`, which is exact.
+    - With several tools the per-tool use is unknown, so the need is scaled by the remaining file progress and marked `estimated`.
+    - The detail of every mapped tool is published in `box.filament_check`: `active`, and `tools[]` with `tool`, `slot`, `needed_m`, `available_m`, `includes_swap`, `estimated` and `short`.
   - `material_variant` and `material_mismatch`.
 - **Strict variants.** A base material is never auto-mapped onto its filled variant (CF, GF, KF and AF fillers): a PETG print does not start on PETG-CF because no similar PETG is loaded. The loaded-filament fallback also requires a compatible material.
 
