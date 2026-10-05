@@ -507,4 +507,3 @@ def test_runout_order_command(tmp_path):
         box.cmd_runout_order(FakeGcmd({"ORDER": "two"}))
     box.cmd_runout_order(FakeGcmd({"ORDER": "AUTO"}))
     assert box.runout_order == []
-
