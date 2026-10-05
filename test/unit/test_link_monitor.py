@@ -123,7 +123,39 @@ def test_rows_report_interval_deltas(tmp_path):
     assert first[8] == "1.000" and first[10] == "0"
     assert second[10] == "15"
     assert len(first) == len(lm.CSV_HEADER.split(","))
-    assert sorted(m.cumulative["nozzle_mcu"]) == [0.001, 0.002, 0.003, 0.004]
+    hist = m.cumulative["nozzle_mcu"]
+    assert hist.total == 4 and hist.max == pytest.approx(0.004)
+    status = m.get_status(130.0)["rtt_ms"]["nozzle_mcu"]
+    assert status["samples"] == 4 and status["max"] == 4.0
+
+
+def test_histogram_percentiles_within_two_percent():
+    import random
+
+    rng = random.Random(1)
+    values = [rng.lognormvariate(-7.0, 0.6) for _ in range(20000)]
+    hist = lm.RttHistogram()
+    hist.extend(values)
+    exact = lm.summarize(values)
+    approx = hist.summary()
+    assert approx["samples"] == exact["samples"]
+    assert approx["max"] == exact["max"]
+    for key in ("p50", "p95", "p99", "p999"):
+        assert exact[key] <= approx[key] <= exact[key] * 1.021, key
+    assert lm.RttHistogram().summary()["p99"] is None
+    hist.add(0.0)  # below the first edge
+    hist.add(1e9)  # above the last
+    assert hist.total == 20002 and hist.max == 1e9
+
+
+def test_get_status_does_not_recompute(tmp_path):
+    m = monitor(tmp_path)
+    m._status = {"rtt_ms": {}}
+    m.cumulative = {"mcu": lm.RttHistogram()}
+    m.cumulative["mcu"].extend([0.001] * 1000)
+    assert m.get_status(1.0) == {"rtt_ms": {}}  # until the next interval
+    m._update_status()
+    assert m.get_status(2.0)["rtt_ms"]["mcu"]["samples"] == 1000
 
 
 def test_rs485_rows(tmp_path):
