@@ -267,7 +267,11 @@ Notes from those tests:
 **When the link counts as lost:** no device has answered for `link_lost_timeout` seconds (10 by default) and at least `link_lost_timeouts` requests in a row timed out (3). A single absent device, such as a CFS that is not connected, does not count while the others answer.
 
 **What happens then:**
-- **During a print:** `link_lost_action` applies. `pause` is the default: the print is paused the same way the extruder fault pause does it. `warn` only reports; `shutdown` stops Klipper.
+- **During a print:** `link_lost_action` applies.
+  - `pause` (default): the print is paused the same way the extruder fault pause does it; resume once the link is back.
+  - `warn`: only reports. The print goes on with the CFS runout and feed handling and the motor diagnostics blind.
+  - `cancel`: runs `CANCEL_PRINT`. With the K2 profile this turns the heaters off and parks the toolhead, and needs no RS-485.
+  - `shutdown`: stops Klipper.
 - **When idle:** only a console warning.
 - **Always:** the event `serial_485:link_lost` is sent.
 
@@ -275,7 +279,11 @@ Notes from those tests:
 
 **Status:** `serial_485 serial485` and `SERIAL_STATUS` add:
 - `link_state` (`unknown`, `ok`, `degraded`, `lost`);
-- `link_ok_age`, `consecutive_timeouts`, `link_lost_count`, `link_lost_for`, `link_lost_action`.
+- `link_ok_age`, `consecutive_timeouts`, `link_lost_count`, `link_lost_for`, `link_lost_action`;
+- `print_session`: the counters since the current print started (`started`, `duration_s` and `deltas`: requests `tx_frames`, answers `rx_frames`, `timeouts`, `crc_errors`, `invalid_len`, `unmatched`, `stale_dropped`, `send_errors`, `reader_errors`, `disconnects`, `link_lost`). It is `null` when no print is running. Pausing and resuming is the same print;
+- `last_print_session`: the same for the last finished print, with its `result` (`complete`, `cancelled`, `error`, `standby`).
+
+When a print ends, a summary is written to the log and the console, for example `RS-485 during the print (complete, 18 h 44 min): 412000 requests, 411990 answers, 10 timeouts, 0 CRC errors, ...`.
 
 ### The T113 from Kalico (`[k2_t113]`)
 
