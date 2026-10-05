@@ -1,4 +1,4 @@
-"""k2_load_cell: APAX transport, capture sessions, ownership and export.
+"""k2_load_cell_pa: APAX transport, capture sessions, ownership and export.
 
 Fakes only: no serial port and no printer. The fake MCU answers like the
 published prtouch_v3 object: start acks with expar1=acq_tick, stop with 0,
@@ -15,7 +15,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "klippy"))
 
-from extras import k2_load_cell, prtouch_codec  # noqa: E402
+from extras import k2_load_cell_pa, prtouch_codec  # noqa: E402
 from extras import k2_pa_analysis as analysis  # noqa: E402
 
 FREQ = 120_000_000.0
@@ -138,11 +138,11 @@ class Serial:
 
 
 ALL_FORMATS = (
-    k2_load_cell.CMD_CONFIG,
-    k2_load_cell.CMD_START,
-    k2_load_cell.CMD_STOP,
-    k2_load_cell.RSP_BLOCK,
-    k2_load_cell.RSP_ACK,
+    k2_load_cell_pa.CMD_CONFIG,
+    k2_load_cell_pa.CMD_START,
+    k2_load_cell_pa.CMD_STOP,
+    k2_load_cell_pa.RSP_BLOCK,
+    k2_load_cell_pa.RSP_ACK,
 )
 
 
@@ -355,7 +355,7 @@ def make(tmp_path, formats=ALL_FORMATS, **cfg):
     printer.mcu._serial = Serial(formats)
     values = {"export": False}
     values.update(cfg)
-    lc = k2_load_cell.K2LoadCell(Config(printer, values))
+    lc = k2_load_cell_pa.K2LoadCell(Config(printer, values))
     printer.mcu.apax_oid = lc.apax_oid
     for cb in printer.mcu.config_callbacks:
         cb()
@@ -396,7 +396,7 @@ def test_missing_apax_is_reported_and_adds_nothing(tmp_path):
 def test_extruder_on_another_mcu_is_unavailable(tmp_path):
     printer = Printer(tmp_path)
     printer.extruder = Extruder(object())
-    lc = k2_load_cell.K2LoadCell(Config(printer, {"export": False}))
+    lc = k2_load_cell_pa.K2LoadCell(Config(printer, {"export": False}))
     printer.mcu.apax_oid = lc.apax_oid
     for cb in printer.mcu.config_callbacks:
         cb()
@@ -592,18 +592,24 @@ def test_not_while_printing(tmp_path):
 def test_csv_round_trip_and_rotation(tmp_path):
     meta = {"session": 1, "label": "flow=2"}
     rows = [(100, 0.0, 10, 0), (200, 0.001, 12, -3000)]
-    path = tmp_path / "k2_load_cell_a.csv"
-    k2_load_cell.write_capture_csv(str(path), meta, rows, 10.0, 0.0025, 1, FREQ)
+    path = tmp_path / "k2_load_cell_pa_a.csv"
+    k2_load_cell_pa.write_capture_csv(
+        str(path), meta, rows, 10.0, 0.0025, 1, FREQ
+    )
     cap = analysis.load_capture_csv(str(path))
     assert cap["meta"]["label"] == "flow=2"
     assert cap["values"] == [10, 12] and cap["espds"] == [0, -3000]
     text = path.read_text()
     assert "e_velocity_mm_s_derived" in text
-    for name in ("k2_load_cell_b.csv", "k2_load_cell_c.csv", "other.csv"):
+    for name in ("k2_load_cell_pa_b.csv", "k2_load_cell_pa_c.csv", "other.csv"):
         (tmp_path / name).write_text("x")
-    k2_load_cell.rotate_files(str(tmp_path), "k2_load_cell_", 2)
+    k2_load_cell_pa.rotate_files(str(tmp_path), "k2_load_cell_pa_", 2)
     left = sorted(os.listdir(tmp_path))
-    assert left == ["k2_load_cell_b.csv", "k2_load_cell_c.csv", "other.csv"]
+    assert left == [
+        "k2_load_cell_pa_b.csv",
+        "k2_load_cell_pa_c.csv",
+        "other.csv",
+    ]
 
 
 # --- pressure advance gating ----------------------------------------------------------
@@ -664,7 +670,7 @@ def test_apply_only_with_a_valid_candidate(tmp_path, monkeypatch):
     printer, lc = make(tmp_path, pa_calibration="experimental")
 
     def fake_start(duration, label="", allow_printing=False):
-        session = k2_load_cell.CaptureSession(1, 0, FREQ, 100, label)
+        session = k2_load_cell_pa.CaptureSession(1, 0, FREQ, 100, label)
         session.state = "complete"
         return session
 
@@ -676,7 +682,7 @@ def test_apply_only_with_a_valid_candidate(tmp_path, monkeypatch):
         "candidate": {"ok": False, "reasons": ["no data"], "candidate": None},
     }
     monkeypatch.setattr(
-        k2_load_cell.analysis, "analyze_pa_captures", lambda c: result
+        k2_load_cell_pa.analysis, "analyze_pa_captures", lambda c: result
     )
     gcmd = GCmd({"POSITION_CONFIRMED": 1, "APPLY": 1, "REPLICATES": 1})
     lc.cmd_PA_CALIBRATE(gcmd)

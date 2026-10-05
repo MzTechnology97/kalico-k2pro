@@ -5,7 +5,7 @@
 # Copyright (C) 2026  MzTechnology97
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-"""[k2_load_cell] - optional, needs [prtouch].
+"""[k2_load_cell_pa] - optional, needs [prtouch].
 
 The stock K2 nozzle firmware (prtouch_v3) has an "APAX" mode: once
 started it samples the CS1237 continuously and sends blocks of
@@ -16,7 +16,7 @@ started it samples the CS1237 continuously and sends blocks of
     stop_prtouch_apax oid=%c
     resault_prtouch_apax oid=%c ch=%c len=%c ticks=%.*s datas=%.*s espds=%.*s
 
-Facts from the published prtouch_v3 object (docs/K2_Load_Cell.md):
+Facts from the published prtouch_v3 object (docs/K2_Load_Cell_PA.md):
 - start acks with err=0 expar0=0 expar1=acq_tick, stop with 0/0/0;
 - blocks carry the oid of the pressure sensor (config_prtouch_pres), not
   the APAX oid;
@@ -49,12 +49,12 @@ RSP_BLOCK = (
 RSP_ACK = "ack_prtouch oid=%c err=%c expar0=%u expar1=%u"
 
 ACTIVE_STATES = ("starting", "running", "stopping")
-CSV_PREFIX = "k2_load_cell_"
+CSV_PREFIX = "k2_load_cell_pa_"
 BLOCK_OVERHEAD = 9  # message framing + fixed fields, bytes (approximate)
 
 
 def _klog(msg, *args, level=logging.info):
-    level("k2_load_cell: " + msg, *args)
+    level("k2_load_cell_pa: " + msg, *args)
 
 
 class CaptureSession:
@@ -217,7 +217,7 @@ class K2LoadCell:
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object("gcode")
         if not config.has_section("prtouch"):
-            raise config.error("[k2_load_cell] needs a [prtouch] section")
+            raise config.error("[k2_load_cell_pa] needs a [prtouch] section")
         self.prtouch = self.printer.load_object(config, "prtouch")
         self.mcu = self.prtouch.pres_mcu
         self.pres_oid = self.prtouch.pres_oid
@@ -408,7 +408,7 @@ class K2LoadCell:
                     continue
                 if ack.get("err", 0):
                     raise self.printer.command_error(
-                        "k2_load_cell: %s failed (err=%s expar0=%s expar1=%s)"
+                        "k2_load_cell_pa: %s failed (err=%s expar0=%s expar1=%s)"
                         % (
                             label,
                             ack.get("err"),
@@ -424,7 +424,7 @@ class K2LoadCell:
             now = self.reactor.monotonic()
             if now >= deadline:
                 raise self.printer.command_error(
-                    "k2_load_cell: %s ack timeout" % label
+                    "k2_load_cell_pa: %s ack timeout" % label
                 )
             self.reactor.pause(min(deadline, now + 0.005))
 
@@ -433,27 +433,27 @@ class K2LoadCell:
     def _check_can_start(self, allow_printing=False):
         if not self.available:
             raise self.printer.command_error(
-                "k2_load_cell: unavailable: %s" % self.unavailable_reason
+                "k2_load_cell_pa: unavailable: %s" % self.unavailable_reason
             )
         if self.printer.is_shutdown():
             raise self.printer.command_error(
-                "k2_load_cell: printer is shut down"
+                "k2_load_cell_pa: printer is shut down"
             )
         if self.session is not None and self.session.active:
             raise self.printer.command_error(
-                "k2_load_cell: a capture is already running (session %d)"
+                "k2_load_cell_pa: a capture is already running (session %d)"
                 % self.session.sid
             )
         if getattr(self.prtouch, "_armed", False):
             raise self.printer.command_error(
-                "k2_load_cell: the probe is armed; finish probing first"
+                "k2_load_cell_pa: the probe is armed; finish probing first"
             )
         if not allow_printing:
             stats = self.printer.lookup_object("print_stats", None)
             state = getattr(stats, "state", "")
             if state in ("printing", "paused"):
                 raise self.printer.command_error(
-                    "k2_load_cell: not available while a print is %s" % state
+                    "k2_load_cell_pa: not available while a print is %s" % state
                 )
 
     def start_capture(self, duration, label="", allow_printing=False):
@@ -548,7 +548,7 @@ class K2LoadCell:
             if self.stop_cmd is not None:
                 self.stop_cmd.send([self.apax_oid])
         except Exception:
-            logging.exception("k2_load_cell: stop during cleanup")
+            logging.exception("k2_load_cell_pa: stop during cleanup")
 
     def _auto_stop(self, eventtime):
         self.stop_capture()
@@ -606,7 +606,7 @@ class K2LoadCell:
         if self.session is not None and self.session.active:
             self.abort("homing started during a capture")
             raise self.printer.command_error(
-                "k2_load_cell: a capture was running; it was aborted. "
+                "k2_load_cell_pa: a capture was running; it was aborted. "
                 "Repeat the homing/probing."
             )
 
@@ -698,9 +698,9 @@ class K2LoadCell:
                 )
                 rotate_files(os.path.dirname(path), CSV_PREFIX, self.max_files)
             except Exception:
-                logging.exception("k2_load_cell: export failed")
+                logging.exception("k2_load_cell_pa: export failed")
 
-        thread = threading.Thread(target=write, name="k2_load_cell_export")
+        thread = threading.Thread(target=write, name="k2_load_cell_pa_export")
         thread.daemon = True
         thread.start()
         self._export_threads = [
@@ -738,7 +738,7 @@ class K2LoadCell:
             gcmd.respond_info(self._format_summary(session.summary()))
         else:
             gcmd.respond_info(
-                "k2_load_cell: session %d running for %.2f s"
+                "k2_load_cell_pa: session %d running for %.2f s"
                 % (session.sid, duration)
             )
 
@@ -747,7 +747,7 @@ class K2LoadCell:
     def cmd_STOP(self, gcmd):
         session = self.stop_capture()
         if session is None:
-            gcmd.respond_info("k2_load_cell: no capture")
+            gcmd.respond_info("k2_load_cell_pa: no capture")
             return
         self.wait_session(session, self.block_grace + 2.0)
         gcmd.respond_info(self._format_summary(session.summary()))
@@ -757,7 +757,7 @@ class K2LoadCell:
     def cmd_DIAGNOSTIC(self, gcmd):
         cfg = analysis.decode_cs1237_config(self.cfg_regs)
         lines = [
-            "k2_load_cell: %s"
+            "k2_load_cell_pa: %s"
             % (
                 "available"
                 if self.available
@@ -830,17 +830,17 @@ class K2LoadCell:
                     cap = analysis.load_capture_csv(path)
                 except (OSError, ValueError, KeyError) as exc:
                     raise gcmd.error(
-                        "k2_load_cell: %s: %s" % (name, exc)
+                        "k2_load_cell_pa: %s: %s" % (name, exc)
                     ) from exc
                 if cap["flow"] is None:
                     raise gcmd.error(
-                        "k2_load_cell: %s has no flow=<mm/s> label" % name
+                        "k2_load_cell_pa: %s has no flow=<mm/s> label" % name
                     )
                 captures.append(cap)
         else:
             captures = list(getattr(self, "_last_pa_captures", []))
         if not captures:
-            raise gcmd.error("k2_load_cell: no captures to analyze")
+            raise gcmd.error("k2_load_cell_pa: no captures to analyze")
         gcmd.respond_info(
             analysis.format_pa_report(analysis.analyze_pa_captures(captures))
         )
@@ -854,8 +854,8 @@ class K2LoadCell:
     def cmd_PA_CALIBRATE(self, gcmd):
         if self.pa_mode != "experimental":
             raise gcmd.error(
-                "k2_load_cell: pressure advance calibration is disabled; set "
-                "pa_calibration: experimental in [k2_load_cell] to try it"
+                "k2_load_cell_pa: pressure advance calibration is disabled; set "
+                "pa_calibration: experimental in [k2_load_cell_pa] to try it"
             )
         flows = [
             float(v)
@@ -883,7 +883,7 @@ class K2LoadCell:
             run(self.pa_purge_gcode)
         elif not gcmd.get_int("POSITION_CONFIRMED", 0, minval=0, maxval=1):
             raise gcmd.error(
-                "k2_load_cell: move the nozzle over the purge area first and "
+                "k2_load_cell_pa: move the nozzle over the purge area first and "
                 "pass POSITION_CONFIRMED=1 (or set pa_purge_gcode)"
             )
         captures = []
@@ -910,7 +910,7 @@ class K2LoadCell:
                     self.wait_session(session, self.block_grace + 3.0)
                     if session.state != "complete":
                         raise gcmd.error(
-                            "k2_load_cell: capture %d %s: %s"
+                            "k2_load_cell_pa: capture %d %s: %s"
                             % (session.sid, session.state, session.reason)
                         )
                     captures.append(
@@ -923,7 +923,7 @@ class K2LoadCell:
                         }
                     )
                     gcmd.respond_info(
-                        "k2_load_cell: flow %g mm/s replicate %d/%d captured"
+                        "k2_load_cell_pa: flow %g mm/s replicate %d/%d captured"
                         % (flow, rep + 1, plan.replicates)
                     )
         except Exception:
@@ -938,13 +938,13 @@ class K2LoadCell:
         if apply and candidate["ok"]:
             run("SET_PRESSURE_ADVANCE ADVANCE=%.4f" % candidate["candidate"])
             gcmd.respond_info(
-                "k2_load_cell: pressure advance set to %.4f for this session "
+                "k2_load_cell_pa: pressure advance set to %.4f for this session "
                 "(was %.4f); not saved"
                 % (candidate["candidate"], before.get("pressure_advance", 0.0))
             )
         elif apply:
             gcmd.respond_info(
-                "k2_load_cell: no valid candidate; pressure advance unchanged "
+                "k2_load_cell_pa: no valid candidate; pressure advance unchanged "
                 "(%.4f)" % before.get("pressure_advance", 0.0)
             )
 
@@ -952,7 +952,7 @@ class K2LoadCell:
         self._check_can_start()
         extruder = self.printer.lookup_object("extruder", None)
         if extruder is None:
-            raise gcmd.error("k2_load_cell: no extruder")
+            raise gcmd.error("k2_load_cell_pa: no extruder")
         eventtime = self.reactor.monotonic()
         st = extruder.get_status(eventtime)
         temp, target = st.get("temperature", 0.0), st.get("target", 0.0)
@@ -962,32 +962,32 @@ class K2LoadCell:
             or abs(temp - target) > 5.0
         ):
             raise gcmd.error(
-                "k2_load_cell: heat the nozzle to printing temperature first "
+                "k2_load_cell_pa: heat the nozzle to printing temperature first "
                 "(now %.1f/%.1f C); this command never heats" % (temp, target)
             )
         max_e_v = getattr(extruder, "max_e_velocity", None)
         max_e_dist = getattr(extruder, "max_e_dist", None)
         if not plan.flows:
-            raise gcmd.error("k2_load_cell: FLOWS is empty")
+            raise gcmd.error("k2_load_cell_pa: FLOWS is empty")
         for flow in plan.flows:
             if flow <= 0 or (max_e_v and flow > max_e_v):
                 raise gcmd.error(
-                    "k2_load_cell: flow %g mm/s outside the extruder limit"
+                    "k2_load_cell_pa: flow %g mm/s outside the extruder limit"
                     % flow
                 )
             if max_e_dist and flow * plan.pulse_time > max_e_dist:
                 raise gcmd.error(
-                    "k2_load_cell: a %.1f mm pulse exceeds max_extrude_only_"
+                    "k2_load_cell_pa: a %.1f mm pulse exceeds max_extrude_only_"
                     "distance" % (flow * plan.pulse_time)
                 )
         if plan.filament_mm > self.pa_max_filament:
             raise gcmd.error(
-                "k2_load_cell: plan uses %.0f mm of filament, limit %.0f "
+                "k2_load_cell_pa: plan uses %.0f mm of filament, limit %.0f "
                 "(pa_max_filament)" % (plan.filament_mm, self.pa_max_filament)
             )
         if plan.capture_time > self.max_duration:
             raise gcmd.error(
-                "k2_load_cell: each capture needs %.1f s, max_duration is %.1f"
+                "k2_load_cell_pa: each capture needs %.1f s, max_duration is %.1f"
                 % (plan.capture_time, self.max_duration)
             )
 

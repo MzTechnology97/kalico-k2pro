@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Replay k2_load_cell captures offline and print the pressure advance
+# Replay k2_load_cell_pa captures offline and print the pressure advance
 # analysis (experimental).
 #
 # Copyright (C) 2026  MzTechnology97
@@ -8,7 +8,7 @@
 """Usage: k2_pa_replay.py [--json] [--opt key=value ...] capture.csv ...
 
 Runs the same analysis as K2_PA_ANALYZE on CSV files written by
-[k2_load_cell]. Needs only the Python standard library. Captures are
+[k2_load_cell_pa]. Needs only the Python standard library. Captures are
 grouped by their label (flow=<mm/s>).
 """
 
@@ -31,7 +31,7 @@ def load_analysis():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("files", nargs="+", help="k2_load_cell CSV files")
+    parser.add_argument("files", nargs="+", help="k2_load_cell_pa CSV files")
     parser.add_argument("--json", action="store_true", help="JSON output")
     parser.add_argument(
         "--opt",

@@ -1,6 +1,6 @@
 # K2 load cell capture (APAX) and experimental pressure advance
 
-`[k2_load_cell]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
+`[k2_load_cell_pa]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
 
 Status: the software is tested offline only. Neither the capture on the printer nor the pressure advance result has been validated yet; the [hardware procedure](#hardware-validation-procedure) lists what is left.
 
@@ -55,7 +55,7 @@ reactor timer (every 50 ms): decode, 64-bit ticks, checks ──► CaptureSessi
 stop_prtouch_apax ─► ack ─► grace period ─► finish ─► CSV written in a thread
 ```
 
-- **Files:** `klippy/extras/k2_load_cell.py` (transport, session, commands), `klippy/extras/k2_pa_analysis.py` (pure Python analysis, also used on a PC), `klippy/extras/prtouch_codec.py` (the packing, shared with `prtouch.py`), `scripts/k2_pa_replay.py`.
+- **Files:** `klippy/extras/k2_load_cell_pa.py` (transport, session, commands), `klippy/extras/k2_pa_analysis.py` (pure Python analysis, also used on a PC), `klippy/extras/prtouch_codec.py` (the packing, shared with `prtouch.py`), `scripts/k2_pa_replay.py`.
 - **OIDs:** the APAX oid is a new oid used only by `config_prtouch_apax`, which allocates nothing in the firmware. Its acks therefore never reach PRTouch's ack handler. Blocks are registered on the pressure sensor oid under their own message name.
 - **Sensor ownership:** one owner at a time.
   - A capture refuses to start while the probe is armed, while a print is running or paused, or while another capture runs.
@@ -68,12 +68,22 @@ stop_prtouch_apax ─► ack ─► grace period ─► finish ─► CSV writte
 
 **Link load:** each block holds roughly 8-14 samples, so at 1280 samples/s that is about 100-150 blocks/s. The diagnostic prints the measured payload rate against the nozzle link (230400 baud ≈ 23 kB/s). Measuring it is part of the hardware validation.
 
+## Probe, homing and Z offset
+
+This section is separate from PRTouch. It does not change how the probe triggers, how homing and Z offset are computed, or any probe threshold or filter. With the section absent, Klipper loads nothing from it.
+
+What they share:
+
+- **The sensor:** both use the same load cell, never at the same time (see the ownership rules above).
+- **The decoder:** the packed-series decoder moved to `prtouch_codec.py` and `prtouch.py` uses it unchanged. In `prtouch.py` it is only called by the probe diagnostic report, not by homing or probing.
+- **One fix in that diagnostic:** the first tick is now sign-extended. It only changes the diagnostic printout.
+
 ## Configuration
 
 Add to `printer.cfg` (or uncomment in `config/k2/prtouch.cfg`), then run `FIRMWARE_RESTART`: the section adds one MCU config command.
 
 ```ini
-[k2_load_cell]
+[k2_load_cell_pa]
 #channel: 0              # pres_cs channel (the K2 Pro has one)
 #cfg_regs:               # default: [prtouch] pres_cfg_regs (60 = 1280 Hz, gain 128)
 #acq_tkms:               # default: [prtouch] pres_acq_tkms (enable value for APAX)
@@ -106,13 +116,13 @@ When the nozzle firmware lacks APAX, the section stays loaded but reports `unava
 | `K2_PA_ANALYZE [FILES=a.csv,b.csv]` | Runs the analysis on the last calibration or on CSV files from the output directory. Changes nothing. |
 | `K2_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] [POSITION_CONFIRMED=1] [APPLY=0]` | Experimental, disabled unless `pa_calibration: experimental`. See below. |
 
-`printer["k2_load_cell"]` reports `available`, `unavailable_reason`, `state`, `session`, the last summary and `pa_calibration`.
+`printer["k2_load_cell_pa"]` reports `available`, `unavailable_reason`, `state`, `session`, the last summary and `pa_calibration`.
 
 Values are raw CS1237 counts; the relative column subtracts the baseline. They are not grams or newtons: no force calibration exists.
 
 ## CSV format and replay
 
-The file is `k2_load_cell_<date>-<time>_<session>.csv`. `#` lines hold the metadata:
+The file is `k2_load_cell_pa_<date>-<time>_<session>.csv`. `#` lines hold the metadata:
 - session, label, date;
 - MCU, mcu_version, clock and software version;
 - cfg_regs with the decoded rate, gain and channel, and acq_tick;
@@ -131,8 +141,8 @@ tick,time_s,raw_counts,rel_counts,e_interval_ticks,e_velocity_mm_s_derived
 Offline, on any PC with Python 3:
 
 ```bash
-python3 scripts/k2_pa_replay.py k2_load_cell_*.csv
-python3 scripts/k2_pa_replay.py --json --opt min_snr=6 k2_load_cell_*.csv
+python3 scripts/k2_pa_replay.py k2_load_cell_pa_*.csv
+python3 scripts/k2_pa_replay.py --json --opt min_snr=6 k2_load_cell_pa_*.csv
 ```
 
 Captures are grouped by their `flow=<mm/s>` label (set by `K2_PA_CALIBRATE`).
@@ -193,4 +203,4 @@ Run the steps in order, and stop at the first failure.
 7. `pa_calibration: experimental`, then `K2_PA_CALIBRATE POSITION_CONFIRMED=1`. Read the report; `APPLY` stays 0.
 8. Print a standard pressure advance test with the candidate and with a range around it. Only the printed result validates the value.
 
-**Rollback:** remove or comment out `[k2_load_cell]`, then `FIRMWARE_RESTART`. Nothing else was changed: the probe configuration, thresholds and filters are untouched.
+**Rollback:** remove or comment out `[k2_load_cell_pa]`, then `FIRMWARE_RESTART`. Nothing else was changed: the probe configuration, thresholds and filters are untouched.

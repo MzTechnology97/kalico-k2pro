@@ -3,7 +3,7 @@
 # Copyright (C) 2026  MzTechnology97
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-"""Shared by prtouch (probing) and k2_load_cell (APAX capture).
+"""Shared by prtouch (probing) and k2_load_cell_pa (APAX capture).
 
 The nozzle firmware packs every series (ticks, sensor counts, E-step
 intervals) the same way (prtouch_write_zip/prtouch_read_zip in the stock

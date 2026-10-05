@@ -4,9 +4,9 @@
 # Copyright (C) 2026  MzTechnology97
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-"""Pure Python, no Klipper imports: used by k2_load_cell and on a PC.
+"""Pure Python, no Klipper imports: used by k2_load_cell_pa and on a PC.
 
-Method (see docs/K2_Load_Cell.md):
+Method (see docs/K2_Load_Cell_PA.md):
 - each capture holds one E-only extrusion pulse at a known feed rate,
   with rest periods before and after;
 - the load signal after the pulse stops is fitted with
@@ -392,7 +392,7 @@ def _fmt(value):
 
 
 def load_capture_csv(path):
-    """Read a k2_load_cell CSV: metadata from '# key: value' lines."""
+    """Read a k2_load_cell_pa CSV: metadata from '# key: value' lines."""
     meta = {}
     rows = []
     with open(path, newline="") as stream:

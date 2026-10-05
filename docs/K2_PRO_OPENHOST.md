@@ -576,7 +576,7 @@ Cartographer uses the official [Cartographer3D plugin](https://github.com/Cartog
 
 Direct-USB Cartographer validation on the CM5 is the next probe milestone. Mixed mode is optional and should only be enabled after standalone Cartographer is stable.
 
-Optional: `[k2_load_cell]` records the nozzle load cell through the stock firmware's APAX stream (diagnostics, CSV, experimental pressure advance analysis). See [K2 load cell capture](K2_Load_Cell.md).
+Optional: `[k2_load_cell_pa]` records the nozzle load cell through the stock firmware's APAX stream (diagnostics, CSV, experimental pressure advance analysis). See [K2 load cell capture](K2_Load_Cell_PA.md).
 
 ## Power-loss recovery on the K2 Pro
 
