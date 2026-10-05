@@ -94,9 +94,9 @@ class MoonrakerDatabase:
 class LaneDataPublisher:
     """Keeps ``lane_data`` equal to the latest CFS slots, off the reactor."""
 
-    def __init__(self, database=None, log=logging.getLogger("box_lane_data")):
+    def __init__(self, database=None, log=None):
         self.database = database or MoonrakerDatabase()
-        self.log = log
+        self.log = log or logging.getLogger("box_lane_data")
         self._lock = threading.Lock()
         self._wanted = None
         self._published = None   # None until the namespace was read once

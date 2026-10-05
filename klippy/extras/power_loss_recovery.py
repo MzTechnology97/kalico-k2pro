@@ -1366,13 +1366,6 @@ class PowerLossRecovery:
         obj = self._exclude()
         return obj is not None and bool(obj.excluded_objects)
 
-    def _capture_exclude(self):
-        obj = self._exclude()
-        if obj is None:
-            return None
-        return {"objects": obj.objects,
-                "current": obj.current_object}
-
     def _restore_exclude(self, state):
         obj = self._exclude()
         if obj is None or state is None:

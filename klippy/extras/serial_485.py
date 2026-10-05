@@ -195,7 +195,6 @@ class LinkWatchdog:
         self.lock = threading.Lock()
         self.started = clock()
         self.last_ok = None
-        self.last_timeout = None
         self.consecutive = 0
         self.state = "unknown"
         self.lost_count = 0
@@ -208,7 +207,6 @@ class LinkWatchdog:
 
     def timeout(self):
         with self.lock:
-            self.last_timeout = self.clock()
             self.consecutive += 1
 
     def reset(self):
