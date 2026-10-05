@@ -40,7 +40,6 @@ exclude = ["./.github", "./.history", "./config", "./docs", "./lib", "./src"]
 # K2 / K2-OpenHost modules keep the style of the Jacob10383 K2 firmware they
 # are synced from (k2-pro-custom-firmware), so upstream syncs merge cleanly.
 extend-exclude = [
-  "klippy/extras/belt_mdl.py",
   "klippy/extras/box.py",
   "klippy/extras/box_*.py",
   "klippy/extras/chamber_heater_circulation_fan.py",
