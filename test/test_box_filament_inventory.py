@@ -354,3 +354,74 @@ def test_absent_startup_slot_requires_three_confirmations_before_cleanup(tmp_pat
     assert BoxStore(store.path).profile(1)["material"] == "PETG"
     box._reconcile_presence(1, 0)
     assert BoxStore(store.path).profile(1)["material"] == ""
+
+def test_external_rfid_slot_assignment_is_explicitly_clearable(tmp_path):
+    store = BoxStore(str(tmp_path / "filament_box.json"))
+    box = Box.__new__(Box)
+    box.store = store
+    box.drivers = {1: object()}
+    box.rfid_live_slots = set()
+    box.unknown_rfid = {
+        "external": {
+            "code": "05628",
+            "raw_code": "105628",
+            "fields": rfid_fields(),
+        }
+    }
+    box.spoolman_tokens = {"external": 7}
+
+    external = box.external_slot
+    store.set_profile("external", {
+        "material": "PLA",
+        "color": "#6C4E43",
+        "brand": "Bambulab",
+        "name": "Bambulab PLA Basic",
+        "target_temp": 215,
+        "pressure_advance": None,
+        "spoolman_id": None,
+        "filament_id": "05628",
+        "source": "rfid",
+        "rfid_code": "105628",
+    })
+
+    box.clear_slot_assignment(external)
+
+    assert BoxStore(store.path).profile("external")["material"] == ""
+    assert "external" not in box.unknown_rfid
+    assert box.spoolman_tokens["external"] == 8
+
+
+def test_slot_status_marks_only_external_rfid_profile_clearable(tmp_path):
+    store = BoxStore(str(tmp_path / "filament_box.json"))
+    box = Box.__new__(Box)
+    box.store = store
+    box.drivers = {1: object()}
+    box.rfid_live_slots = {1}
+    box.rfid_percent = {}
+    box.rfid_reported_percent = {}
+    box.rfid_spools = {}
+    box.unknown_rfid = {}
+
+    physical = 1
+    external = box.external_slot
+    for slot in (physical, "external"):
+        store.set_profile(slot, {
+            "material": "PLA",
+            "color": "#6C4E43",
+            "brand": "Bambulab",
+            "name": "Bambulab PLA Basic",
+            "target_temp": 215,
+            "pressure_advance": None,
+            "spoolman_id": None,
+            "filament_id": "05628",
+            "source": "rfid",
+            "rfid_code": "105628",
+        })
+
+    class Snap:
+        slot_mask = 1 << physical
+        loaded_slot = -1
+        loaded_mask = 0
+
+    assert box._slot_status(physical, Snap(), external=False)["profile_clearable"] is False
+    assert box._slot_status(external, Snap(), external=True)["profile_clearable"] is True
