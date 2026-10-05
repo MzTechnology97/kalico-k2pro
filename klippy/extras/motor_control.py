@@ -3405,6 +3405,13 @@ PROTECTION_QUERY_DATA = 11
 STALL_EVENT_MIN_INTERVAL = 0.100
 FAULT_CLEANUP_RETRY_DELAY = 0.100
 PROTECTION_POLL_INTERVAL = 60.0
+# K2-OpenHost: when every startup attempt failed (RS-485 down when Klipper
+# started), the startup is tried again while idle, backing off from
+# STARTUP_RECOVERY_MIN to STARTUP_RECOVERY_MAX seconds, and at once on
+# serial_485:link_restored. The original code stayed failed until
+# MOTOR_RETRY_STARTUP or a Klipper restart.
+STARTUP_RECOVERY_MIN = 30.0
+STARTUP_RECOVERY_MAX = 300.0
 # Protection data stays current across one missed periodic poll: two poll
 # intervals plus the worst-case time of one poll round (every axis, each with
 # DEFAULT_ATTEMPTS tries of MOTOR_COMMAND_TIMEOUT). 126 s with today's values.
@@ -3536,6 +3543,11 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self._startup_auto_retry_count = 0
         self._startup_allow_auto_retry = True
         self._startup_timer = self.reactor.register_timer(self._startup_handler)
+        self._startup_recovery_timer = self.reactor.register_timer(
+            self._startup_recovery_handler)
+        self._startup_recovery_delay = STARTUP_RECOVERY_MIN
+        self._startup_recovery_active = False
+        self._startup_recovery_attempts = 0
         self.protection_validity = ProtectionValidity(
             ALL_AXES, PROTECTION_STALE_AFTER)
         self.override_policy = self.config_model.override_policy
@@ -3561,6 +3573,8 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             "klippy:shutdown", self._handle_shutdown)
         self.printer.register_event_handler(
             "serial_485:ready", self._handle_serial485_ready)
+        self.printer.register_event_handler(
+            "serial_485:link_restored", self._handle_serial485_link_restored)
         self.stall_monitor.initialize()
 
         self._register_commands()
@@ -4375,9 +4389,17 @@ class MotorControl(MotorControlDebugSurfaceMixin):
                 self.reactor.monotonic() + PROTECTION_POLL_INTERVAL)
             self.temp_sensors.start()
             _klog("startup complete")
-            self.gcode.respond_info(
-                "Motor control startup succeeded on attempt %d."
-                % (self._startup_auto_retry_count + 1,))
+            if self._startup_recovery_active:
+                self.gcode.respond_info(
+                    "Motor control startup succeeded after the RS-485 link "
+                    "came back (recovery attempt %d)."
+                    % (self._startup_recovery_attempts,))
+            else:
+                self.gcode.respond_info(
+                    "Motor control startup succeeded on attempt %d."
+                    % (self._startup_auto_retry_count + 1,))
+            self._startup_recovery_active = False
+            self._startup_recovery_delay = STARTUP_RECOVERY_MIN
             return self.reactor.NEVER
         step_name, step_fn = steps[self._startup_step_index]
         try:
@@ -4418,15 +4440,56 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             self._startup_complete = True
             self.is_ready = False
             self.motor_params_init = False
-            try:
-                self.gcode.respond_raw(
-                    "!! motor control %s %s"
-                    % (attempt_label, failure))
-            except Exception:
-                _klog(
-                    "failed emitting final startup failure warning",
-                    level=logging.exception)
+            if not self._startup_recovery_active:
+                # Repeated recovery failures stay in the log only.
+                try:
+                    self.gcode.respond_raw(
+                        "!! motor control %s %s. Retrying while idle, and at "
+                        "once when the RS-485 link comes back."
+                        % (attempt_label, failure))
+                except Exception:
+                    _klog(
+                        "failed emitting final startup failure warning",
+                        level=logging.exception)
+            self._schedule_startup_recovery()
             return self.reactor.NEVER
+
+    # K2-OpenHost: bounded startup recovery after every attempt failed.
+    def _startup_failed(self):
+        return (self._startup_complete and not self.is_ready
+                and not self.printer.is_shutdown())
+
+    def _startup_recovery_idle(self):
+        print_stats = self.printer.lookup_object("print_stats", None)
+        state = getattr(print_stats, "state", None)
+        return state not in ("printing", "paused") and not self.is_homing
+
+    def _schedule_startup_recovery(self, delay=None):
+        if delay is None:
+            delay = self._startup_recovery_delay
+            self._startup_recovery_delay = min(
+                STARTUP_RECOVERY_MAX, self._startup_recovery_delay * 2)
+        self.reactor.update_timer(
+            self._startup_recovery_timer, self.reactor.monotonic() + delay)
+
+    def _startup_recovery_handler(self, eventtime):
+        if not self._startup_failed():
+            return self.reactor.NEVER
+        if not self._startup_recovery_idle():
+            return eventtime + STARTUP_RECOVERY_MIN
+        self._startup_recovery_active = True
+        self._startup_recovery_attempts += 1
+        _klog("startup recovery attempt %d", self._startup_recovery_attempts)
+        # One attempt; a failure lands in the final branch, which schedules
+        # the next recovery with a longer delay.
+        self._begin_startup(force=True, allow_auto_retry=False)
+        return self.reactor.NEVER
+
+    def _handle_serial485_link_restored(self, *args):
+        if not self._startup_failed():
+            return
+        self._startup_recovery_delay = STARTUP_RECOVERY_MIN
+        self._schedule_startup_recovery(delay=1.0)
 
     @staticmethod
     def _format_startup_failure(step_name: str, exc: Exception) -> str:
@@ -4507,6 +4570,7 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         self.temp_sensors.stop()
         for timer in (
                 self._startup_timer,
+                self._startup_recovery_timer,
                 self._fault_cleanup_timer,
                 self._protection_poll_timer):
             self.reactor.update_timer(timer, self.reactor.NEVER)

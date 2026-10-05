@@ -244,6 +244,14 @@ Hardware-backed metadata validation on `cubo.gcode` detected PETG tools T0/T1. W
 
 The CM5 can become ready before the K2 motor controllers. The OpenHost integration therefore uses an explicit startup delay plus multiple retries instead of treating the first missing response as a permanent failure. Hardware restart testing demonstrated successful recovery on later attempts.
 
+**When every attempt fails.** This happens, for example, when the RS-485 bridge behind the T113 is down while Klipper starts (`retries`, 8 by default, every `retry_delay` seconds). The earlier release then stayed failed until `MOTOR_RETRY_STARTUP` or a Klipper restart, with homing blocked. Now the startup is tried again:
+- at once when `serial_485` reports `RS-485 link restored`;
+- otherwise every 30 s, doubling up to 5 minutes, one attempt each. The motors send no traffic while failed, so without this nobody would notice the bus coming back unless a CFS rediscovery talks to it.
+
+It runs only while idle (not printing or paused, not homing) and never after a shutdown. Only the first final failure is shown in the console; later recovery failures go to the log. A recovered startup says `Motor control startup succeeded after the RS-485 link came back`. `MOTOR_RETRY_STARTUP` still works as before.
+
+Keep this patch on upstream syncs of `motor_control.py`: look for `STARTUP_RECOVERY_MIN`, `_startup_recovery_handler` and `_handle_serial485_link_restored`.
+
 The production transport must have exactly one owner per UART/gadget endpoint. A duplicate GS2 bridge was discovered during the experimental Cartographer multiplexing work and caused RS-485 instability; after returning to a single bridge, motor-control operation returned to normal.
 
 ## Losing a serial link behind the T113
