@@ -3270,6 +3270,7 @@ class Box:
             "fingerprint": fingerprint,
             "total_mm": total_mm,
             "remaining_mm": remaining_mm,
+            "generic_serial": self._generic_rfid_serial(fields),
         }
         if total_mm and remaining_mm is not None:
             self.rfid_percent[slot] = 100.0 * remaining_mm / total_mm
@@ -3302,6 +3303,14 @@ class Box:
             return
         self.rfid_reported_percent[slot] = value
         spool = self.rfid_spools.get(slot)
+        if spool and spool.get("generic_serial"):
+            # K2-OpenHost: on spools whose tag was applied by hand (no serial)
+            # the CFS value does not track the filament: measured on the
+            # development K2 Pro, a nearly empty spool reported 99 and a new
+            # one 1 (the CFS likely derives it from the tag's rotation, which
+            # depends on where the tag sits). It stays visible as the raw
+            # rfid_reported_percent; the estimate follows the filament used.
+            return
         if not spool or not spool.get("total_mm"):
             self.rfid_percent[slot] = float(value)
             return

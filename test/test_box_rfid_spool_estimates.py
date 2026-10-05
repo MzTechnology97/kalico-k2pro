@@ -164,3 +164,24 @@ def test_spool_new_refusals(tmp_path):
     box._remember_rfid_spool(3, GREY_PLA)
     with pytest.raises(BoxError):
         box.cmd_rfid_spool_new(SpoolGcmd({"SLOT": 3}))  # feeding the print
+
+
+def test_cfs_reported_value_is_ignored_for_hand_applied_tags(tmp_path):
+    # Measured: a nearly empty hand-tagged spool reported 99, a new one 1.
+    box = spool_box(tmp_path)
+    box._remember_rfid_spool(3, GREY_PLA)
+    box._apply_reported_remaining(3, 1)
+    assert box.rfid_percent[3] == 100.0
+    assert box.rfid_reported_percent[3] == 1  # still visible as raw value
+    box._remember_rfid_spool(1, GREY_PLA)
+    use(box, 1, 1059.0)
+    box._apply_reported_remaining(1, 99)
+    assert box.rfid_percent[1] == pytest.approx(0.321, abs=1e-3)
+
+
+def test_cfs_reported_value_still_caps_tags_with_a_serial(tmp_path):
+    box = spool_box(tmp_path)
+    box._remember_rfid_spool(1, dict(GREY_PLA, number="123456"))
+    box.rfid_spools[1]["remaining_mm"] = FULL_MM
+    box._apply_reported_remaining(1, 40)
+    assert box.rfid_percent[1] == pytest.approx(40.0)

@@ -184,6 +184,7 @@ How the estimate is kept now:
 - **Physical CFS slots, tag without serial:** the estimate belongs to the bay occupancy.
   - While the spool stays in the bay (restart, manual reread), its estimate is kept.
   - Once it is removed, its estimate is dropped. The next tag read, which the CFS makes on every insertion, starts a new estimate at 100% in any slot (or lower, if the CFS reports a lower remaining).
+- **The CFS's own remaining value** (`rfid_reported_percent`) is ignored for tags without a serial. These are usually tags applied by hand, and on the development K2 Pro a nearly empty spool reported 99 and a new one 1. The CFS probably derives the value from the tag's rotation, so the tag position matters. The value stays visible as raw data; the estimate follows the filament actually used.
 - **Tag with a real serial:** the estimate still follows the spool across slots.
 - **External spool reader:** it has no removal event, so it keeps the earlier behaviour.
 
