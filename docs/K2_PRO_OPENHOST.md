@@ -38,6 +38,19 @@ Use the `by-id` names (full form in `config/k2/printer.cfg`), not `/dev/ttyUSB0/
 - With `ttyUSBn` names, `FIRMWARE_RESTART` then fails until Klipper is stopped and the gadget re-enumerated. With `by-id`, it reconnects.
 - Measured in the [USB bridge tests](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/USB_BRIDGE.md).
 
+### CFS discovery when RS-485 is down at startup
+
+Jacob's `Box` enumerates the CFS units once, when `serial_485` becomes ready. If the RS-485 bridge behind the T113 is down at that moment, no unit answers. The original code then kept an empty unit list until a manual `RESTART`, and `[BOX]: SLOT must select a physical CFS slot` refused every slot command.
+
+K2-OpenHost retries discovery while no CFS is known:
+- every 30 s, doubling up to 5 minutes;
+- at once when `serial_485` reports `RS-485 link restored`;
+- only while idle: not printing or paused, no CFS operation running, not shut down.
+
+When a unit answers, the console says `CFS found after the RS-485 link came back`, and the T-commands and status appear without a restart. Units present at startup are never re-enumerated by this path.
+
+Keep this patch when syncing `box.py` from upstream: look for `REDISCOVERY_MIN`, `_rediscover` and `_link_restored`. Tests are in `test/test_box_openhost_fixes.py`.
+
 On the printer side the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) runs these three bridges from the T113's slot B at every boot, installed from the [K2-OpenHost Installer Helper](https://github.com/MzTechnology97/k2-openhost-installer-helper). It was prepared on stock firmware 1.1.0.94 and is not yet hardware-validated.
 
 The earlier Cartographer MUX/DEMUX experiment is not the final topology. It carried live Cartographer MCU traffic, but reset/re-enumeration and PTY lifecycle add unnecessary complexity. The three gadget serial channels are now reserved for the original K2 buses.
