@@ -35,12 +35,15 @@ def make(print_state="standby"):
     m = mc.MotorControl.__new__(mc.MotorControl)
     m.reactor = Reactor()
     m.raw, m.info, m.begins = [], [], []
-    m.gcode = SimpleNamespace(respond_raw=m.raw.append, respond_info=m.info.append)
+    m.gcode = SimpleNamespace(
+        respond_raw=m.raw.append, respond_info=m.info.append
+    )
     m.print_stats = SimpleNamespace(state=print_state)
     m.shutdown = False
     m.printer = SimpleNamespace(
         lookup_object=lambda name, default=None: (
-            m.print_stats if name == "print_stats" else default),
+            m.print_stats if name == "print_stats" else default
+        ),
         is_shutdown=lambda: m.shutdown,
     )
     m.is_homing = False
@@ -53,7 +56,8 @@ def make(print_state="standby"):
     m._startup_step_index = 0
     m._startup_error = ""
     m._startup_allow_auto_retry = True
-    m._startup_auto_retry_count = 8  # the budget is spent: next failure is final
+    # the retry budget is spent: the next failure is final
+    m._startup_auto_retry_count = 8
     m._startup_recovery_timer = "recovery"
     m._startup_recovery_delay = mc.STARTUP_RECOVERY_MIN
     m._startup_recovery_active = False
@@ -61,8 +65,9 @@ def make(print_state="standby"):
     m._protection_poll_timer = "poll"
     m.temp_sensors = SimpleNamespace(start=lambda: None)
     m._startup_steps = lambda: [("serial_target_discovery", failing_step)]
-    m._begin_startup = lambda force=False, allow_auto_retry=True: m.begins.append(
-        (force, allow_auto_retry))
+    m._begin_startup = lambda force=False, allow_auto_retry=True: (
+        m.begins.append((force, allow_auto_retry))
+    )
     return m
 
 
@@ -101,7 +106,8 @@ def test_recovery_waits_while_printing_or_homing():
     m = make(print_state="printing")
     m._startup_handler(m.reactor.now)
     assert m._startup_recovery_handler(m.reactor.now) == (
-        m.reactor.now + mc.STARTUP_RECOVERY_MIN)
+        m.reactor.now + mc.STARTUP_RECOVERY_MIN
+    )
     m.print_stats.state = "standby"
     m.is_homing = True
     m._startup_recovery_handler(m.reactor.now)
