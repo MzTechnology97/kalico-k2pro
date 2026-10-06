@@ -2643,6 +2643,10 @@ class Box:
             "box %d RFID slot mask" % address)
         if not (presence.value & (1 << local)):
             raise gcmd.error("[BOX]: T%d has no spool present" % slot)
+        if self._rfid_reread_blocked(slot):
+            raise gcmd.error(
+                "[BOX]: T%d is loaded toward the printhead; unload it first "
+                "(BOX_UNLOAD), then reread its tag" % slot)
         applied = self._force_rfid_results(
             address, driver, 1 << local, "manual T%d reread" % slot)
         if slot not in applied:
@@ -2650,6 +2654,19 @@ class Box:
                 "[BOX]: RFID reread for T%d did not return a valid tag record; retry the slot read" % slot)
         self._read_rfid_remaining(slot)
         self._info(gcmd, "RFID reread complete for T%d" % slot)
+
+    def _rfid_reread_blocked(self, slot):
+        """True when slot's filament is loaded toward the printhead.
+
+        A reread makes the CFS pull the filament back past its reader. With
+        the filament out in the feed path and held by the printhead gears,
+        the hub motor stalls: a forced reread of a loaded slot on the
+        reference printer ended in UNLOAD_MOTOR_BLOCKED. Same rule as the
+        slot's "loaded" status (loaded slot, or fed out per loaded_mask).
+        """
+        snap = self.snapshot
+        return snap.loaded_slot == slot or bool(
+            (snap.loaded_mask or 0) & (1 << slot))
 
     def cmd_info_refresh(self, gcmd):
         address = gcmd.get_int(
@@ -2671,6 +2688,13 @@ class Box:
                 driver.query_slot_mask(timeout=0.5),
                 "box %d RFID refresh slot mask" % current)
             selected = mask & int(presence.value) & ((1 << SLOTS_PER_BOX) - 1)
+            for local in range(SLOTS_PER_BOX):
+                slot = (current - 1) * SLOTS_PER_BOX + local
+                if selected & (1 << local) and self._rfid_reread_blocked(slot):
+                    selected &= ~(1 << local)
+                    self._info(
+                        gcmd, "T%d is loaded toward the printhead: its tag "
+                        "is not reread" % slot)
             if not selected:
                 continue
             applied = self._force_rfid_results(
