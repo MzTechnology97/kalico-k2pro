@@ -102,6 +102,7 @@ Add to `printer.cfg` (or uncomment in `config/k2/prtouch.cfg`), then run `FIRMWA
 #pa_pulse_time: 0.25     # seconds per pulse: keep it under ~2 mm of filament
 #pa_rest_time: 1.5       # seconds of rest before and after
 #pa_replicates: 3
+#pa_warmup: 1            # uncaptured pulses before the first capture (WARMUP=)
 #pa_max_filament: 150    # mm, refused above this
 #pa_purge_gcode:         # custom moves to the purge spot; overrides the box
 #pa_box: auto            # auto/yes/no: use [box] for the wastebin and cleaning
@@ -249,6 +250,9 @@ Switch the heaters off before restarting the Klipper service: with the nozzle he
 | 6–7 again, `pa_flows: 5, 8`, `pa_pulse_time: 0.25`, `pa_rest_time: 1.5`, **225 °C** | All 6 fits accepted, R² 0.977-0.992, fast share 62-76 %. 5 mm/s: τ₁ 0.0365 / 0.0285 / 0.0285 s (median 0.0285, spread 28 %). 8 mm/s: τ₁ 0.0252 / 0.0310 / 0.0350 s (median 0.0310, spread 32 %). Feed-rate ratio 1.09. No candidate only because the spread is over 25 %. Median of all twelve fast components at 215 and 225 °C: **~0.030 s**. |
 | 8. Printed test, 225 °C | OrcaSlicer pressure advance line test, Bambu PLA Basic @K2. Coarse pass 0.020-0.060 (step 0.005, printed at 231 °C): 0.020-0.025 bulge at the end of the fast segment, 0.055-0.060 thin out, 0.035-0.045 most even. **Fine pass 0.030-0.052 (step 0.002) at 225 °C: best line about 0.032**; from about 0.044 up the transitions visibly pinch. The calibration's candidate is **0.0297** (with the 35 % spread limit; at 25 % it gave none): 0.002 from the print. A hand-tuned 0.049 used so far was too high for this line test. |
 | "Timer too close" after the run | The analysis took 0.27 s of pure Python on the reactor; the nozzle firmware printed the line right after each report. It now runs in a thread: three analyses and two test prints since then added no line. Still to confirm after a full calibration. |
+
+| PETG-CF (Generic, slot 1), 250 °C, before the warm-up pulse | All 6 fits accepted (R² 0.956-0.988), noise ~800 counts, 0 gaps, no new "Timer too close" (the threaded analysis is confirmed on a full run). 5 mm/s: τ₁ 0.0285 / 0.0214 / 0.0206 s (spread 37 %, rejected). 8 mm/s: 0.0242 / 0.0232 / 0.0252 s (median 0.0242, spread 8 %). Median of all six 0.0237; about 0.023 without the first capture. Printed test pending. |
+| First capture of a run | In both runs at 225/250 °C the first capture read highest (PLA 0.0365 against 0.0285 / 0.0285; PETG-CF 0.0285 against 0.0214 / 0.0206): it starts from another nozzle state (a cleaning or a retract done before the run). `pa_warmup` (default 1) now extrudes one uncaptured pulse, cleaned like the others, before the first capture. |
 
 Note on the CFS: `T0` at print start sets the nozzle to the file's `nozzle_temperature`, not to `START_PRINT EXTRUDER_TEMP`: the coarse test was sliced at 230 °C and printed at 231 °C although the start macro asked for 220.
 
