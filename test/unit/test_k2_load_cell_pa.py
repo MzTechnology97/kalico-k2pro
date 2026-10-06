@@ -763,7 +763,11 @@ def steps(printer):
 
 def test_box_wastebin_and_clean_after_each_capture(tmp_path, monkeypatch):
     printer, lc = make(
-        tmp_path, pa_calibration="experimental", pa_warmup=0, pa_prime=0
+        tmp_path,
+        pa_calibration="experimental",
+        pa_reprime=1.2,
+        pa_warmup=0,
+        pa_prime=0,
     )
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
@@ -930,7 +934,9 @@ def test_analysis_runs_off_the_reactor_thread(tmp_path, monkeypatch):
 def test_warmup_pulse_is_cleaned_and_not_captured(tmp_path, monkeypatch):
     # K2 Pro bench: the first capture of a run read 25-30 % higher than the
     # next ones; an uncaptured pulse first gives every replicate the same start
-    printer, lc = make(tmp_path, pa_calibration="experimental", pa_prime=0)
+    printer, lc = make(
+        tmp_path, pa_calibration="experimental", pa_reprime=1.2, pa_prime=0
+    )
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
     lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5,8", "REPLICATES": 1}))
@@ -1063,7 +1069,9 @@ def test_slot_and_save_need_box_profiles(tmp_path):
 def test_priming_purge_fills_the_nozzle_first(tmp_path, monkeypatch):
     # K2 Pro bench: a slot left loaded after a print gave a quarter of the
     # usual force, growing capture after capture: the nozzle was not full
-    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
+    printer, lc = make(
+        tmp_path, pa_calibration="experimental", pa_reprime=1.2, pa_warmup=0
+    )
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
     lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5", "REPLICATES": 1}))
@@ -1086,3 +1094,19 @@ def test_priming_purge_fills_the_nozzle_first(tmp_path, monkeypatch):
     printer.gcode.scripts.clear()
     lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5", "REPLICATES": 1, "PRIME": 0}))
     assert not any(s.startswith("G1 E20") for s in printer.gcode.scripts)
+
+
+def test_reprime_default_covers_the_ooze_and_can_be_set(tmp_path, monkeypatch):
+    # K2 Pro bench, PETG-CF 250 C: with 1.2 mm the nozzle emptied over the
+    # run (pulse force 28 500 -> 7 000 counts in four captures)
+    printer, lc = make(
+        tmp_path, pa_calibration="experimental", pa_warmup=0, pa_prime=0
+    )
+    printer.box = Box(printer.gcode)
+    fake_captures(lc, monkeypatch, printer)
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5,8", "REPLICATES": 1}))
+    assert "G1 E3.0000 F120" in printer.gcode.scripts
+    printer.gcode.scripts.clear()
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5,8", "REPLICATES": 1, "REPRIME": 2}))
+    assert "G1 E2.0000 F120" in printer.gcode.scripts
+    assert "G1 E3.0000 F120" not in printer.gcode.scripts
