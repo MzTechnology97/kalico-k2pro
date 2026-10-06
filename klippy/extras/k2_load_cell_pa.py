@@ -989,7 +989,7 @@ class K2LoadCell:
             replicates,
             self.pa_pulse_time,
             self.pa_rest_time,
-            reprime if cleaner and clean == "capture" else 0.0,
+            reprime if cleaner else 0.0,
             warmup,
             prime,
         )
@@ -1015,10 +1015,11 @@ class K2LoadCell:
         try:
             run("M83")
             if plan.prime:
-                # fill the nozzle, then clean it like after a capture
+                # fill the nozzle, then clean it in any cleaning mode: the
+                # purge blob must not hang on the nozzle during the captures
                 run("G1 E%.4f F%.1f" % (plan.prime, PRIME_SPEED * 60.0))
                 toolhead.wait_moves()
-                if cleaner is not None and clean == "capture":
+                if cleaner is not None:
                     cleaner()
                     primed = not plan.reprime
                 else:
