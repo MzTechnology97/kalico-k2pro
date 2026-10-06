@@ -7,6 +7,7 @@ Passing tests prove the analysis code, not the accuracy on a real K2.
 import math
 import pathlib
 import random
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -205,3 +206,59 @@ def test_without_clock_any_interval_counts():
     ]
     events = a.find_extrusion_events(cap["times"], cap["espds"])
     assert abs(events[0][0] - 0.0) < 0.002
+
+
+def two_component(tau1=0.03, tau2=0.4, share=0.6, seed=1, after=1.5):
+    """Pulse whose decay has a fast and a slow part, as on the K2 Pro."""
+    rng = random.Random(seed)
+    rest, pulse, step = 0.8, 0.3, 6000.0
+    times, values, espds = [], [], []
+    n = int((rest + pulse + after) * RATE)
+    for i in range(n):
+        t = i / RATE
+        if t < rest:
+            y, e = 0.0, 0
+        elif t < rest + pulse:
+            y, e = step, -40000
+        else:
+            dt = t - rest - pulse
+            y = step * (
+                share * math.exp(-dt / tau1)
+                + (1 - share) * math.exp(-dt / tau2)
+            )
+            e = 0
+        values.append(int(120000 + y + rng.gauss(0, 20.0)))
+        times.append(t)
+        espds.append(e)
+    return {"times": times, "values": values, "espds": espds}
+
+
+def test_fast_component_is_separated_from_the_slow_tail():
+    for tau1, tau2 in ((0.03, 0.4), (0.045, 0.2)):
+        r = a.analyze_capture(two_component(tau1, tau2))
+        assert r["accepted"], r
+        assert abs(r["tau"] - tau1) / tau1 < 0.1
+        fit = r["events"][0]["decay"]
+        assert abs(fit["tau2"] - tau2) / tau2 < 0.25
+    # one exponential mixes the two and overestimates the fast part
+    one = a.analyze_capture(two_component(), {"model": "first_order_lag"})
+    assert one["tau"] > 0.05
+
+
+def test_fast_component_needs_enough_data_after_the_stop():
+    r = a.analyze_capture(two_component(after=0.3))
+    assert not r["accepted"]
+    assert any("fit window" in x for e in r["events"] for x in e["reasons"])
+
+
+def test_report_names_the_model_and_the_components():
+    caps = [two_component(seed=s) for s in (1, 2, 3)]
+    for cap in caps:
+        cap["flow"] = 5.0
+    text = a.format_pa_report(a.analyze_pa_captures(caps))
+    assert "model fast_component" in text
+    assert "fast share" in text
+    tau1 = [float(x.split()[0]) for x in re.findall(r"tau1 (\S+) s", text)]
+    assert len(tau1) == 3 and all(abs(v - 0.03) < 0.003 for v in tau1)
+    cand = float(re.search(r"candidate pressure_advance (\S+)", text).group(1))
+    assert abs(cand - 0.03) < 0.003

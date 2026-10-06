@@ -695,7 +695,9 @@ def test_apply_only_with_a_valid_candidate(tmp_path, monkeypatch):
         "candidate": {"ok": False, "reasons": ["no data"], "candidate": None},
     }
     monkeypatch.setattr(
-        k2_load_cell_pa.analysis, "analyze_pa_captures", lambda c: result
+        k2_load_cell_pa.analysis,
+        "analyze_pa_captures",
+        lambda c, o=None: result,
     )
     gcmd = GCmd({"POSITION_CONFIRMED": 1, "APPLY": 1, "REPLICATES": 1})
     lc.cmd_PA_CALIBRATE(gcmd)
@@ -744,7 +746,7 @@ def fake_captures(lc, monkeypatch, printer):
     monkeypatch.setattr(
         k2_load_cell_pa.analysis,
         "analyze_pa_captures",
-        lambda c: {
+        lambda c, o=None: {
             "per_capture": {},
             "groups": {},
             "candidate": {"ok": False, "reasons": ["x"], "candidate": None},
