@@ -874,3 +874,18 @@ def test_command_names_are_valid_klipper_names(tmp_path):
         "LOAD_CELL_PA_CALIBRATE",
         "LOAD_CELL_STOP",
     ]
+
+
+def test_pause_inside_the_settle_window_is_not_a_gap(tmp_path):
+    # Seen on the K2 Pro: the CS1237 pauses a few ms while it is
+    # reconfigured after start (57 of ~64 settle samples arrived).
+    printer, lc = make(tmp_path, settle_time=0.05)
+    session = lc.start_capture(1.0)
+    start = clock_now(printer)
+    period = int(FREQ / 1280)
+    early = [start + i * period for i in range(5)]
+    rest = [early[-1] + 8 * period + i * period for i in range(120)]
+    printer.mcu.block(early + rest, [5] * 125, [0] * 125)
+    run_process(printer, lc)
+    assert session.gaps == 0
+    assert session.settle_dropped > 0

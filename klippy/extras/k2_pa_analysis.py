@@ -30,6 +30,10 @@ CS1237_GAINS = {0: 1, 1: 2, 2: 64, 3: 128}
 
 DEFAULTS = {
     "baseline_time": 0.25,  # s of rest used as baseline before the pulse
+    # Longest E step interval that counts as extrusion. Klipper queues steps
+    # up to ~2 s ahead, so the first step of a pulse is pending (interval of
+    # seconds) long before the extruder turns.
+    "max_step_interval": 0.05,  # s
     "fit_window": 0.6,  # s after the pulse stop
     "min_snr": 8.0,  # fitted amplitude / baseline noise
     "min_r2": 0.85,
@@ -119,15 +123,17 @@ def series_stats(times, values, baseline_time=DEFAULTS["baseline_time"]):
 # --- extrusion events and fits -------------------------------------------------
 
 
-def find_extrusion_events(times, espds, max_gap=0.02):
-    """Intervals where the E stepper had steps pending (espd != 0).
+def find_extrusion_events(times, espds, max_gap=0.02, max_interval=None):
+    """Intervals where the E stepper was stepping.
 
-    Short holes (<= max_gap s) inside a pulse are merged.
+    A sample counts when its E interval is non-zero and, with max_interval
+    (MCU ticks), no longer than that: a longer one is a step still pending
+    before the move starts. Short holes (<= max_gap s) are merged.
     """
     events = []
     start = last = None
     for t, e in zip(times, espds):
-        if e:
+        if e and (max_interval is None or abs(e) <= max_interval):
             if start is None:
                 start = t
             elif t - last > max_gap:
@@ -210,7 +216,11 @@ def analyze_capture(capture, opts=None):
         out["reasons"].append("sensor saturated")
     if stats["noise"] is None:
         out["reasons"].append("no baseline before the pulse")
-    events = find_extrusion_events(times, capture["espds"])
+    clock = capture.get("clock_freq")
+    max_interval = o["max_step_interval"] * clock if clock else None
+    events = find_extrusion_events(
+        times, capture["espds"], max_interval=max_interval
+    )
     if len(events) != 1:
         out["reasons"].append(
             "expected one extrusion pulse, found %d" % len(events)
@@ -412,7 +422,15 @@ def load_capture_csv(path):
         "times": [float(r["time_s"]) for r in rows],
         "values": [int(r["raw_counts"]) for r in rows],
         "espds": [int(r["e_interval_ticks"]) for r in rows],
+        "clock_freq": _float_or_none(meta.get("clock_freq")),
     }
+
+
+def _float_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def capture_flow(meta):
