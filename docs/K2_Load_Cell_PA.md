@@ -2,7 +2,7 @@
 
 `[k2_load_cell_pa]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
 
-Status: the software is tested offline only. Neither the capture on the printer nor the pressure advance result has been validated yet; the [hardware procedure](#hardware-validation-procedure) lists what is left.
+Status: capture validated on the K2 Pro on 2026-10-06 (steps 1, 2, 4 and 5 of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). The pressure advance result is not validated yet.
 
 ## Why APAX
 
@@ -28,13 +28,14 @@ Labels used below:
 | The partial block at stop is not sent | PROVEN | `command_stop_prtouch_apax` only clears `acq_tick` |
 | With the CS1237 (no analog ADC), `acq_tick` only enables the task; the rate is the sensor's (`cfg_regs`) | PROVEN | The `acq_tick` timing gate applies only when `use_adcx != 0` |
 | `espds` = signed interval between queued E steps in MCU ticks, 0 when no steps are pending | PROVEN | `step_prtouch_get_ivt` in `src/stepper.c` |
-| Positive extrusion gives a positive `espds` with an inverted dir pin (`!nozzle_mcu:PB4`) | INFERRED, TO VERIFY | The MCU negates when the queued direction bit is set; Klipper applies the dir pin inversion to that bit |
+| A step that is queued but not yet due also shows: Klipper queues steps up to ~2 s ahead, so before a pulse `espds` holds the first step's interval from the previous E step (seconds, about 0 mm/s) | PROVEN | Printer, 2026-10-06: 775 808 434 ticks (6.5 s) for the whole rest before a `G1 E10` |
+| Positive extrusion gives a positive `espds` with an inverted dir pin (`!nozzle_mcu:PB4`) | PROVEN | Printer, 2026-10-06: `G1 E10 F180` gives +3.00 mm/s derived |
 | `espds` is commanded, not measured: it says nothing about real filament motion (slip, grinding) | PROVEN | Source of `step_prtouch_get_ivt` |
 | During the sensor reconfiguration after start, the firmware still records conversions made with the previous setting | PROVEN | `pres_csx_w_cfg` returns the conversion it reads while writing the configuration |
 | Packing: count, 2-bit width codes, first value absolute, signed deltas; widths chosen on the int32 delta | PROVEN | `prtouch_write_zip`/`prtouch_read_zip` |
 | A tick just below 2^32 is sent in fewer than 4 bytes and must be sign-extended | INFERRED from the line above | Tested with the firmware-style encoder |
 | The nozzle firmware build behaves like the v71 object | INFERRED | Same dictionary formats. The image code was not compared instruction by instruction. |
-| Signal quality of this load cell while extruding | TO VERIFY | — |
+| Signal quality of this load cell while extruding | PROVEN | Printer, 2026-10-06: see [Results on the K2 Pro](#results-on-the-k2-pro) |
 
 Background reading, used as references and not copied:
 - [BD Pressure](https://github.com/markniu/bd_pressure) `72e91d3` (`klipper/bdpressure.py`, `firmware_src/Core/Src/pa.c`): the measuring principle only. Its ADS1220 scaling, thresholds and scores do not apply to the CS1237, and it disables the XY motors, which this module never does. Two problems noted in its host code: it can reuse `old_res` for a new candidate, and its removal of the first samples is wrong on short series.
@@ -211,11 +212,24 @@ Run the steps in order, and stop at the first failure.
    - Stop if Klipper reports `Timer too close` or MCU retransmits grow.
 3. Press the nozzle lightly by hand during a 3 s capture: the counts must change and come back.
 4. Probe still works: `G28 Z` or `PRTOUCH_HOME`, then a probe accuracy test, before and after captures.
-5. Nozzle hot, over the purge area: capture while extruding 10 mm at 3 mm/s.
-   - Confirm that `e_interval_ticks` is non-zero only during the move and that its sign gives positive `e_velocity_mm_s_derived`.
+5. Nozzle hot, over the purge area: capture while extruding at 3 mm/s.
+   - Confirm that `e_velocity_mm_s_derived` equals the feed rate during the move, with a positive sign.
+   - Before the move `e_interval_ticks` can already be non-zero, with an interval of seconds (about 0 mm/s): the first step is queued ahead. The analysis counts only intervals up to `max_step_interval` (50 ms) as extrusion.
+   - Keep pulses short and clean the nozzle between captures. A 10 mm pulse built a blob that reached the bottom of the wastebin and added a flat mechanical load (see the results).
    - If the sign is reversed, fix `e_dir_sign` before going on.
 6. Repeat step 5 three times, and at a second feed rate. The decay must be visible and repeatable.
 7. `pa_calibration: experimental`, then `LOAD_CELL_PA_CALIBRATE` (with the box) or `LOAD_CELL_PA_CALIBRATE POSITION_CONFIRMED=1` (without). Read the report; `APPLY` stays 0.
 8. Print a standard pressure advance test with the candidate and with a range around it. Only the printed result validates the value.
 
 **Rollback:** remove or comment out `[k2_load_cell_pa]`, then `FIRMWARE_RESTART`. Nothing else was changed: the probe configuration, thresholds and filters are untouched.
+
+## Results on the K2 Pro
+
+2026-10-06, development K2 Pro, nozzle firmware `1.1.0.48-293-g493f9a0f`, Kalico on the CM5 host, `cfg_regs` 60.
+
+| Step | Result |
+| --- | --- |
+| 1. Diagnostic | `available`; CS1237 1280 Hz nominal, gain 128; no late blocks. The first attempt failed at startup: Klipper refuses command names whose second character is a digit (`K2_…` parses as `K` with argument `2`). The commands are now `LOAD_CELL_…`. |
+| 2. Rest, nozzle cold | `complete`: 2505 samples in 1.95 s, **1283.8 Hz**; noise 210 counts, drift 76 counts/s; no decode, length or duplicate errors; no `Timer too close`; nozzle MCU retransmits unchanged. **Link load 11.7 kB/s, 51% of the 230400 baud link.** One gap was counted inside the 50 ms settle window, where the sensor pauses about 5 ms while it is reconfigured (57 samples dropped instead of ~64); gaps now count only in kept data. |
+| 4. Probe after captures | `PROBE_ACCURACY SAMPLES=5` at the center: range 0.0023 mm, standard deviation 0.0009 mm. |
+| 5. Extrusion, 215 °C PLA, 10 mm at 3 mm/s over the wastebin | `complete`, 8662 samples, 0 gaps, link load 13 kB/s. Derived velocity **+3.00 mm/s** for 3.34 s (3.33 s commanded). Load: rest 157 ± 800 counts; **~49 000 within 0.1 s** of the start, easing to ~33 000 at 0.9 s; then a rise to a **flat ~92 000 from 1.5 s to the stop**, the blob resting on the bottom of the wastebin. After the stop: 71 000 → 26 000 (0.1 s) → 14 000 (0.3 s) → 7 700 (1 s) → 5 000 (2 s). |

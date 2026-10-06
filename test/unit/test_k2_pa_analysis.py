@@ -177,3 +177,31 @@ def test_replay_script_on_csv(tmp_path, capsys):
     assert "candidate pressure_advance 0.04" in out
     assert "not validated" in out
     assert replay.main(files[:2]) == 1  # too few replicates
+
+
+def test_pending_step_before_the_pulse_is_not_extrusion():
+    # Seen on the K2 Pro: the first step of a queued move is pending (an
+    # interval of seconds) during the whole rest before the pulse.
+    cap = synthetic()
+    cap["espds"] = [
+        775808434 if t < 0.8 else e for t, e in zip(cap["times"], cap["espds"])
+    ]
+    cap["clock_freq"] = 120e6
+    events = a.find_extrusion_events(
+        cap["times"], cap["espds"], max_interval=0.05 * 120e6
+    )
+    assert len(events) == 1
+    assert abs(events[0][0] - 0.8) < 0.002
+    result = a.analyze_capture(cap)
+    assert result["stats"]["noise"] is not None
+    assert len(result["events"]) == 1
+    assert abs(result["events"][0]["start"] - 0.8) < 0.002
+
+
+def test_without_clock_any_interval_counts():
+    cap = synthetic()
+    cap["espds"] = [
+        775808434 if t < 0.8 else e for t, e in zip(cap["times"], cap["espds"])
+    ]
+    events = a.find_extrusion_events(cap["times"], cap["espds"])
+    assert abs(events[0][0] - 0.0) < 0.002

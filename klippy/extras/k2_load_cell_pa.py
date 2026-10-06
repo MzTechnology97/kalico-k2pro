@@ -141,7 +141,10 @@ class CaptureSession:
                 if tick64 <= last:
                     self.backwards += 1
                     continue
-                if gap_ticks and tick64 - last > gap_ticks:
+                # The sensor is reconfigured during the settle window and
+                # pauses for a few ms there: only gaps in kept data count.
+                settled = self.settle_clock is None or last >= self.settle_clock
+                if gap_ticks and settled and tick64 - last > gap_ticks:
                     self.gaps += 1
             last = tick64
             if self.settle_clock is not None and tick64 < self.settle_clock:
@@ -969,6 +972,7 @@ class K2LoadCell:
                             "times": session.times(),
                             "values": list(session.values),
                             "espds": list(session.espds),
+                            "clock_freq": session.clock_freq,
                             "meta": {"session": session.sid},
                         }
                     )
