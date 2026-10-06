@@ -98,7 +98,8 @@ Add to `printer.cfg` (or uncomment in `config/k2/prtouch.cfg`), then run `FIRMWA
 #max_files: 20
 #pa_calibration: disabled  # experimental enables LOAD_CELL_PA_CALIBRATE
 #pa_model: fast_component  # or first_order_lag (one exponential)
-#pa_flows: 5, 8          # mm/s of filament (2 mm/s is under the hot noise)
+#pa_flows: 5, 8          # mm/s of filament, only when no max flow is known
+#pa_flow_fractions: 0.2, 0.3, 0.4  # of the max volumetric flow (MAX_FLOW= or the slot profile)
 #pa_pulse_time: 0.25     # seconds per pulse: keep it under ~2 mm of filament
 #pa_rest_time: 1.5       # seconds of rest before and after
 #pa_replicates: 3
@@ -121,7 +122,7 @@ When the nozzle firmware lacks APAX, the section stays loaded but reports `unava
 | `LOAD_CELL_STOP` | Stops the running capture and prints its summary. |
 | `LOAD_CELL_DIAGNOSTIC` | Availability, sensor setting, link baud, blocks received outside a session, and the last summary. The summary has samples, effective rate, baseline, noise, drift, range, link load, and decode/length/stale/gap/duplicate counters. |
 | `LOAD_CELL_PA_ANALYZE [FILES=a.csv,b.csv]` | Runs the analysis on the last calibration or on CSV files from the output directory. Changes nothing. |
-| `LOAD_CELL_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] [POSITION_CONFIRMED=1] [CLEAN=capture\|end\|never] [APPLY=0]` | Experimental, disabled unless `pa_calibration: experimental`. See below. |
+| `LOAD_CELL_PA_CALIBRATE [SLOT=n] [TEMP=c] [SAVE=1] [MAX_FLOW=mm3/s] [FLOWS=a,b] [REPLICATES=3] [WARMUP=1] [POSITION_CONFIRMED=1] [CLEAN=capture\|end\|never] [APPLY=0]` | Experimental, disabled unless `pa_calibration: experimental`. See below and [Calibrating a filament profile](#calibrating-a-filament-profile). |
 
 `printer["k2_load_cell_pa"]` reports `available`, `unavailable_reason`, `state`, `session`, the last summary and `pa_calibration`.
 
@@ -204,6 +205,19 @@ With a `[box]` (CFS) and `pa_box: auto`, the filament never lands on the bed:
 4. Before the next pulse the 1.2 mm retract is pushed back (`pa_reprime`) and the nozzle rests for `pa_rest_time`, so the baseline does not contain that small extrusion.
 
 The cleaning never runs during a capture. `CLEAN=end` cleans once after the last capture, `CLEAN=never` skips it. `pa_purge_gcode` and `pa_clean_gcode` replace the box moves with your own macros.
+
+## Calibrating a filament profile
+
+With a `[box]` that keeps filament profiles (pressure advance and max flow per filament, kalico-k2pro `box/filament-pa-maxflow`), the calibration works on a slot's profile. Mainsail's **Calibrate PA** buttons on the CFS slots and in the filament library send this command.
+
+```text
+LOAD_CELL_PA_CALIBRATE SLOT=1 SAVE=1
+```
+
+- **`SLOT=n`:** loads the slot if another one is loaded (`BOX_SELECT_SLOT`), then heats to the profile's temperature (`TEMP=` overrides) with `M109`. Only this explicit request heats; without `SLOT` the command still never heats. Without `SLOT` the loaded slot is used.
+- **Feed rates:** without `FLOWS`, they are `pa_flow_fractions` (20, 30 and 40 %) of the maximum volumetric flow, divided by the filament cross-section. The max flow comes from `MAX_FLOW=` or the slot's profile (filament, material, or the OrcaSlicer generic value). Only without any max flow are `pa_flows` used. The report says which.
+  - Why: the K2 Pro bench matched the printed test at 24-40 % of the maximum flow (PETG-CF) and read 40 % low at 80-128 %.
+- **`SAVE=1`:** a valid candidate is stored in the slot's filament profile (the custom library filament and every slot that uses it, otherwise the slot profile) and applied. Without a valid candidate nothing is saved, and the report gives the reason.
 
 ## Hardware validation procedure
 

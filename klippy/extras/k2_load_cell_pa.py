@@ -28,6 +28,7 @@ Facts from the published prtouch_v3 object (docs/K2_Load_Cell_PA.md):
 
 import collections
 import logging
+import math
 import os
 import threading
 import time
@@ -270,6 +271,13 @@ class K2LoadCell:
         # nozzle; 2 mm or more of filament reaches the wastebin floor; the
         # slow part of the decay needs ~1.5 s of rest after the pulse.
         self.pa_flows = config.getfloatlist("pa_flows", (5.0, 8.0))
+        # With a known maximum volumetric flow (MAX_FLOW=, or the slot's
+        # filament profile) the feed rates are these fractions of it. K2 Pro
+        # bench: PETG-CF matched the printed test at 24-40 % of its maximum
+        # and read 40 % low at 80-128 %.
+        self.pa_flow_fractions = config.getfloatlist(
+            "pa_flow_fractions", (0.2, 0.3, 0.4)
+        )
         self.pa_pulse_time = config.getfloat(
             "pa_pulse_time", 0.25, above=0.0, maxval=5.0
         )
@@ -920,13 +928,25 @@ class K2LoadCell:
                 "k2_load_cell_pa: pressure advance calibration is disabled; set "
                 "pa_calibration: experimental in [k2_load_cell_pa] to try it"
             )
-        flows = [
-            float(v)
-            for v in gcmd.get(
-                "FLOWS", ",".join(str(f) for f in self.pa_flows)
-            ).split(",")
-            if v.strip()
-        ]
+        box_profiles = self._box_profiles()
+        slot = gcmd.get_int("SLOT", None, minval=0)
+        save = gcmd.get_int("SAVE", 0, minval=0, maxval=1)
+        if (slot is not None or save) and box_profiles is None:
+            raise gcmd.error(
+                "k2_load_cell_pa: SLOT and SAVE need a [box] with filament "
+                "profiles"
+            )
+        if box_profiles is not None:
+            if slot is not None:
+                self._prepare_slot(gcmd, box_profiles, slot)
+            else:
+                slot = self._loaded_slot(box_profiles)
+            if save and slot is None:
+                raise gcmd.error(
+                    "k2_load_cell_pa: SAVE=1 needs a loaded slot or SLOT="
+                )
+        flows, flow_note = self._calibration_flows(gcmd, box_profiles, slot)
+        gcmd.respond_info("k2_load_cell_pa: %s" % flow_note)
         replicates = gcmd.get_int(
             "REPLICATES", self.pa_replicates, minval=1, maxval=10
         )
@@ -1052,6 +1072,20 @@ class K2LoadCell:
         result = self._analyze(captures)
         gcmd.respond_info(analysis.format_pa_report(result))
         candidate = result["candidate"]
+        if save:
+            if candidate["ok"]:
+                where = box_profiles.save_slot_pressure_advance(
+                    slot, candidate["candidate"]
+                )
+                gcmd.respond_info(
+                    "k2_load_cell_pa: pressure advance %.4f saved in %s"
+                    % (candidate["candidate"], where)
+                )
+            else:
+                gcmd.respond_info(
+                    "k2_load_cell_pa: nothing saved: %s"
+                    % "; ".join(candidate.get("reasons") or ["no candidate"])
+                )
         if apply and candidate["ok"]:
             run("SET_PRESSURE_ADVANCE ADVANCE=%.4f" % candidate["candidate"])
             gcmd.respond_info(
@@ -1064,6 +1098,77 @@ class K2LoadCell:
                 "k2_load_cell_pa: no valid candidate; pressure advance unchanged "
                 "(%.4f)" % before.get("pressure_advance", 0.0)
             )
+
+    def _box_profiles(self):
+        """The [box] when it keeps filament profiles (PA, max flow), or None."""
+        box = self.printer.lookup_object("box", None)
+        if box is None or not hasattr(box, "slot_filament_settings"):
+            return None
+        return box
+
+    @staticmethod
+    def _loaded_slot(box):
+        snapshot = getattr(box, "snapshot", None)
+        slot = getattr(snapshot, "loaded_slot", None)
+        if slot is None:
+            slot = getattr(box, "last_loaded_slot", None)
+        if slot is None or not box.is_valid_slot(slot):
+            return None
+        return slot
+
+    def _prepare_slot(self, gcmd, box, slot):
+        """Load the slot if needed and heat to its profile temperature.
+
+        Only with SLOT=: an explicit request to calibrate that filament.
+        """
+        if not box.is_valid_slot(slot):
+            raise gcmd.error(
+                "k2_load_cell_pa: T%d is not an online slot" % slot
+            )
+        temp = gcmd.get_float("TEMP", None, minval=170.0, maxval=350.0)
+        if temp is None:
+            temp = box.slot_target_temp(slot)
+        if temp is None:
+            raise gcmd.error(
+                "k2_load_cell_pa: no temperature for T%d; pass TEMP=" % slot
+            )
+        run = self.gcode.run_script_from_command
+        if self._loaded_slot(box) != slot:
+            run("BOX_SELECT_SLOT SLOT=%d" % slot)
+        run("M109 S%d" % int(round(temp)))
+
+    def _calibration_flows(self, gcmd, box, slot):
+        """Feed rates in mm/s of filament, and how they were chosen."""
+        if gcmd.get("FLOWS", None) is not None:
+            flows = [
+                float(v) for v in gcmd.get("FLOWS").split(",") if v.strip()
+            ]
+            return flows, "feed rates from FLOWS"
+        max_flow = gcmd.get_float("MAX_FLOW", None, above=0.0, maxval=200.0)
+        source = "MAX_FLOW"
+        if max_flow is None and box is not None and slot is not None:
+            settings = box.slot_filament_settings(slot)
+            max_flow = settings.get("max_flow")
+            source = settings.get("max_flow_source") or "profile"
+        if not max_flow:
+            return list(self.pa_flows), "feed rates from pa_flows (no max flow)"
+        extruder = self.printer.lookup_object("extruder", None)
+        area = getattr(extruder, "filament_area", None) or (math.pi * 0.875**2)
+        flows = [
+            round(max_flow * fraction / area, 2)
+            for fraction in self.pa_flow_fractions
+        ]
+        return flows, (
+            "feed rates %s mm/s: %s of max flow %g mm3/s (%s)"
+            % (
+                ", ".join("%g" % f for f in flows),
+                "/".join(
+                    "%d%%" % round(100 * f) for f in self.pa_flow_fractions
+                ),
+                max_flow,
+                source,
+            )
+        )
 
     def _pa_box(self, gcmd):
         """The [box] object used for the wastebin, or None."""

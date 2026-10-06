@@ -637,10 +637,12 @@ class GCmd:
         return self.params.get(name, default)
 
     def get_int(self, name, default=None, **kw):
-        return int(self.params.get(name, default))
+        value = self.params.get(name, default)
+        return None if value is None else int(value)
 
     def get_float(self, name, default=None, **kw):
-        return float(self.params.get(name, default))
+        value = self.params.get(name, default)
+        return None if value is None else float(value)
 
     def respond_info(self, text):
         self.replies.append(text)
@@ -956,3 +958,100 @@ def test_warmup_counts_in_the_filament_plan():
     assert k2_load_cell_pa.PaPlan(
         [5.0, 8.0], 1, 0.25, 1.5, 1.2
     ).filament_mm == (pytest.approx(4.45))
+
+
+class ProfileBox(Box):
+    """A [box] with filament profiles (box/filament-pa-maxflow)."""
+
+    def __init__(self, gcode, loaded=1, max_flow=15.0, temp=250):
+        super().__init__(gcode)
+        self.snapshot = SimpleNamespace(loaded_slot=loaded)
+        self.max_flow = max_flow
+        self.temp = temp
+        self.saved = []
+
+    def is_valid_slot(self, slot):
+        return 0 <= slot <= 4
+
+    def slot_target_temp(self, slot):
+        return self.temp
+
+    def slot_filament_settings(self, slot):
+        return {
+            "max_flow": self.max_flow,
+            "max_flow_source": "filament 90002",
+            "pressure_advance": None,
+        }
+
+    def save_slot_pressure_advance(self, slot, value):
+        self.saved.append((slot, value))
+        return "filament 90002"
+
+
+def calibrate_with(lc, monkeypatch, printer, params, candidate):
+    fake_captures(lc, monkeypatch, printer)
+    monkeypatch.setattr(
+        k2_load_cell_pa.analysis,
+        "analyze_pa_captures",
+        lambda c, o=None: {
+            "per_capture": {},
+            "groups": {},
+            "candidate": candidate,
+        },
+    )
+    gcmd = GCmd(dict(params, REPLICATES=1))
+    lc.cmd_PA_CALIBRATE(gcmd)
+    return gcmd
+
+
+def test_feed_rates_come_from_the_slot_max_flow_and_save(tmp_path, monkeypatch):
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
+    printer.box = ProfileBox(printer.gcode)
+    ok = {"ok": True, "candidate": 0.041, "reasons": []}
+    gcmd = calibrate_with(lc, monkeypatch, printer, {"SAVE": 1}, ok)
+    # 20/30/40 % of 15 mm3/s over a 1.75 mm filament
+    captures = [s for s in printer.gcode.scripts if s.startswith("<capture")]
+    assert captures == [
+        "<capture flow=1.25>",
+        "<capture flow=1.87>",
+        "<capture flow=2.49>",
+    ]
+    assert printer.box.saved == [(1, 0.041)]
+    assert any("max flow 15 mm3/s (filament 90002)" in r for r in gcmd.replies)
+    assert "saved in filament 90002" in gcmd.replies[-1]
+    # no SLOT: nothing loaded or heated
+    assert not any(
+        s.startswith(("BOX_SELECT_SLOT", "M109")) for s in printer.gcode.scripts
+    )
+
+
+def test_slot_mode_loads_and_heats_first(tmp_path, monkeypatch):
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
+    printer.box = ProfileBox(printer.gcode, loaded=1, temp=250)
+    calibrate_with(
+        lc,
+        monkeypatch,
+        printer,
+        {"SLOT": 2, "FLOWS": "2,3"},
+        {"ok": False, "reasons": ["x"], "candidate": None},
+    )
+    first = printer.gcode.scripts[:2]
+    assert first == ["BOX_SELECT_SLOT SLOT=2", "M109 S250"]
+    captures = [s for s in printer.gcode.scripts if s.startswith("<capture")]
+    assert captures == ["<capture flow=2>", "<capture flow=3>"]  # FLOWS wins
+
+
+def test_invalid_candidate_is_not_saved(tmp_path, monkeypatch):
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
+    printer.box = ProfileBox(printer.gcode)
+    bad = {"ok": False, "reasons": ["replicates disagree"], "candidate": None}
+    gcmd = calibrate_with(lc, monkeypatch, printer, {"SAVE": 1}, bad)
+    assert printer.box.saved == []
+    assert "nothing saved: replicates disagree" in gcmd.replies[-1]
+
+
+def test_slot_and_save_need_box_profiles(tmp_path):
+    printer, lc = make(tmp_path, pa_calibration="experimental")
+    printer.box = Box(printer.gcode)  # no filament profiles
+    with pytest.raises(CommandError, match="filament profiles"):
+        lc.cmd_PA_CALIBRATE(GCmd({"SLOT": 1}))
