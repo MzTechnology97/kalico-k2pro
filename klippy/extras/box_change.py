@@ -532,6 +532,9 @@ class BoxChangeEngine:
         self.matrix = metadata["matrix"]
         self.temp_print = metadata["temp_print"]
         self.temp_initial_layer = metadata["temp_initial_layer"]
+        self.pa_enabled = metadata.get("pa_enabled")
+        self.pa_values = metadata.get("pressure_advance")
+        self.max_flow_values = metadata.get("max_flow")
         self.parsed_epoch = self._print_epoch()
         if self.matrix is None:
             self._info(gcmd, "No usable flush_volumes_matrix; using fallback purge")
@@ -1265,6 +1268,27 @@ class BoxChangeEngine:
             return True
         return previous != current
 
+    def metadata_filament(self, slot):
+        """Slicer settings of the file tool loaded into slot, or None.
+
+        Only for the print whose metadata PARSE_FLUSH_VOLUMES read.
+        """
+        if not self._parsed_is_current():
+            return None
+        tool = self._metadata_tool(slot)
+        if tool is None or tool < 0:
+            return None
+
+        def pick(values):
+            return values[tool] if values and tool < len(values) else None
+
+        return {
+            "tool": tool,
+            "pressure_advance_enabled": pick(self.pa_enabled),
+            "pressure_advance": pick(self.pa_values),
+            "max_flow": pick(self.max_flow_values),
+        }
+
     def _metadata_tool(self, slot, source=False):
         if self.mapping_filename is None:
             return slot
@@ -1304,6 +1328,9 @@ class BoxChangeEngine:
         self.matrix = None
         self.temp_print = None
         self.temp_initial_layer = None
+        self.pa_enabled = None
+        self.pa_values = None
+        self.max_flow_values = None
         self.parsed_epoch = None
 
     def _print_epoch(self):

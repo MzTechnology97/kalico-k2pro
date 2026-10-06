@@ -193,6 +193,45 @@ A spool read with a saved estimate under 5% prints a reminder of both options.
 
 Keep these patches on upstream syncs of `box.py`: look for `RFID_LOW_ESTIMATE_HINT`, `_next_rfid_spool_serial` and `cmd_rfid_spool_new`.
 
+### Pressure advance and maximum flow per filament
+
+Custom filaments, generic materials and slot profiles carry two optional values:
+- `pressure_advance`;
+- `max_flow`, the maximum volumetric flow in mm³/s.
+
+**Where a slot's value comes from,** first match wins:
+1. the slot's own profile;
+2. its library filament;
+3. the generic material (`_BOX_MATERIAL_SET`);
+4. for `max_flow` only, the OrcaSlicer "Generic <material> @K2 Pro-all" value shipped in `DEFAULT_MAX_FLOW` (PLA 12, PETG 16, PETG-CF 10, ABS 16, TPU 2 mm³/s, …).
+
+Each slot in `printer.objects.box.slots` reports `pressure_advance`, `max_flow` and the source of each (`*_source`).
+
+**Pressure advance on load.** When a slot is loaded (`BOX_LOAD`, a tool change, a runout swap), the box sets the extruder's pressure advance to the slot's value, keeping `smooth_time`:
+- A slot without a value goes back to the `printer.cfg` value.
+- **The slicer wins when it sets PA itself.** If the print file's metadata says `enable_pressure_advance` for that filament (OrcaSlicer then writes `SET_PRESSURE_ADVANCE` in the file), the box leaves pressure advance to the file, and the stored profile value is not changed.
+- `apply_pressure_advance: False` in `[box]` turns this off.
+
+**Max flow from the slicer.** At a load during a print whose metadata `PARSE_FLUSH_VOLUMES` read, the file's `filament_max_volumetric_speed` for that filament is saved:
+- into the custom library filament, or into the slot profile for a manual or read-only catalog profile;
+- only when neither has its own value.
+
+**Commands.** An empty value clears the field:
+
+```text
+_BOX_FILAMENT_SET ID=90002 MATERIAL=PETG-CF ... PRESSURE_ADVANCE=0.040 MAX_FLOW=15
+_BOX_MATERIAL_SET MATERIAL=PLA PRESSURE_ADVANCE=0.032 MAX_FLOW=20   # TARGET_TEMP only for a new material
+_BOX_MATERIAL_SET MATERIAL=PLA MAX_FLOW=
+```
+
+The K2-RFID catalogs read `max_flow` (compact form) or `kvParam.filament_max_volumetric_speed` (Creality form).
+
+For the load cell calibration, `Box.save_slot_pressure_advance(slot, value)` stores a calibrated value:
+- into the slot's custom library filament (and the slots that use it);
+- otherwise into the slot profile.
+
+It then applies the value.
+
 ## HelixScreen compatibility
 
 K2-OpenHost deliberately keeps compatibility with **both** the original/upstream HelixScreen CFS implementation and Jacob10383's experimental `feat/k2-box-fork-support` branch, without requiring a K2-OpenHost-specific HelixScreen fork. The original implementation expects the stock Creality nested `box` schema, while the experimental branch can also understand the Flat/API-v1 Box contract. Mainsail and Jacob's Orca integration use the richer K2-OpenHost flat API. The backend therefore publishes both representations and accepts both command dialects at the same time.
