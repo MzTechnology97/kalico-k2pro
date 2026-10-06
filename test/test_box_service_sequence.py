@@ -114,3 +114,17 @@ def test_refresh_with_nothing_loaded_reads_every_slot():
     box = make_box(loaded_slot=-1)
     box.cmd_info_refresh(FakeGcmd())
     assert box.reads == [0b1111]
+
+
+def test_box_units_report_the_state_payload_length():
+    box = make_box(loaded_slot=-1)
+    box.box_replies = {1: types.SimpleNamespace(
+        status=0, box_state=2, temp_c=31, humidity_pct=38,
+        payload=bytes([31, 38, 0, 2]))}
+    box._global_slot = lambda address, local: (address - 1) * 4 + local
+    units = box._box_unit_statuses()
+    assert units[0]["state_payload_bytes"] == 4
+    box.box_replies[1].payload = bytes(6)
+    assert box._box_unit_statuses()[0]["state_payload_bytes"] == 6
+    box.box_replies = {}
+    assert box._box_unit_statuses()[0]["state_payload_bytes"] is None
