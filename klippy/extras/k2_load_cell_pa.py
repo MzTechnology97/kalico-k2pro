@@ -266,12 +266,15 @@ class K2LoadCell:
             },
             "fast_component",
         )
-        self.pa_flows = config.getfloatlist("pa_flows", (2.0, 5.0))
+        # K2 Pro bench (2026-10-06): 2 mm/s is under the noise of a hot
+        # nozzle; 2 mm or more of filament reaches the wastebin floor; the
+        # slow part of the decay needs ~1.5 s of rest after the pulse.
+        self.pa_flows = config.getfloatlist("pa_flows", (5.0, 8.0))
         self.pa_pulse_time = config.getfloat(
-            "pa_pulse_time", 1.0, above=0.0, maxval=5.0
+            "pa_pulse_time", 0.25, above=0.0, maxval=5.0
         )
         self.pa_rest_time = config.getfloat(
-            "pa_rest_time", 0.8, above=0.2, maxval=5.0
+            "pa_rest_time", 1.5, above=0.2, maxval=5.0
         )
         self.pa_replicates = config.getint(
             "pa_replicates", 3, minval=1, maxval=10
@@ -871,14 +874,35 @@ class K2LoadCell:
             captures = list(getattr(self, "_last_pa_captures", []))
         if not captures:
             raise gcmd.error("k2_load_cell_pa: no captures to analyze")
-        gcmd.respond_info(
-            analysis.format_pa_report(
-                analysis.analyze_pa_captures(captures, self._pa_opts())
-            )
-        )
+        gcmd.respond_info(analysis.format_pa_report(self._analyze(captures)))
 
     def _pa_opts(self):
         return {"model": self.pa_model}
+
+    def _analyze(self, captures):
+        """Run the analysis in a thread and keep the reactor running.
+
+        It is ~0.3 s of pure Python for six captures on a CM5. Run on the
+        reactor it delayed the nozzle MCU's scheduled commands: the nozzle
+        firmware printed "Timer too close" right after each calibration.
+        """
+        out = {}
+        opts = self._pa_opts()
+
+        def work():
+            try:
+                out["result"] = analysis.analyze_pa_captures(captures, opts)
+            except Exception as exc:
+                out["error"] = exc
+
+        thread = threading.Thread(target=work, name="k2_load_cell_pa_analysis")
+        thread.daemon = True
+        thread.start()
+        while thread.is_alive():
+            self.reactor.pause(self.reactor.monotonic() + 0.02)
+        if "error" in out:
+            raise out["error"]
+        return out["result"]
 
     cmd_PA_CALIBRATE_help = (
         "EXPERIMENTAL: E-only pulses with load cell capture and a pressure "
@@ -1004,7 +1028,7 @@ class K2LoadCell:
         finally:
             run("RESTORE_GCODE_STATE NAME=_K2_PA_CALIBRATE")
         self._last_pa_captures = captures
-        result = analysis.analyze_pa_captures(captures, self._pa_opts())
+        result = self._analyze(captures)
         gcmd.respond_info(analysis.format_pa_report(result))
         candidate = result["candidate"]
         if apply and candidate["ok"]:
