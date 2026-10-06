@@ -2,7 +2,7 @@
 
 `[k2_load_cell_pa]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
 
-Status: validated on the K2 Pro on 2026-10-06 for one material (all eight steps of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). For Bambu PLA Basic at 225 °C the calibration proposes **0.0297**; the printed pressure advance line test reads **0.032**. Other materials, temperatures and nozzles are not tested yet.
+Status: tested on the K2 Pro on 2026-10-06 with all eight steps of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro). **It matches a printed test for one material and not for another:** Bambu PLA Basic at 225 °C, candidate 0.0297 against 0.032 printed; Generic PETG-CF at 250 °C, about 0.023 against **about 0.040** printed (40 % low). Use the candidate only as a starting point for a printed test.
 
 ## Why APAX
 
@@ -251,11 +251,13 @@ Switch the heaters off before restarting the Klipper service: with the nozzle he
 | 8. Printed test, 225 °C | OrcaSlicer pressure advance line test, Bambu PLA Basic @K2. Coarse pass 0.020-0.060 (step 0.005, printed at 231 °C): 0.020-0.025 bulge at the end of the fast segment, 0.055-0.060 thin out, 0.035-0.045 most even. **Fine pass 0.030-0.052 (step 0.002) at 225 °C: best line about 0.032**; from about 0.044 up the transitions visibly pinch. The calibration's candidate is **0.0297** (with the 35 % spread limit; at 25 % it gave none): 0.002 from the print. A hand-tuned 0.049 used so far was too high for this line test. |
 | "Timer too close" after the run | The analysis took 0.27 s of pure Python on the reactor; the nozzle firmware printed the line right after each report. It now runs in a thread: three analyses and two test prints since then added no line. Still to confirm after a full calibration. |
 
+| PETG-CF, printed test | OrcaSlicer PA line test at 250 °C (bed 70 °C, chamber 40 °C), 0.010-0.050 step 0.002: **best about 0.040**. The load cell's fast component (about 0.023) is 40 % low for this material. |
 | PETG-CF (Generic, slot 1), 250 °C, before the warm-up pulse | All 6 fits accepted (R² 0.956-0.988), noise ~800 counts, 0 gaps, no new "Timer too close" (the threaded analysis is confirmed on a full run). 5 mm/s: τ₁ 0.0285 / 0.0214 / 0.0206 s (spread 37 %, rejected). 8 mm/s: 0.0242 / 0.0232 / 0.0252 s (median 0.0242, spread 8 %). Median of all six 0.0237; about 0.023 without the first capture. Printed test pending. |
 | First capture of a run | In both runs at 225/250 °C the first capture read highest (PLA 0.0365 against 0.0285 / 0.0285; PETG-CF 0.0285 against 0.0214 / 0.0206): it starts from another nozzle state (a cleaning or a retract done before the run). `pa_warmup` (default 1) now extrudes one uncaptured pulse, cleaned like the others, before the first capture. |
 
 Note on the CFS: `T0` at print start sets the nozzle to the file's `nozzle_temperature`, not to `START_PRINT EXTRUDER_TEMP`: the coarse test was sliced at 230 °C and printed at 231 °C although the start macro asked for 220.
 
 Next:
-- other materials (PETG, ABS) and temperatures, each checked with a printed line test;
-- one full calibration with the analysis in its thread, to confirm that "Timer too close" is gone.
+- find why PETG-CF reads 40 % low. Candidates: the feed rates (5-8 mm/s of filament, 12-19 mm³/s, against the much lower flows of a printed line; but τ₁ rose slightly from 5 to 8 mm/s), the carbon fibre (try a plain PETG), or the slow component mattering for this material;
+- a run at 3, 5 and 8 mm/s with the warm-up pulse and 5 replicates, to see how τ₁ depends on the feed rate;
+- until then the candidate is a starting point for a printed test, not a value to apply.
