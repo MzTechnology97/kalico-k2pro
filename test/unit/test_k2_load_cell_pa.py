@@ -1135,3 +1135,35 @@ def test_clean_at_the_end_still_cleans_the_priming_purge(tmp_path, monkeypatch):
         "<capture flow=8>",
         "<clean>",
     ]
+
+
+def test_condition_pulse_before_each_capture(tmp_path, monkeypatch):
+    printer, lc = make(
+        tmp_path,
+        pa_calibration="experimental",
+        pa_warmup=0,
+        pa_prime=0,
+        pa_reprime=1.2,
+    )
+    printer.box = Box(printer.gcode)
+    fake_captures(lc, monkeypatch, printer)
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "4", "REPLICATES": 2, "CONDITION": 1}))
+    seq = [
+        s
+        for s in printer.gcode.scripts
+        if s.startswith(("<", "G1 E1.0000", "G1 E1.2000"))
+    ]
+    # each capture: conditioning pulse (4 mm/s x 0.25 s), then the capture
+    # pulse; the reprime follows the cleaning before the second one
+    assert seq == [
+        "<wastebin>",
+        "G1 E1.0000 F240.0",
+        "<capture flow=4>",
+        "G1 E1.0000 F240.0",
+        "<clean>",
+        "G1 E1.2000 F120",
+        "G1 E1.0000 F240.0",
+        "<capture flow=4>",
+        "G1 E1.0000 F240.0",
+        "<clean>",
+    ]

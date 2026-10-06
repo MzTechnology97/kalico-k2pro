@@ -297,6 +297,10 @@ class K2LoadCell:
         # retracted) the nozzle was not full, and the pulse force grew from
         # capture to capture at a quarter of the usual level. A slow purge
         # into the wastebin first fills it, like the box's own load priming.
+        # Uncaptured pulse at the capture's feed rate right before each
+        # capture (after the reprime): the nozzle starts every capture full
+        # and at the flow's pressure, whatever oozed during the cleaning.
+        self.pa_condition = config.getboolean("pa_condition", False)
         self.pa_prime = config.getfloat(
             "pa_prime", 20.0, minval=0.0, maxval=100.0
         )
@@ -967,6 +971,11 @@ class K2LoadCell:
         reprime = gcmd.get_float(
             "REPRIME", self.pa_reprime, minval=0.0, maxval=10.0
         )
+        condition = bool(
+            gcmd.get_int(
+                "CONDITION", int(self.pa_condition), minval=0, maxval=1
+            )
+        )
         apply = gcmd.get_int("APPLY", 0, minval=0, maxval=1)
         clean = gcmd.get("CLEAN", self.pa_clean).lower()
         if clean not in ("capture", "end", "never"):
@@ -1053,6 +1062,15 @@ class K2LoadCell:
                             self.reactor.monotonic() + plan.rest_time
                         )
                         primed = True
+                    if condition:
+                        run(
+                            "G1 E%.4f F%.1f"
+                            % (flow * plan.pulse_time, flow * 60.0)
+                        )
+                        toolhead.wait_moves()
+                        self.reactor.pause(
+                            self.reactor.monotonic() + plan.rest_time
+                        )
                     # The duration is only a safety cap: the capture is
                     # stopped after the pulse has really ended plus a rest.
                     session = self.start_capture(
