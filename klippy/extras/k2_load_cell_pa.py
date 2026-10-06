@@ -279,6 +279,10 @@ class K2LoadCell:
         self.pa_replicates = config.getint(
             "pa_replicates", 3, minval=1, maxval=10
         )
+        # K2 Pro bench: the first capture of a run read 25-30 % higher than
+        # the next two (PLA and PETG-CF). An uncaptured pulse, cleaned like
+        # the others, puts the nozzle in the same state for every replicate.
+        self.pa_warmup = config.getint("pa_warmup", 1, minval=0, maxval=3)
         self.pa_max_filament = config.getfloat(
             "pa_max_filament", 150.0, above=0.0, maxval=1000.0
         )
@@ -906,8 +910,8 @@ class K2LoadCell:
 
     cmd_PA_CALIBRATE_help = (
         "EXPERIMENTAL: E-only pulses with load cell capture and a pressure "
-        "advance candidate. LOAD_CELL_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] "
-        "[POSITION_CONFIRMED=1] [CLEAN=capture|end|never] [APPLY=0]"
+        "advance candidate. LOAD_CELL_PA_CALIBRATE [FLOWS=5,8] [REPLICATES=3] "
+        "[WARMUP=1] [POSITION_CONFIRMED=1] [CLEAN=capture|end|never] [APPLY=0]"
     )
 
     def cmd_PA_CALIBRATE(self, gcmd):
@@ -926,6 +930,7 @@ class K2LoadCell:
         replicates = gcmd.get_int(
             "REPLICATES", self.pa_replicates, minval=1, maxval=10
         )
+        warmup = gcmd.get_int("WARMUP", self.pa_warmup, minval=0, maxval=3)
         apply = gcmd.get_int("APPLY", 0, minval=0, maxval=1)
         clean = gcmd.get("CLEAN", self.pa_clean).lower()
         if clean not in ("capture", "end", "never"):
@@ -949,6 +954,7 @@ class K2LoadCell:
             self.pa_pulse_time,
             self.pa_rest_time,
             self.pa_reprime if cleaner and clean == "capture" else 0.0,
+            warmup,
         )
         self._check_pa_preconditions(gcmd, plan)
         toolhead = self.printer.lookup_object("toolhead")
@@ -971,6 +977,21 @@ class K2LoadCell:
         run("SAVE_GCODE_STATE NAME=_K2_PA_CALIBRATE")
         try:
             run("M83")
+            for _ in range(plan.warmup):
+                # uncaptured pulse at the first feed rate, cleaned like a
+                # capture, so the first replicate starts like the others
+                run(
+                    "G1 E%.4f F%.1f"
+                    % (plan.flows[0] * plan.pulse_time, plan.flows[0] * 60.0)
+                )
+                toolhead.wait_moves()
+                if cleaner is not None and clean == "capture":
+                    cleaner()
+                    primed = not plan.reprime
+                else:
+                    self.reactor.pause(
+                        self.reactor.monotonic() + plan.rest_time
+                    )
             for flow in plan.flows:
                 for rep in range(plan.replicates):
                     toolhead.wait_moves()
@@ -1098,18 +1119,25 @@ class K2LoadCell:
 
 
 class PaPlan:
-    def __init__(self, flows, replicates, pulse_time, rest_time, reprime=0.0):
+    def __init__(
+        self, flows, replicates, pulse_time, rest_time, reprime=0.0, warmup=0
+    ):
         self.flows = list(flows)
         self.replicates = replicates
         self.pulse_time = pulse_time
         self.rest_time = rest_time
         self.reprime = reprime
+        self.warmup = warmup if self.flows else 0
         # rest before, pulse, rest after for the decay, motion queue margin
         self.capture_time = 2.0 * rest_time + pulse_time + 0.5
         captures = len(self.flows) * replicates
-        self.filament_mm = sum(
-            f * pulse_time for f in self.flows
-        ) * replicates + reprime * max(0, captures - 1)
+        warm = self.flows[0] * pulse_time * self.warmup if self.flows else 0.0
+        # a reprime follows every cleaning except the last one
+        self.filament_mm = (
+            sum(f * pulse_time for f in self.flows) * replicates
+            + warm
+            + reprime * max(0, captures - 1 + self.warmup)
+        )
 
 
 def write_capture_csv(

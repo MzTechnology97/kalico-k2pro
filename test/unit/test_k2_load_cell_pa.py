@@ -760,7 +760,7 @@ def steps(printer):
 
 
 def test_box_wastebin_and_clean_after_each_capture(tmp_path, monkeypatch):
-    printer, lc = make(tmp_path, pa_calibration="experimental")
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
     # no POSITION_CONFIRMED: the box provides the position
@@ -798,6 +798,7 @@ def test_clean_gcode_replaces_the_box_clean(tmp_path, monkeypatch):
         pa_clean_gcode="MY_CLEAN",
         pa_reprime=0.0,
         pa_pulse_time=1.0,
+        pa_warmup=0,
     )
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
@@ -919,3 +920,39 @@ def test_analysis_runs_off_the_reactor_thread(tmp_path, monkeypatch):
     lc.cmd_PA_ANALYZE(GCmd({}))
     assert seen["thread"] == "k2_load_cell_pa_analysis"
     assert seen["opts"] == {"model": "fast_component"}
+
+
+def test_warmup_pulse_is_cleaned_and_not_captured(tmp_path, monkeypatch):
+    # K2 Pro bench: the first capture of a run read 25-30 % higher than the
+    # next ones; an uncaptured pulse first gives every replicate the same start
+    printer, lc = make(tmp_path, pa_calibration="experimental")
+    printer.box = Box(printer.gcode)
+    fake_captures(lc, monkeypatch, printer)
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5,8", "REPLICATES": 1}))
+    seq = [
+        s
+        for s in printer.gcode.scripts
+        if s.startswith(("<", "G1 E1.2000", "G1 E1.2500", "G1 E2.0000"))
+    ]
+    assert seq == [
+        "<wastebin>",
+        "G1 E1.2500 F300.0",
+        "<clean>",
+        "G1 E1.2000 F120",
+        "<capture flow=5>",
+        "G1 E1.2500 F300.0",
+        "<clean>",
+        "G1 E1.2000 F120",
+        "<capture flow=8>",
+        "G1 E2.0000 F480.0",
+        "<clean>",
+    ]
+
+
+def test_warmup_counts_in_the_filament_plan():
+    # pulses 1.25 + 2.0, warm-up 1.25, two reprimes of 1.2 mm
+    plan = k2_load_cell_pa.PaPlan([5.0, 8.0], 1, 0.25, 1.5, 1.2, 1)
+    assert plan.filament_mm == pytest.approx(6.9)
+    assert k2_load_cell_pa.PaPlan(
+        [5.0, 8.0], 1, 0.25, 1.5, 1.2
+    ).filament_mm == (pytest.approx(4.45))
