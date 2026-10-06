@@ -2,7 +2,7 @@
 
 `[k2_load_cell_pa]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
 
-Status: capture and calibration run validated on the K2 Pro on 2026-10-06 (steps 1, 2 and 4 to 7 of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). The fast component of the decay is about 0.030 s at 215 and 225 °C; a hand-tuned PA of 0.049 prints well with the same PLA. The candidate is not validated: only a printed test (step 8) can tell how τ₁ relates to the PA a print needs.
+Status: validated on the K2 Pro on 2026-10-06 for one material (steps 1, 2 and 4 to 8 of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). For Bambu PLA Basic at 225 °C the calibration proposes **0.0297**; the printed pressure advance line test reads **0.032**. Other materials, temperatures and nozzles are not tested yet; step 3 is still open.
 
 ## Why APAX
 
@@ -171,7 +171,7 @@ Kalico applies ordinary pressure advance to moves that combine XY and positive e
    - SNR below 8 (fitted amplitude against baseline noise);
    - R² below 0.85;
    - τ at the edge of the search range.
-6. Each feed rate needs 3 accepted replicates whose spread is at most 25 %.
+6. Each feed rate needs 3 accepted replicates whose spread ((max - min) / median) is at most 35 %. With a hot nozzle the fast components of three replicates spread 28-32 % on the K2 Pro, while their median matched the printed test.
 7. τ must not change by more than 1.5× between feed rates: otherwise the linear model does not hold and no candidate is given.
 8. The candidate must be between 0 and 0.2 s.
 
@@ -246,10 +246,12 @@ Switch the heaters off before restarting the Klipper service: with the nozzle he
 
 | 6–7 again, model `fast_component`, 215 °C (replay of the six captures) | 5 mm/s: τ₁ 0.0263 / 0.0297 / 0.0336 s, τ₂ 0.17-0.39 s, fast share 44-65 %, R² 0.994-0.999. 2 mm/s: SNR 6-7.6, rejected. |
 | 6–7 again, `pa_flows: 5, 8`, `pa_pulse_time: 0.25`, `pa_rest_time: 1.5`, **225 °C** | All 6 fits accepted, R² 0.977-0.992, fast share 62-76 %. 5 mm/s: τ₁ 0.0365 / 0.0285 / 0.0285 s (median 0.0285, spread 28 %). 8 mm/s: τ₁ 0.0252 / 0.0310 / 0.0350 s (median 0.0310, spread 32 %). Feed-rate ratio 1.09. No candidate only because the spread is over 25 %. Median of all twelve fast components at 215 and 225 °C: **~0.030 s**. |
-| Comparison | The same Bambu PLA Basic, 0.4 mm nozzle, 225 °C, prints well with a **hand-tuned PA of 0.049** (`smooth_time` 0.038). τ₁ is about 60 % of it, and it did not change between 215 and 225 °C. |
-| "Timer too close" after the run | The analysis took 0.27 s of pure Python on the reactor; the nozzle firmware printed the line right after each report. It now runs in a thread while the reactor keeps running. To confirm on the next run. |
+| 8. Printed test, 225 °C | OrcaSlicer pressure advance line test, Bambu PLA Basic @K2. Coarse pass 0.020-0.060 (step 0.005, printed at 231 °C): 0.020-0.025 bulge at the end of the fast segment, 0.055-0.060 thin out, 0.035-0.045 most even. **Fine pass 0.030-0.052 (step 0.002) at 225 °C: best line about 0.032**; from about 0.044 up the transitions visibly pinch. The calibration's candidate is **0.0297** (with the 35 % spread limit; at 25 % it gave none): 0.002 from the print. A hand-tuned 0.049 used so far was too high for this line test. |
+| "Timer too close" after the run | The analysis took 0.27 s of pure Python on the reactor; the nozzle firmware printed the line right after each report. It now runs in a thread: three analyses and two test prints since then added no line. Still to confirm after a full calibration. |
+
+Note on the CFS: `T0` at print start sets the nozzle to the file's `nozzle_temperature`, not to `START_PRINT EXTRUDER_TEMP`: the coarse test was sliced at 230 °C and printed at 231 °C although the start macro asked for 220.
 
 Next:
-- print a pressure advance test (step 8) over 0.025-0.055 to see where τ₁ and 0.049 fall;
-- if the print confirms a fixed ratio between τ₁ and the right PA, the model needs that factor (mount, sensor or melt dynamics). If it does not, the method is not usable for PA on this printer;
-- confirm that "Timer too close" no longer appears.
+- step 3 (press the nozzle by hand during a capture);
+- other materials (PETG, ABS) and temperatures, each checked with a printed line test;
+- one full calibration with the analysis in its thread, to confirm that "Timer too close" is gone.

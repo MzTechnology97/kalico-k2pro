@@ -55,7 +55,10 @@ DEFAULTS = {
     "tau_min": 0.003,
     "tau_max": 1.5,
     "min_replicates": 3,
-    "max_rel_spread": 0.25,  # (max - min) / median of accepted taus
+    # (max - min) / median of accepted taus. K2 Pro bench, 225 C: the fast
+    # components of three replicates spread 28-32 % with a hot nozzle, and
+    # their median (0.030) matched the printed line test (0.032).
+    "max_rel_spread": 0.35,
     "max_flow_ratio": 1.5,  # tau(high flow) / tau(low flow)
     "pa_min": 0.0,
     "pa_max": 0.2,
