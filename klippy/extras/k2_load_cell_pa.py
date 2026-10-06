@@ -315,9 +315,12 @@ class K2LoadCell:
             "capture",
         )
         self.pa_clean_gcode = config.get("pa_clean_gcode", "")
-        # flush_clean_snap retracts 1.2 mm; push it back before a pulse
+        # Pushed back after each cleaning: the 1.2 mm flush_clean_snap retract
+        # plus what oozes out meanwhile. K2 Pro bench, PETG-CF at 250 C: with
+        # 1.2 mm the pulse force fell from 28 500 to 7 000 counts in four
+        # captures as the nozzle emptied.
         self.pa_reprime = config.getfloat(
-            "pa_reprime", 1.2, minval=0.0, maxval=5.0
+            "pa_reprime", 3.0, minval=0.0, maxval=10.0
         )
         mcu_name = self.mcu.get_name()
         mcu_section = "mcu" if mcu_name == "mcu" else "mcu " + mcu_name
@@ -961,6 +964,9 @@ class K2LoadCell:
         )
         warmup = gcmd.get_int("WARMUP", self.pa_warmup, minval=0, maxval=3)
         prime = gcmd.get_float("PRIME", self.pa_prime, minval=0.0, maxval=100.0)
+        reprime = gcmd.get_float(
+            "REPRIME", self.pa_reprime, minval=0.0, maxval=10.0
+        )
         apply = gcmd.get_int("APPLY", 0, minval=0, maxval=1)
         clean = gcmd.get("CLEAN", self.pa_clean).lower()
         if clean not in ("capture", "end", "never"):
@@ -983,7 +989,7 @@ class K2LoadCell:
             replicates,
             self.pa_pulse_time,
             self.pa_rest_time,
-            self.pa_reprime if cleaner and clean == "capture" else 0.0,
+            reprime if cleaner and clean == "capture" else 0.0,
             warmup,
             prime,
         )

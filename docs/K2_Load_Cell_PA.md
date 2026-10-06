@@ -110,7 +110,7 @@ Add to `printer.cfg` (or uncomment in `config/k2/prtouch.cfg`), then run `FIRMWA
 #pa_box: auto            # auto/yes/no: use [box] for the wastebin and cleaning
 #pa_clean: capture       # capture/end/never: when the cleaning runs
 #pa_clean_gcode:         # custom cleaning; default: box flush-clean-snap
-#pa_reprime: 1.2         # mm pushed back after each cleaning retract
+#pa_reprime: 3.0         # mm pushed back after each cleaning (REPRIME=): its 1.2 mm retract plus the ooze
 ```
 
 When the nozzle firmware lacks APAX, the section stays loaded but reports `unavailable` with the missing messages, and nothing is sent. The same happens if the extruder stepper is not on the sensor's MCU.
@@ -272,6 +272,7 @@ Switch the heaters off before restarting the Klipper service: with the nozzle he
 | PETG-CF, printed test | OrcaSlicer PA line test at 250 °C (bed 70 °C, chamber 40 °C), 0.010-0.050 step 0.002: **best about 0.040**. The load cell's fast component (about 0.023) is 40 % low for this material. |
 | PETG-CF (Generic, slot 1), 250 °C, before the warm-up pulse | All 6 fits accepted (R² 0.956-0.988), noise ~800 counts, 0 gaps, no new "Timer too close" (the threaded analysis is confirmed on a full run). 5 mm/s: τ₁ 0.0285 / 0.0214 / 0.0206 s (spread 37 %, rejected). 8 mm/s: 0.0242 / 0.0232 / 0.0252 s (median 0.0242, spread 8 %). Median of all six 0.0237; about 0.023 without the first capture. Printed test pending. |
 | Calibrate PA button, PETG-CF slot left loaded after a print | `LOAD_CELL_PA_CALIBRATE SLOT=0 SAVE=1`, feed rates 1.25 / 1.87 / 2.49 mm/s from the profile's 15 mm³/s. All nine captures rejected (SNR 1-2.4): the pulse force was 1 200 → 5 100 counts in the first captures and stayed at 6 000-8 500, against 14 000-33 000 after a fresh load. The nozzle was not full (filament retracted after the print), so `pa_prime` (20 mm, 2 mm/s, cleaned) now fills it before the warm-up pulse. Nothing was saved. |
+| Calibrate PA button again, with the priming purge | After the purge the pulse force was 28 500 counts, then fell to 7 000 in four captures as the nozzle emptied between captures (1.2 mm reprime against the 1.2 mm cleaning retract plus what oozes at 250 °C). The first two captures at 1.25 mm/s gave **τ₁ 0.0448 and 0.0430** (R² 0.99), one at 1.87 mm/s 0.0365: around the printed 0.040. Too few accepted replicates, nothing saved. `pa_reprime` is now 3.0 mm (`REPRIME=`). |
 | First capture of a run | In both runs at 225/250 °C the first capture read highest (PLA 0.0365 against 0.0285 / 0.0285; PETG-CF 0.0285 against 0.0214 / 0.0206): it starts from another nozzle state (a cleaning or a retract done before the run). `pa_warmup` (default 1) now extrudes one uncaptured pulse, cleaned like the others, before the first capture. |
 
 Note on the CFS: `T0` at print start sets the nozzle to the file's `nozzle_temperature`, not to `START_PRINT EXTRUDER_TEMP`: the coarse test was sliced at 230 °C and printed at 231 °C although the start macro asked for 220.
