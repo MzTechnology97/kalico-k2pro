@@ -43,6 +43,8 @@ from .prtouch_codec import (
 
 CMD_CONFIG = "config_prtouch_apax oid=%c oid_estp=%c"
 CMD_START = "start_prtouch_apax oid=%c cfg_regs=%c acq_tick=%u"
+# filament speed of the priming purge, mm/s
+PRIME_SPEED = 2.0
 CMD_STOP = "stop_prtouch_apax oid=%c"
 RSP_BLOCK = (
     "resault_prtouch_apax oid=%c ch=%c len=%c ticks=%.*s datas=%.*s espds=%.*s"
@@ -291,6 +293,13 @@ class K2LoadCell:
         # the next two (PLA and PETG-CF). An uncaptured pulse, cleaned like
         # the others, puts the nozzle in the same state for every replicate.
         self.pa_warmup = config.getint("pa_warmup", 1, minval=0, maxval=3)
+        # K2 Pro bench: with the slot already loaded after a print (filament
+        # retracted) the nozzle was not full, and the pulse force grew from
+        # capture to capture at a quarter of the usual level. A slow purge
+        # into the wastebin first fills it, like the box's own load priming.
+        self.pa_prime = config.getfloat(
+            "pa_prime", 20.0, minval=0.0, maxval=100.0
+        )
         self.pa_max_filament = config.getfloat(
             "pa_max_filament", 150.0, above=0.0, maxval=1000.0
         )
@@ -951,6 +960,7 @@ class K2LoadCell:
             "REPLICATES", self.pa_replicates, minval=1, maxval=10
         )
         warmup = gcmd.get_int("WARMUP", self.pa_warmup, minval=0, maxval=3)
+        prime = gcmd.get_float("PRIME", self.pa_prime, minval=0.0, maxval=100.0)
         apply = gcmd.get_int("APPLY", 0, minval=0, maxval=1)
         clean = gcmd.get("CLEAN", self.pa_clean).lower()
         if clean not in ("capture", "end", "never"):
@@ -975,6 +985,7 @@ class K2LoadCell:
             self.pa_rest_time,
             self.pa_reprime if cleaner and clean == "capture" else 0.0,
             warmup,
+            prime,
         )
         self._check_pa_preconditions(gcmd, plan)
         toolhead = self.printer.lookup_object("toolhead")
@@ -997,6 +1008,17 @@ class K2LoadCell:
         run("SAVE_GCODE_STATE NAME=_K2_PA_CALIBRATE")
         try:
             run("M83")
+            if plan.prime:
+                # fill the nozzle, then clean it like after a capture
+                run("G1 E%.4f F%.1f" % (plan.prime, PRIME_SPEED * 60.0))
+                toolhead.wait_moves()
+                if cleaner is not None and clean == "capture":
+                    cleaner()
+                    primed = not plan.reprime
+                else:
+                    self.reactor.pause(
+                        self.reactor.monotonic() + plan.rest_time
+                    )
             for _ in range(plan.warmup):
                 # uncaptured pulse at the first feed rate, cleaned like a
                 # capture, so the first replicate starts like the others
@@ -1225,7 +1247,14 @@ class K2LoadCell:
 
 class PaPlan:
     def __init__(
-        self, flows, replicates, pulse_time, rest_time, reprime=0.0, warmup=0
+        self,
+        flows,
+        replicates,
+        pulse_time,
+        rest_time,
+        reprime=0.0,
+        warmup=0,
+        prime=0.0,
     ):
         self.flows = list(flows)
         self.replicates = replicates
@@ -1233,15 +1262,18 @@ class PaPlan:
         self.rest_time = rest_time
         self.reprime = reprime
         self.warmup = warmup if self.flows else 0
+        self.prime = prime if self.flows else 0.0
         # rest before, pulse, rest after for the decay, motion queue margin
         self.capture_time = 2.0 * rest_time + pulse_time + 0.5
         captures = len(self.flows) * replicates
         warm = self.flows[0] * pulse_time * self.warmup if self.flows else 0.0
         # a reprime follows every cleaning except the last one
+        cleanings = captures - 1 + self.warmup + (1 if self.prime else 0)
         self.filament_mm = (
             sum(f * pulse_time for f in self.flows) * replicates
             + warm
-            + reprime * max(0, captures - 1 + self.warmup)
+            + self.prime
+            + reprime * max(0, cleanings)
         )
 
 
