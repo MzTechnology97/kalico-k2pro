@@ -258,6 +258,14 @@ class K2LoadCell:
             {"disabled": "disabled", "experimental": "experimental"},
             "disabled",
         )
+        self.pa_model = config.getchoice(
+            "pa_model",
+            {
+                "fast_component": "fast_component",
+                "first_order_lag": "first_order_lag",
+            },
+            "fast_component",
+        )
         self.pa_flows = config.getfloatlist("pa_flows", (2.0, 5.0))
         self.pa_pulse_time = config.getfloat(
             "pa_pulse_time", 1.0, above=0.0, maxval=5.0
@@ -864,8 +872,13 @@ class K2LoadCell:
         if not captures:
             raise gcmd.error("k2_load_cell_pa: no captures to analyze")
         gcmd.respond_info(
-            analysis.format_pa_report(analysis.analyze_pa_captures(captures))
+            analysis.format_pa_report(
+                analysis.analyze_pa_captures(captures, self._pa_opts())
+            )
         )
+
+    def _pa_opts(self):
+        return {"model": self.pa_model}
 
     cmd_PA_CALIBRATE_help = (
         "EXPERIMENTAL: E-only pulses with load cell capture and a pressure "
@@ -991,7 +1004,7 @@ class K2LoadCell:
         finally:
             run("RESTORE_GCODE_STATE NAME=_K2_PA_CALIBRATE")
         self._last_pa_captures = captures
-        result = analysis.analyze_pa_captures(captures)
+        result = analysis.analyze_pa_captures(captures, self._pa_opts())
         gcmd.respond_info(analysis.format_pa_report(result))
         candidate = result["candidate"]
         if apply and candidate["ok"]:

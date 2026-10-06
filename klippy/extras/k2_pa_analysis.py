@@ -9,12 +9,16 @@
 Method (see docs/K2_Load_Cell_PA.md):
 - each capture holds one E-only extrusion pulse at a known feed rate,
   with rest periods before and after;
-- the load signal after the pulse stops is fitted with
-  y(t) = c + a * exp(-(t - t_stop) / tau);
+- the load signal after the pulse stops is fitted, by default (model
+  "fast_component") with two exponentials:
+  y(t) = c + a1 * exp(-(t - t_stop) / tau1) + a2 * exp(-(t - t_stop) / tau2)
+  On the K2 Pro the decay has a fast part (tau1 ~30 ms) and a slow tail
+  (0.2-0.6 s, filament path and mount); one exponential mixes them;
+- model "first_order_lag" fits one exponential, y = c + a * exp(-t / tau);
 - under a first-order lag model of the melt flow, Klipper's pressure
-  advance K (seconds) that cancels the lag is K = tau. This is a model
-  candidate, not a measurement of pressure: it must be confirmed with a
-  printed pressure advance test.
+  advance K (seconds) that cancels the lag is K = tau (tau1 for the fast
+  component). This is a model candidate, not a measurement of pressure: it
+  must be confirmed with a printed pressure advance test.
 """
 
 import csv
@@ -34,7 +38,18 @@ DEFAULTS = {
     # up to ~2 s ahead, so the first step of a pulse is pending (interval of
     # seconds) long before the extruder turns.
     "max_step_interval": 0.05,  # s
-    "fit_window": 0.6,  # s after the pulse stop
+    "model": "fast_component",  # or "first_order_lag"
+    "fit_window": 0.6,  # s after the pulse stop (first_order_lag)
+    # fast_component: fit up to fit_window_slow s after the stop, at least
+    # fit_window_min s of data; tau2 >= min_tau_ratio * tau1
+    "fit_window_slow": 1.5,
+    "fit_window_min": 0.5,
+    "tau_fast_max": 0.25,
+    "tau_slow_max": 3.0,
+    "min_tau_ratio": 3.0,
+    # below this share of the decay amplitude a component is noise: the
+    # decay is then a single exponential, and its tau is the other one
+    "min_component_share": 0.15,
     "min_snr": 8.0,  # fitted amplitude / baseline noise
     "min_r2": 0.85,
     "tau_min": 0.003,
@@ -202,6 +217,180 @@ def fit_exponential(times, values, t0, window, tau_min, tau_max, steps=80):
     return result
 
 
+def _geometric(lo, hi, steps):
+    if steps < 2 or hi <= lo:
+        return [lo]
+    ratio = (hi / lo) ** (1.0 / (steps - 1))
+    return [lo * ratio**i for i in range(steps)]
+
+
+def _solve3(m, v):
+    """Solve the 3x3 system m x = v (Gaussian elimination); None if singular."""
+    a = [list(row) + [rhs] for row, rhs in zip(m, v)]
+    for col in range(3):
+        piv = max(range(col, 3), key=lambda r: abs(a[r][col]))
+        if abs(a[piv][col]) < 1e-12:
+            return None
+        a[col], a[piv] = a[piv], a[col]
+        for r in range(3):
+            if r != col:
+                f = a[r][col] / a[col][col]
+                for k in range(col, 4):
+                    a[r][k] -= f * a[col][k]
+    return [a[i][3] / a[i][i] for i in range(3)]
+
+
+def fit_two_exponential(
+    times,
+    values,
+    t0,
+    window,
+    tau1_min,
+    tau1_max,
+    tau2_max,
+    min_ratio=3.0,
+    steps=28,
+    bin_time=0.004,
+    min_share=0.15,
+):
+    """Fit y = c + a1 exp(-(t-t0)/tau1) + a2 exp(-(t-t0)/tau2), tau2 >= ratio tau1.
+
+    Samples are averaged in bin_time bins; a coarse geometric grid over
+    (tau1, tau2) is refined once around the best pair. Amplitudes and offset
+    are solved linearly for each pair.
+    """
+    raw = [(t - t0, v) for t, v in zip(times, values) if 0 <= t - t0 <= window]
+    result = {"ok": False, "n": len(raw), "reason": None}
+    if len(raw) < 20:
+        result["reason"] = "not enough samples after the event"
+        return result
+    bins = {}
+    for dt, v in raw:
+        bins.setdefault(int(dt / bin_time), []).append((dt, v))
+    pts = [
+        (mean([p[0] for p in b]), mean([p[1] for p in b]))
+        for _, b in sorted(bins.items())
+    ]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    n = len(pts)
+    sy = sum(ys)
+    syy = sum(y * y for y in ys)
+    my = sy / n
+    sst = syy - n * my * my
+    if sst <= 0:
+        result["reason"] = "flat signal"
+        return result
+    cache = {}
+
+    def basis(tau):
+        if tau not in cache:
+            e = [math.exp(-x / tau) for x in xs]
+            cache[tau] = (
+                e,
+                sum(e),
+                sum(v * v for v in e),
+                sum(v * y for v, y in zip(e, ys)),
+            )
+        return cache[tau]
+
+    def evaluate(t1, t2):
+        e1, s1, s11, s1y = basis(t1)
+        e2, s2, s22, s2y = basis(t2)
+        s12 = sum(p * q for p, q in zip(e1, e2))
+        sol = _solve3(
+            [[n, s1, s2], [s1, s11, s12], [s2, s12, s22]], [sy, s1y, s2y]
+        )
+        if sol is None:
+            return None
+        c, a1, a2 = sol
+        return syy - (c * sy + a1 * s1y + a2 * s2y), c, a1, a2
+
+    def search(grid1, grid2):
+        best = None
+        for t1 in grid1:
+            for t2 in grid2:
+                if t2 < min_ratio * t1:
+                    continue
+                r = evaluate(t1, t2)
+                if r is not None and (best is None or r[0] < best[0]):
+                    best = (r[0], t1, t2, r[1], r[2], r[3])
+        return best
+
+    grid1 = _geometric(tau1_min, tau1_max, steps)
+    grid2 = _geometric(tau1_min * min_ratio, tau2_max, steps)
+    best = search(grid1, grid2)
+    if best is None:
+        result["reason"] = "no fit"
+        return result
+    edge = best[1] in (grid1[0], grid1[-1])
+    step1 = (tau1_max / tau1_min) ** (1.0 / (steps - 1))
+    step2 = (tau2_max / (tau1_min * min_ratio)) ** (1.0 / (steps - 1))
+    fine = search(
+        [
+            min(tau1_max, max(tau1_min, t))
+            for t in _geometric(best[1] / step1, best[1] * step1, 9)
+        ],
+        _geometric(best[2] / step2, min(tau2_max, best[2] * step2), 9),
+    )
+    if fine is not None and fine[0] <= best[0]:
+        best = fine
+    sse, tau1, tau2, c, a1, a2 = best
+    total = abs(a1) + abs(a2)
+    share = abs(a1) / total if total else 0.0
+    # "tau" is the fast component; when it is only noise the decay is a
+    # single exponential and the other component is the one that counts
+    single = share < min_share
+    if single:
+        tau, amplitude = tau2, a2
+        edge = tau2 in (grid2[0], grid2[-1])
+    else:
+        tau, amplitude = tau1, a1
+    result.update(
+        {
+            "tau": tau,
+            "amplitude": amplitude,
+            "tau1": tau1,
+            "tau2": tau2,
+            "amplitude1": a1,
+            "amplitude2": a2,
+            "fast_share": share,
+            "single_component": single or share > 1.0 - min_share,
+            "offset": c,
+            "r2": 1.0 - max(sse, 0.0) / sst,
+            "rmse": math.sqrt(max(sse, 0.0) / n),
+            "at_grid_edge": edge,
+            "ok": True,
+        }
+    )
+    return result
+
+
+def _fit_decay(times, values, stop, o):
+    if o["model"] == "first_order_lag":
+        return fit_exponential(
+            times, values, stop, o["fit_window"], o["tau_min"], o["tau_max"]
+        )
+    available = (times[-1] - stop) if times else 0.0
+    if available < o["fit_window_min"]:
+        return {
+            "ok": False,
+            "n": 0,
+            "reason": "capture ends before the fit window",
+        }
+    return fit_two_exponential(
+        times,
+        values,
+        stop,
+        min(o["fit_window_slow"], available),
+        o["tau_min"],
+        o["tau_fast_max"],
+        o["tau_slow_max"],
+        o["min_tau_ratio"],
+        min_share=o["min_component_share"],
+    )
+
+
 # --- one capture, several captures, candidate ---------------------------------
 
 
@@ -226,9 +415,7 @@ def analyze_capture(capture, opts=None):
             "expected one extrusion pulse, found %d" % len(events)
         )
     for start, stop in events:
-        decay = fit_exponential(
-            times, values, stop, o["fit_window"], o["tau_min"], o["tau_max"]
-        )
+        decay = _fit_decay(times, values, stop, o)
         rise = fit_exponential(
             times,
             values,
@@ -301,7 +488,7 @@ def pa_candidate(groups, opts=None):
     o = dict(DEFAULTS)
     o.update(opts or {})
     out = {
-        "model": "first_order_lag",
+        "model": o["model"],
         "candidate": None,
         "ok": False,
         "reasons": [],
@@ -349,7 +536,9 @@ def analyze_pa_captures(captures, opts=None):
             analyze_capture(cap, opts)
         )
     groups = {flow: combine(results, opts) for flow, results in by_flow.items()}
+    model = dict(DEFAULTS, **(opts or {}))["model"]
     return {
+        "model": model,
         "per_capture": by_flow,
         "groups": groups,
         "candidate": pa_candidate(groups, opts),
@@ -357,7 +546,10 @@ def analyze_pa_captures(captures, opts=None):
 
 
 def format_pa_report(result):
-    lines = ["K2 PA analysis (experimental, model first_order_lag):"]
+    lines = [
+        "K2 PA analysis (experimental, model %s):"
+        % result.get("model", "first_order_lag")
+    ]
     for flow, results in result["per_capture"].items():
         group = result["groups"][flow]
         lines.append(
@@ -372,6 +564,19 @@ def format_pa_report(result):
         )
         for index, r in enumerate(results):
             if r["accepted"]:
+                fit = r["events"][0]["decay"]
+                if "tau1" in fit:
+                    lines.append(
+                        "  replicate %d: tau1 %.4f s, tau2 %.3f s, "
+                        "fast share %.0f%%, r2 %.3f"
+                        % (
+                            index + 1,
+                            fit["tau1"],
+                            fit["tau2"],
+                            100.0 * fit["fast_share"],
+                            fit["r2"],
+                        )
+                    )
                 continue
             why = list(r["reasons"])
             for ev in r["events"]:
