@@ -1613,10 +1613,18 @@ class Box:
                 "state_code": None if reply is None else reply.box_state,
                 "temp_c": None if reply is None else reply.temp_c,
                 "humidity_pct": None if reply is None else reply.humidity_pct,
+                # Shape of the command-0x0A state reply: CFS firmware 1.1.3
+                # sends 4 bytes (box_k2pro), the K2 Plus implementation 6.
+                "state_payload_bytes": self._state_payload_bytes(reply),
                 "slots": [self._global_slot(address, local)
                           for local in range(SLOTS_PER_BOX)],
             })
         return units
+
+    @staticmethod
+    def _state_payload_bytes(reply):
+        payload = getattr(reply, "payload", None)
+        return None if payload is None else len(payload)
 
     def _external_status(self, snap):
         return self._slot_status(self.external_slot, snap, external=True)
