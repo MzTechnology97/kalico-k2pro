@@ -226,6 +226,18 @@ _BOX_MATERIAL_SET MATERIAL=PLA MAX_FLOW=
 
 The K2-RFID catalogs read `max_flow` (compact form) or `kvParam.filament_max_volumetric_speed` (Creality form).
 
+**Import from OrcaSlicer.** `scripts/k2_orca_filament_import.py` runs on the PC with OrcaSlicer and copies `filament_max_volumetric_speed` from the presets to the custom library profiles:
+
+```text
+python scripts/k2_orca_filament_import.py --printer http://<host>:7125          # list only
+python scripts/k2_orca_filament_import.py --printer http://<host>:7125 --apply  # send
+```
+
+- It reads the system and user presets and resolves `inherits`.
+- **Names must match exactly,** once normalised: printer suffix dropped, Bambu / Bambulab / Bambu Lab alike. A near match could copy another product's value. Among equal names it prefers this printer's presets (`--printer-hint`, default K2), then user presets. The material must agree.
+- A profile that already has a max flow is kept (`--overwrite` replaces it), and system profiles are never changed.
+- Pressure advance is never copied.
+
 For the load cell calibration, `Box.save_slot_pressure_advance(slot, value)` stores a calibrated value:
 - into the slot's custom library filament (and the slots that use it);
 - otherwise into the slot profile.
