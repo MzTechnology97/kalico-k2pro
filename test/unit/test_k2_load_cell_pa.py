@@ -298,6 +298,17 @@ class Gcode:
         self.scripts = []
 
     def register_command(self, name, func, desc=None):
+        # Same check as klippy/gcode.py: "K2_..." would parse as K with
+        # argument 2, so Klipper refuses it at startup.
+        if (
+            name.upper() != name
+            or not name.replace("_", "A").isalnum()
+            or name[0].isdigit()
+            or name[1:2].isdigit()
+        ):
+            raise ValueError(
+                "Can't register '%s' as it is an invalid name" % name
+            )
         self.commands[name] = func
 
     def run_script_from_command(self, script):
@@ -852,3 +863,14 @@ def test_handlers_do_not_replace_the_probe_handlers(tmp_path):
         ("ack_prtouch", lc.apax_oid),
         ("resault_prtouch_apax", PRES_OID),
     }
+
+
+def test_command_names_are_valid_klipper_names(tmp_path):
+    printer, _ = make(tmp_path)
+    assert sorted(printer.gcode.commands) == [
+        "LOAD_CELL_CAPTURE",
+        "LOAD_CELL_DIAGNOSTIC",
+        "LOAD_CELL_PA_ANALYZE",
+        "LOAD_CELL_PA_CALIBRATE",
+        "LOAD_CELL_STOP",
+    ]

@@ -7,7 +7,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 """Usage: k2_pa_replay.py [--json] [--opt key=value ...] capture.csv ...
 
-Runs the same analysis as K2_PA_ANALYZE on CSV files written by
+Runs the same analysis as LOAD_CELL_PA_ANALYZE on CSV files written by
 [k2_load_cell_pa]. Needs only the Python standard library. Captures are
 grouped by their label (flow=<mm/s>).
 """
