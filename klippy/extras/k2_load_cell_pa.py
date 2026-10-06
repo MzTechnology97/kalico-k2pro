@@ -301,6 +301,12 @@ class K2LoadCell:
         # capture (after the reprime): the nozzle starts every capture full
         # and at the flow's pressure, whatever oozed during the cleaning.
         self.pa_condition = config.getboolean("pa_condition", False)
+        # The candidate is the centre of a printed PA line test, not a value
+        # to trust as is (K2 Pro bench, 2026-10-06: +-30 % between runs).
+        self.pa_test_span = config.getfloat(
+            "pa_test_span", 0.015, minval=0.002, maxval=0.1
+        )
+        self.last_calibration = None
         self.pa_prime = config.getfloat(
             "pa_prime", 20.0, minval=0.0, maxval=100.0
         )
@@ -779,6 +785,7 @@ class K2LoadCell:
             "session": session.sid if session else None,
             "last": self.last_summary,
             "pa_calibration": self.pa_mode,
+            "last_calibration": self.last_calibration,
         }
 
     # --- G-code -----------------------------------------------------------------
@@ -1119,11 +1126,16 @@ class K2LoadCell:
         result = self._analyze(captures)
         gcmd.respond_info(analysis.format_pa_report(result))
         candidate = result["candidate"]
+        self.last_calibration = self._calibration_summary(
+            result, slot, flows, box_profiles
+        )
+        gcmd.respond_info(self._suggestion_text(self.last_calibration))
         if save:
             if candidate["ok"]:
                 where = box_profiles.save_slot_pressure_advance(
                     slot, candidate["candidate"]
                 )
+                self.last_calibration["saved"] = where
                 gcmd.respond_info(
                     "k2_load_cell_pa: pressure advance %.4f saved in %s"
                     % (candidate["candidate"], where)
@@ -1145,6 +1157,72 @@ class K2LoadCell:
                 "k2_load_cell_pa: no valid candidate; pressure advance unchanged "
                 "(%.4f)" % before.get("pressure_advance", 0.0)
             )
+
+    def _calibration_summary(self, result, slot, flows, box):
+        """What the UI shows after a calibration: a value to test, not to trust."""
+        candidate = result["candidate"]
+        accepted = sorted(
+            r["tau"]
+            for runs in result["per_capture"].values()
+            for r in runs
+            if r.get("accepted")
+        )
+        captures = sum(len(runs) for runs in result["per_capture"].values())
+        suggested, indicative = None, False
+        if candidate.get("ok"):
+            suggested = candidate["candidate"]
+        elif len(accepted) >= 3:
+            # no candidate, but enough good captures to centre a printed test
+            suggested, indicative = analysis.median(accepted), True
+        extruder = self.printer.lookup_object("extruder", None)
+        target = None
+        if extruder is not None:
+            target = extruder.get_status(self.reactor.monotonic()).get("target")
+        summary = {
+            "time": time.time(),
+            "slot": slot,
+            "filament_id": "",
+            "temperature": target,
+            "flows": list(flows),
+            "captures": captures,
+            "accepted": len(accepted),
+            "suggested": None if suggested is None else round(suggested, 4),
+            "indicative": indicative,
+            "range": None,
+            "step": 0.002,
+            "reasons": list(candidate.get("reasons") or []),
+            "saved": None,
+        }
+        if box is not None and slot is not None:
+            settings = box.slot_filament_settings(slot)
+            summary["filament_id"] = settings.get("filament_id") or ""
+        if suggested is not None:
+            summary["range"] = [
+                round(max(0.0, suggested - self.pa_test_span), 3),
+                round(suggested + self.pa_test_span, 3),
+            ]
+        return summary
+
+    @staticmethod
+    def _suggestion_text(summary):
+        if summary["suggested"] is None:
+            return (
+                "k2_load_cell_pa: no value to suggest (%d of %d captures "
+                "accepted)" % (summary["accepted"], summary["captures"])
+            )
+        kind = "indicative" if summary["indicative"] else "candidate"
+        return (
+            "k2_load_cell_pa: suggested pressure advance %.4f (%s). Print an "
+            "OrcaSlicer PA line test from %.3f to %.3f, step %.3f, and save "
+            "the best value in the filament profile"
+            % (
+                summary["suggested"],
+                kind,
+                summary["range"][0],
+                summary["range"][1],
+                summary["step"],
+            )
+        )
 
     def _box_profiles(self):
         """The [box] when it keeps filament profiles (PA, max flow), or None."""
