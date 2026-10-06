@@ -2,7 +2,7 @@
 
 `[k2_load_cell_pa]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
 
-Status: capture validated on the K2 Pro on 2026-10-06 (steps 1, 2, 4 and 5 of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). The pressure advance result is not validated yet.
+Status: capture and calibration run validated on the K2 Pro on 2026-10-06 (steps 1, 2 and 4 to 7 of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). The analysis gives no candidate yet: the decay has two components, and the single-exponential model mixes them.
 
 ## Why APAX
 
@@ -212,6 +212,7 @@ Run the steps in order, and stop at the first failure.
    - Stop if Klipper reports `Timer too close` or MCU retransmits grow.
 3. Press the nozzle lightly by hand during a 3 s capture: the counts must change and come back.
 4. Probe still works: `G28 Z` or `PRTOUCH_HOME`, then a probe accuracy test, before and after captures.
+   - Compare at the same nozzle temperature, with a clean nozzle. Clean before homing: a blob on the nozzle shifts the Z zero.
 5. Nozzle hot, over the purge area: capture while extruding at 3 mm/s.
    - Confirm that `e_velocity_mm_s_derived` equals the feed rate during the move, with a positive sign.
    - Before the move `e_interval_ticks` can already be non-zero, with an interval of seconds (about 0 mm/s): the first step is queued ahead. The analysis counts only intervals up to `max_step_interval` (50 ms) as extrusion.
@@ -220,6 +221,8 @@ Run the steps in order, and stop at the first failure.
 6. Repeat step 5 three times, and at a second feed rate. The decay must be visible and repeatable.
 7. `pa_calibration: experimental`, then `LOAD_CELL_PA_CALIBRATE` (with the box) or `LOAD_CELL_PA_CALIBRATE POSITION_CONFIRMED=1` (without). Read the report; `APPLY` stays 0.
 8. Print a standard pressure advance test with the candidate and with a range around it. Only the printed result validates the value.
+
+Switch the heaters off before restarting the Klipper service: with the nozzle heater on, the nozzle MCU shuts down by itself (`Scheduled digital out event will exceed max_duration`) and needs `FIRMWARE_RESTART`.
 
 **Rollback:** remove or comment out `[k2_load_cell_pa]`, then `FIRMWARE_RESTART`. Nothing else was changed: the probe configuration, thresholds and filters are untouched.
 
@@ -233,3 +236,12 @@ Run the steps in order, and stop at the first failure.
 | 2. Rest, nozzle cold | `complete`: 2505 samples in 1.95 s, **1283.8 Hz**; noise 210 counts, drift 76 counts/s; no decode, length or duplicate errors; no `Timer too close`; nozzle MCU retransmits unchanged. **Link load 11.7 kB/s, 51% of the 230400 baud link.** One gap was counted inside the 50 ms settle window, where the sensor pauses about 5 ms while it is reconfigured (57 samples dropped instead of ~64); gaps now count only in kept data. |
 | 4. Probe after captures | `PROBE_ACCURACY SAMPLES=5` at the center: range 0.0023 mm, standard deviation 0.0009 mm. |
 | 5. Extrusion, 215 °C PLA, 10 mm at 3 mm/s over the wastebin | `complete`, 8662 samples, 0 gaps, link load 13 kB/s. Derived velocity **+3.00 mm/s** for 3.34 s (3.33 s commanded). Load: rest 157 ± 800 counts; **~49 000 within 0.1 s** of the start, easing to ~33 000 at 0.9 s; then a rise to a **flat ~92 000 from 1.5 s to the stop**, the blob resting on the bottom of the wastebin. After the stop: 71 000 → 26 000 (0.1 s) → 14 000 (0.3 s) → 7 700 (1 s) → 5 000 (2 s). |
+| 4. Probe, again after the hot captures | First reading -0.394 mm average: the `G28` after a Klipper restart had touched on the blob left by step 5. Re-homed with a clean nozzle at 119 °C: -0.029 mm, range 0.027 mm (soft PLA on the tip). **Cold and clean: range 0.0039 mm, standard deviation 0.0011 mm over 10 samples**, as before the captures. APAX does not affect PRTouch. |
+| 6–7. `LOAD_CELL_PA_CALIBRATE FLOWS=2,5 REPLICATES=3`, 215 °C PLA | Ran end to end: wastebin, cleaning after each capture, G-code state restored, PA unchanged. All 6 captures `complete`, 0 gaps, link load 13.2 kB/s (57%), nozzle MCU retransmits unchanged. **No candidate.** 2 mm/s: 3/3 rejected (R² 0.75–0.77, SNR 7–8: noise at rest is ~850 counts with the nozzle hot, about 4× the cold value). 5 mm/s: 3/3 accepted, but τ 64–142 ms, spread 94%. |
+| Decay, offline | A two-exponential fit over 1.5 s after the stop gives a **fast τ₁ of 27–44 ms (about 32 ms) in all six captures**, and a slow τ₂ of 0.18–0.62 s that varies. At 5 mm/s it fits with R² 0.95–0.996. The single exponential over 0.6 s mixes the two, which explains the spread. The slow part is probably mechanical (filament path, blob, mount). For comparison, the printer's configured pressure advance is 0.038. |
+| Nozzle firmware output | `mcu 'nozzle_mcu': #output: Timer too close` twice, right after the calibration ended. A firmware text message, not a shutdown: Klipper stayed ready, no retransmits. Cause not identified. |
+
+Next:
+- fit two components and propose τ₁;
+- use feed rates of 5 mm/s and above, since the hot noise is too high for 2 mm/s;
+- validate the candidate with a printed test (step 8).
