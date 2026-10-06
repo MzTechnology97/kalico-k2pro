@@ -95,7 +95,7 @@ Add to `printer.cfg` (or uncomment in `config/k2/prtouch.cfg`), then run `FIRMWA
 #export: True            # write a CSV after each capture
 #output_dir:             # default: the Klipper log directory
 #max_files: 20
-#pa_calibration: disabled  # experimental enables K2_PA_CALIBRATE
+#pa_calibration: disabled  # experimental enables LOAD_CELL_PA_CALIBRATE
 #pa_flows: 2, 5          # mm/s of filament
 #pa_pulse_time: 1.0      # seconds of extrusion per pulse
 #pa_rest_time: 0.8       # seconds of rest before and after
@@ -114,11 +114,11 @@ When the nozzle firmware lacks APAX, the section stays loaded but reports `unava
 
 | Command | What it does |
 | --- | --- |
-| `K2_LOAD_CELL_CAPTURE [DURATION=2] [LABEL=text] [WAIT=1]` | Starts a capture. With `WAIT=1` it returns the summary at the end. |
-| `K2_LOAD_CELL_STOP` | Stops the running capture and prints its summary. |
-| `K2_LOAD_CELL_DIAGNOSTIC` | Availability, sensor setting, link baud, blocks received outside a session, and the last summary. The summary has samples, effective rate, baseline, noise, drift, range, link load, and decode/length/stale/gap/duplicate counters. |
-| `K2_PA_ANALYZE [FILES=a.csv,b.csv]` | Runs the analysis on the last calibration or on CSV files from the output directory. Changes nothing. |
-| `K2_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] [POSITION_CONFIRMED=1] [CLEAN=capture\|end\|never] [APPLY=0]` | Experimental, disabled unless `pa_calibration: experimental`. See below. |
+| `LOAD_CELL_CAPTURE [DURATION=2] [LABEL=text] [WAIT=1]` | Starts a capture. With `WAIT=1` it returns the summary at the end. |
+| `LOAD_CELL_STOP` | Stops the running capture and prints its summary. |
+| `LOAD_CELL_DIAGNOSTIC` | Availability, sensor setting, link baud, blocks received outside a session, and the last summary. The summary has samples, effective rate, baseline, noise, drift, range, link load, and decode/length/stale/gap/duplicate counters. |
+| `LOAD_CELL_PA_ANALYZE [FILES=a.csv,b.csv]` | Runs the analysis on the last calibration or on CSV files from the output directory. Changes nothing. |
+| `LOAD_CELL_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] [POSITION_CONFIRMED=1] [CLEAN=capture\|end\|never] [APPLY=0]` | Experimental, disabled unless `pa_calibration: experimental`. See below. |
 
 `printer["k2_load_cell_pa"]` reports `available`, `unavailable_reason`, `state`, `session`, the last summary and `pa_calibration`.
 
@@ -149,7 +149,7 @@ python3 scripts/k2_pa_replay.py k2_load_cell_pa_*.csv
 python3 scripts/k2_pa_replay.py --json --opt min_snr=6 k2_load_cell_pa_*.csv
 ```
 
-Captures are grouped by their `flow=<mm/s>` label (set by `K2_PA_CALIBRATE`).
+Captures are grouped by their `flow=<mm/s>` label (set by `LOAD_CELL_PA_CALIBRATE`).
 
 ## Pressure advance method (experimental)
 
@@ -178,7 +178,7 @@ Kalico applies ordinary pressure advance to moves that combine XY and positive e
 
 A candidate is valid only for the material, temperature, nozzle, feed rates and `smooth_time` of the run. Lower force is not better: it can mean less material or slip.
 
-**Safety of `K2_PA_CALIBRATE`:**
+**Safety of `LOAD_CELL_PA_CALIBRATE`:**
 - it refuses to run:
   - when the nozzle is not at its target temperature or cannot extrude;
   - when a feed rate exceeds `max_extrude_only_velocity`, or a pulse exceeds `max_extrude_only_distance`;
@@ -204,8 +204,8 @@ The cleaning never runs during a capture. `CLEAN=end` cleans once after the last
 
 Run the steps in order, and stop at the first failure.
 
-1. `FIRMWARE_RESTART`, then `K2_LOAD_CELL_DIAGNOSTIC`: expect `available`.
-2. Nozzle cold, printer idle: `K2_LOAD_CELL_CAPTURE DURATION=2 LABEL=rest`.
+1. `FIRMWARE_RESTART`, then `LOAD_CELL_DIAGNOSTIC`: expect `available`.
+2. Nozzle cold, printer idle: `LOAD_CELL_CAPTURE DURATION=2 LABEL=rest`.
    - Expect: `complete`; rate 1250-1310 Hz; no decode, length, gap or duplicate errors.
    - Note the noise and the link load.
    - Stop if Klipper reports `Timer too close` or MCU retransmits grow.
@@ -215,7 +215,7 @@ Run the steps in order, and stop at the first failure.
    - Confirm that `e_interval_ticks` is non-zero only during the move and that its sign gives positive `e_velocity_mm_s_derived`.
    - If the sign is reversed, fix `e_dir_sign` before going on.
 6. Repeat step 5 three times, and at a second feed rate. The decay must be visible and repeatable.
-7. `pa_calibration: experimental`, then `K2_PA_CALIBRATE` (with the box) or `K2_PA_CALIBRATE POSITION_CONFIRMED=1` (without). Read the report; `APPLY` stays 0.
+7. `pa_calibration: experimental`, then `LOAD_CELL_PA_CALIBRATE` (with the box) or `LOAD_CELL_PA_CALIBRATE POSITION_CONFIRMED=1` (without). Read the report; `APPLY` stays 0.
 8. Print a standard pressure advance test with the candidate and with a range around it. Only the printed result validates the value.
 
 **Rollback:** remove or comment out `[k2_load_cell_pa]`, then `FIRMWARE_RESTART`. Nothing else was changed: the probe configuration, thresholds and filters are untouched.

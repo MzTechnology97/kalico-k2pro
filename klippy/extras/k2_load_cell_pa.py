@@ -326,16 +326,20 @@ class K2LoadCell:
             "homing:homing_move_begin", self._guard_homing
         )
         for name, func, desc in (
-            ("K2_LOAD_CELL_CAPTURE", self.cmd_CAPTURE, self.cmd_CAPTURE_help),
-            ("K2_LOAD_CELL_STOP", self.cmd_STOP, self.cmd_STOP_help),
+            ("LOAD_CELL_CAPTURE", self.cmd_CAPTURE, self.cmd_CAPTURE_help),
+            ("LOAD_CELL_STOP", self.cmd_STOP, self.cmd_STOP_help),
             (
-                "K2_LOAD_CELL_DIAGNOSTIC",
+                "LOAD_CELL_DIAGNOSTIC",
                 self.cmd_DIAGNOSTIC,
                 self.cmd_DIAGNOSTIC_help,
             ),
-            ("K2_PA_ANALYZE", self.cmd_PA_ANALYZE, self.cmd_PA_ANALYZE_help),
             (
-                "K2_PA_CALIBRATE",
+                "LOAD_CELL_PA_ANALYZE",
+                self.cmd_PA_ANALYZE,
+                self.cmd_PA_ANALYZE_help,
+            ),
+            (
+                "LOAD_CELL_PA_CALIBRATE",
                 self.cmd_PA_CALIBRATE,
                 self.cmd_PA_CALIBRATE_help,
             ),
@@ -738,7 +742,7 @@ class K2LoadCell:
     # --- G-code -----------------------------------------------------------------
 
     cmd_CAPTURE_help = (
-        "Capture the nozzle load cell: K2_LOAD_CELL_CAPTURE [DURATION=s] "
+        "Capture the nozzle load cell: LOAD_CELL_CAPTURE [DURATION=s] "
         "[LABEL=text] [WAIT=1]"
     )
 
@@ -829,7 +833,7 @@ class K2LoadCell:
         return text
 
     cmd_PA_ANALYZE_help = (
-        "Analyze load cell captures: K2_PA_ANALYZE [FILES=a.csv,b.csv] "
+        "Analyze load cell captures: LOAD_CELL_PA_ANALYZE [FILES=a.csv,b.csv] "
         "(default: the last calibration run)"
     )
 
@@ -862,7 +866,7 @@ class K2LoadCell:
 
     cmd_PA_CALIBRATE_help = (
         "EXPERIMENTAL: E-only pulses with load cell capture and a pressure "
-        "advance candidate. K2_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] "
+        "advance candidate. LOAD_CELL_PA_CALIBRATE [FLOWS=2,5] [REPLICATES=3] "
         "[POSITION_CONFIRMED=1] [CLEAN=capture|end|never] [APPLY=0]"
     )
 
