@@ -797,6 +797,7 @@ def test_clean_gcode_replaces_the_box_clean(tmp_path, monkeypatch):
         pa_calibration="experimental",
         pa_clean_gcode="MY_CLEAN",
         pa_reprime=0.0,
+        pa_pulse_time=1.0,
     )
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
@@ -833,7 +834,10 @@ def test_reprime_counts_in_the_filament_limit(tmp_path):
     plan = k2_load_cell_pa.PaPlan([2.0, 5.0], 1, 1.0, 0.8, 1.2)
     assert plan.filament_mm == pytest.approx(8.2)
     printer, lc = make(
-        tmp_path, pa_calibration="experimental", pa_max_filament=8.0
+        tmp_path,
+        pa_calibration="experimental",
+        pa_max_filament=8.0,
+        pa_pulse_time=1.0,
     )
     printer.box = Box(printer.gcode)
     with pytest.raises(CommandError, match="pa_max_filament"):
@@ -891,3 +895,27 @@ def test_pause_inside_the_settle_window_is_not_a_gap(tmp_path):
     run_process(printer, lc)
     assert session.gaps == 0
     assert session.settle_dropped > 0
+
+
+def test_analysis_runs_off_the_reactor_thread(tmp_path, monkeypatch):
+    import threading
+
+    printer, lc = make(tmp_path, pa_calibration="experimental")
+    seen = {}
+
+    def fake_analyze(captures, opts=None):
+        seen["thread"] = threading.current_thread().name
+        seen["opts"] = opts
+        return {
+            "per_capture": {},
+            "groups": {},
+            "candidate": {"ok": False, "reasons": ["x"], "candidate": None},
+        }
+
+    monkeypatch.setattr(
+        k2_load_cell_pa.analysis, "analyze_pa_captures", fake_analyze
+    )
+    lc._last_pa_captures = [{"flow": 5.0}]
+    lc.cmd_PA_ANALYZE(GCmd({}))
+    assert seen["thread"] == "k2_load_cell_pa_analysis"
+    assert seen["opts"] == {"model": "fast_component"}

@@ -2,7 +2,7 @@
 
 `[k2_load_cell_pa]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
 
-Status: capture and calibration run validated on the K2 Pro on 2026-10-06 (steps 1, 2 and 4 to 7 of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). The analysis gives no candidate yet: the decay has two components, and the single-exponential model mixes them.
+Status: capture and calibration run validated on the K2 Pro on 2026-10-06 (steps 1, 2 and 4 to 7 of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). The fast component of the decay is about 0.030 s at 215 and 225 °C; a hand-tuned PA of 0.049 prints well with the same PLA. The candidate is not validated: only a printed test (step 8) can tell how τ₁ relates to the PA a print needs.
 
 ## Why APAX
 
@@ -97,9 +97,10 @@ Add to `printer.cfg` (or uncomment in `config/k2/prtouch.cfg`), then run `FIRMWA
 #output_dir:             # default: the Klipper log directory
 #max_files: 20
 #pa_calibration: disabled  # experimental enables LOAD_CELL_PA_CALIBRATE
-#pa_flows: 2, 5          # mm/s of filament
-#pa_pulse_time: 1.0      # seconds of extrusion per pulse
-#pa_rest_time: 0.8       # seconds of rest before and after
+#pa_model: fast_component  # or first_order_lag (one exponential)
+#pa_flows: 5, 8          # mm/s of filament (2 mm/s is under the hot noise)
+#pa_pulse_time: 0.25     # seconds per pulse: keep it under ~2 mm of filament
+#pa_rest_time: 1.5       # seconds of rest before and after
 #pa_replicates: 3
 #pa_max_filament: 150    # mm, refused above this
 #pa_purge_gcode:         # custom moves to the purge spot; overrides the box
@@ -158,8 +159,10 @@ Kalico applies ordinary pressure advance to moves that combine XY and positive e
 
 1. The nozzle must already be hot (the command never heats), over the purge area, at rest.
 2. For each feed rate and replicate, a capture records: rest (baseline), an E-only pulse at a constant feed rate, then rest for the decay.
-3. After the pulse ends, the load follows the melt pressure relaxing. The signal is fitted with `y = c + a·exp(-(t - t_stop)/τ)`.
-4. **Model `first_order_lag`:** if the flow at the nozzle lags the commanded flow with a first-order time constant τ, the advance `K·dE/dt` that cancels it is K = τ seconds. This is the candidate.
+3. After the pulse ends, the load follows the melt pressure relaxing.
+   - **Model `fast_component` (default):** fitted with `y = c + a₁·exp(-(t - t_stop)/τ₁) + a₂·exp(-(t - t_stop)/τ₂)`, τ₂ ≥ 3 τ₁, on up to 1.5 s after the stop. On the K2 Pro the decay has a fast part (τ₁ ≈ 30 ms) and a slow tail (0.2-0.6 s, filament path and mount). When a component is under 15 % of the amplitude, the decay is taken as a single exponential.
+   - **Model `first_order_lag`:** one exponential, `y = c + a·exp(-(t - t_stop)/τ)`, on 0.6 s. On the K2 Pro it mixes the two parts (τ 64-142 ms, replicates 94 % apart).
+4. If the flow at the nozzle lags the commanded flow with a first-order time constant τ, the advance `K·dE/dt` that cancels it is K = τ seconds (τ₁ for the fast component). This is the candidate.
 5. Rejected, with the reason:
    - saturation;
    - no baseline;
@@ -241,7 +244,12 @@ Switch the heaters off before restarting the Klipper service: with the nozzle he
 | Decay, offline | A two-exponential fit over 1.5 s after the stop gives a **fast τ₁ of 27–44 ms (about 32 ms) in all six captures**, and a slow τ₂ of 0.18–0.62 s that varies. At 5 mm/s it fits with R² 0.95–0.996. The single exponential over 0.6 s mixes the two, which explains the spread. The slow part is probably mechanical (filament path, blob, mount). For comparison, the printer's configured pressure advance is 0.038. |
 | Nozzle firmware output | `mcu 'nozzle_mcu': #output: Timer too close` twice, right after the calibration ended. A firmware text message, not a shutdown: Klipper stayed ready, no retransmits. Cause not identified. |
 
+| 6–7 again, model `fast_component`, 215 °C (replay of the six captures) | 5 mm/s: τ₁ 0.0263 / 0.0297 / 0.0336 s, τ₂ 0.17-0.39 s, fast share 44-65 %, R² 0.994-0.999. 2 mm/s: SNR 6-7.6, rejected. |
+| 6–7 again, `pa_flows: 5, 8`, `pa_pulse_time: 0.25`, `pa_rest_time: 1.5`, **225 °C** | All 6 fits accepted, R² 0.977-0.992, fast share 62-76 %. 5 mm/s: τ₁ 0.0365 / 0.0285 / 0.0285 s (median 0.0285, spread 28 %). 8 mm/s: τ₁ 0.0252 / 0.0310 / 0.0350 s (median 0.0310, spread 32 %). Feed-rate ratio 1.09. No candidate only because the spread is over 25 %. Median of all twelve fast components at 215 and 225 °C: **~0.030 s**. |
+| Comparison | The same Bambu PLA Basic, 0.4 mm nozzle, 225 °C, prints well with a **hand-tuned PA of 0.049** (`smooth_time` 0.038). τ₁ is about 60 % of it, and it did not change between 215 and 225 °C. |
+| "Timer too close" after the run | The analysis took 0.27 s of pure Python on the reactor; the nozzle firmware printed the line right after each report. It now runs in a thread while the reactor keeps running. To confirm on the next run. |
+
 Next:
-- fit two components and propose τ₁;
-- use feed rates of 5 mm/s and above, since the hot noise is too high for 2 mm/s;
-- validate the candidate with a printed test (step 8).
+- print a pressure advance test (step 8) over 0.025-0.055 to see where τ₁ and 0.049 fall;
+- if the print confirms a fixed ratio between τ₁ and the right PA, the model needs that factor (mount, sensor or melt dynamics). If it does not, the method is not usable for PA on this printer;
+- confirm that "Timer too close" no longer appears.
