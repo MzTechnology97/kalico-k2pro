@@ -1167,3 +1167,57 @@ def test_condition_pulse_before_each_capture(tmp_path, monkeypatch):
         "G1 E1.0000 F240.0",
         "<clean>",
     ]
+
+
+def _calibrate_result(lc, monkeypatch, printer, params, result):
+    fake_captures(lc, monkeypatch, printer)
+    monkeypatch.setattr(
+        k2_load_cell_pa.analysis,
+        "analyze_pa_captures",
+        lambda c, o=None: result,
+    )
+    monkeypatch.setattr(
+        k2_load_cell_pa.analysis, "format_pa_report", lambda r: "report"
+    )
+    gcmd = GCmd(dict(params, REPLICATES=1))
+    lc.cmd_PA_CALIBRATE(gcmd)
+    return gcmd
+
+
+def test_last_calibration_suggests_a_printed_test_range(tmp_path, monkeypatch):
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
+    printer.box = ProfileBox(printer.gcode)
+    result = {
+        "per_capture": {5.0: [{"accepted": True, "tau": 0.041}]},
+        "groups": {},
+        "candidate": {"ok": True, "candidate": 0.0412, "reasons": []},
+    }
+    gcmd = _calibrate_result(lc, monkeypatch, printer, {}, result)
+    last = lc.get_status(0)["last_calibration"]
+    assert last["slot"] == 1 and last["suggested"] == 0.0412
+    assert last["range"] == [0.026, 0.056] and not last["indicative"]
+    assert last["saved"] is None  # nothing saved without SAVE=1
+    assert printer.box.saved == []
+    assert any("from 0.026 to 0.056, step 0.002" in r for r in gcmd.replies)
+
+
+def test_without_candidate_the_accepted_median_is_indicative(
+    tmp_path, monkeypatch
+):
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
+    printer.box = ProfileBox(printer.gcode)
+    runs = [{"accepted": True, "tau": t} for t in (0.036, 0.041, 0.05)]
+    result = {
+        "per_capture": {2.0: runs + [{"accepted": False}]},
+        "groups": {},
+        "candidate": {
+            "ok": False,
+            "reasons": ["replicates disagree"],
+            "candidate": None,
+        },
+    }
+    _calibrate_result(lc, monkeypatch, printer, {}, result)
+    last = lc.get_status(0)["last_calibration"]
+    assert last["suggested"] == 0.041 and last["indicative"]
+    assert (last["accepted"], last["captures"]) == (3, 4)
+    assert last["reasons"] == ["replicates disagree"]

@@ -218,7 +218,12 @@ LOAD_CELL_PA_CALIBRATE SLOT=1 SAVE=1
 - **`SLOT=n`:** loads the slot if another one is loaded (`BOX_SELECT_SLOT`), then heats to the profile's temperature (`TEMP=` overrides) with `M109`. Only this explicit request heats; without `SLOT` the command still never heats. Without `SLOT` the loaded slot is used.
 - **Feed rates:** without `FLOWS`, they are `pa_flow_fractions` (20, 30 and 40 %) of the maximum volumetric flow, divided by the filament cross-section. The max flow comes from `MAX_FLOW=` or the slot's profile (filament, material, or the OrcaSlicer generic value). Only without any max flow are `pa_flows` used. The report says which.
   - Why: the K2 Pro bench matched the printed test at 24-40 % of the maximum flow (PETG-CF) and read 40 % low at 80-128 %.
-- **`SAVE=1`:** a valid candidate is stored in the slot's filament profile (the custom library filament and every slot that uses it, otherwise the slot profile) and applied. Without a valid candidate nothing is saved, and the report gives the reason.
+- **The result is a value to test, not to trust.** At the end the command reports a suggested pressure advance and an OrcaSlicer PA line test range around it (`pa_test_span`, ±0.015, step 0.002), and publishes them in `printer["k2_load_cell_pa"].last_calibration`:
+  - with a valid candidate, that candidate;
+  - otherwise the median of the accepted captures when there are at least 3, marked `indicative`.
+  
+  Mainsail shows them in a dialog with **Save to profile**, to use after the printed test (`_BOX_SLOT_PA_SET`).
+- **`SAVE=1`:** a valid candidate is stored in the slot's filament profile (the custom library filament and every slot that uses it, otherwise the slot profile) and applied. Without a valid candidate nothing is saved, and the report gives the reason. Mainsail no longer sends it: on 2026-10-06 one run saved a value distorted by a blob on the nozzle.
 
 ## Hardware validation procedure
 
