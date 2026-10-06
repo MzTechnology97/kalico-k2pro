@@ -212,7 +212,7 @@ Each slot in `printer.objects.box.slots` reports `pressure_advance`, `max_flow` 
 - **The slicer wins when it sets PA itself.** If the print file's metadata says `enable_pressure_advance` for that filament (OrcaSlicer then writes `SET_PRESSURE_ADVANCE` in the file), the box leaves pressure advance to the file, and the stored profile value is not changed.
 - `apply_pressure_advance: False` in `[box]` turns this off.
 
-**Max flow from the slicer.** At a load during a print whose metadata `PARSE_FLUSH_VOLUMES` read, the file's `filament_max_volumetric_speed` for that filament is saved:
+**Max flow from the slicer.** At a load during a print, the file's `filament_max_volumetric_speed` for that filament is saved. The box reads the file's metadata once per print, or uses what `PARSE_FLUSH_VOLUMES` read. The value goes:
 - into the custom library filament, or into the slot profile for a manual or read-only catalog profile;
 - only when neither has its own value.
 

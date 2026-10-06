@@ -294,3 +294,38 @@ def test_read_metadata_finds_pa_and_max_flow_per_filament(tmp_path):
     assert meta["pa_enabled"] == [True, False]
     assert meta["pressure_advance"] == [0.049, 0.04]
     assert meta["max_flow"] == [15.0, 33.0]
+
+
+def test_change_engine_reads_the_print_metadata_once_per_print(tmp_path):
+    from extras.box_change import BoxChangeEngine
+
+    path = tmp_path / "print.gcode"
+    path.write_text(
+        "; enable_pressure_advance = 0,1\n"
+        "; filament_max_volumetric_speed = 33,15\n"
+        "; pressure_advance = 0.03,0.049\n")
+    stats = types.SimpleNamespace(print_start_time=10.0, state="printing")
+    sd = types.SimpleNamespace(
+        get_status=lambda eventtime: {"file_path": str(path)},
+        is_active=lambda: True)
+    reactor = types.SimpleNamespace(monotonic=lambda: 0.0)
+    objects = {"print_stats": stats, "virtual_sdcard": sd}
+    engine = BoxChangeEngine.__new__(BoxChangeEngine)
+    engine.printer = types.SimpleNamespace(
+        lookup_object=lambda name, default=None: objects.get(name, default),
+        get_reactor=lambda: reactor)
+    engine.parsed_epoch = None
+    engine.pending = None
+    engine.mapping_filename = "print.gcode"
+    engine.active_tool, engine.active_slot = 1, 3
+
+    meta = engine.metadata_filament(3)
+    assert meta == {"tool": 1, "pressure_advance_enabled": True,
+                    "pressure_advance": 0.049, "max_flow": 15.0}
+    path.write_text("; enable_pressure_advance = 0,0\n")
+    assert engine.metadata_filament(3)["pressure_advance_enabled"]  # cached
+    stats.print_start_time = 20.0  # a new print reads the file again
+    assert not engine.metadata_filament(3)["pressure_advance_enabled"]
+    stats.state = "complete"
+    sd.is_active = lambda: False
+    assert engine.metadata_filament(3) is None
