@@ -762,7 +762,9 @@ def steps(printer):
 
 
 def test_box_wastebin_and_clean_after_each_capture(tmp_path, monkeypatch):
-    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
+    printer, lc = make(
+        tmp_path, pa_calibration="experimental", pa_warmup=0, pa_prime=0
+    )
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
     # no POSITION_CONFIRMED: the box provides the position
@@ -801,6 +803,7 @@ def test_clean_gcode_replaces_the_box_clean(tmp_path, monkeypatch):
         pa_reprime=0.0,
         pa_pulse_time=1.0,
         pa_warmup=0,
+        pa_prime=0,
     )
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
@@ -927,7 +930,7 @@ def test_analysis_runs_off_the_reactor_thread(tmp_path, monkeypatch):
 def test_warmup_pulse_is_cleaned_and_not_captured(tmp_path, monkeypatch):
     # K2 Pro bench: the first capture of a run read 25-30 % higher than the
     # next ones; an uncaptured pulse first gives every replicate the same start
-    printer, lc = make(tmp_path, pa_calibration="experimental")
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_prime=0)
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
     lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5,8", "REPLICATES": 1}))
@@ -1055,3 +1058,31 @@ def test_slot_and_save_need_box_profiles(tmp_path):
     printer.box = Box(printer.gcode)  # no filament profiles
     with pytest.raises(CommandError, match="filament profiles"):
         lc.cmd_PA_CALIBRATE(GCmd({"SLOT": 1}))
+
+
+def test_priming_purge_fills_the_nozzle_first(tmp_path, monkeypatch):
+    # K2 Pro bench: a slot left loaded after a print gave a quarter of the
+    # usual force, growing capture after capture: the nozzle was not full
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_warmup=0)
+    printer.box = Box(printer.gcode)
+    fake_captures(lc, monkeypatch, printer)
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5", "REPLICATES": 1}))
+    seq = [
+        s
+        for s in printer.gcode.scripts
+        if s.startswith(("<", "G1 E20", "G1 E1.2000"))
+    ]
+    assert seq == [
+        "<wastebin>",
+        "G1 E20.0000 F120.0",
+        "<clean>",
+        "G1 E1.2000 F120",
+        "<capture flow=5>",
+        "<clean>",
+    ]
+    plan = k2_load_cell_pa.PaPlan([5.0], 1, 0.25, 1.5, 1.2, 0, 20.0)
+    assert plan.filament_mm == pytest.approx(1.25 + 20.0 + 1.2)
+    # PRIME=0 skips it
+    printer.gcode.scripts.clear()
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5", "REPLICATES": 1, "PRIME": 0}))
+    assert not any(s.startswith("G1 E20") for s in printer.gcode.scripts)
