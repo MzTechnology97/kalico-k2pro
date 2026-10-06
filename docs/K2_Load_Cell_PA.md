@@ -2,7 +2,7 @@
 
 `[k2_load_cell_pa]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
 
-Status: validated on the K2 Pro on 2026-10-06 for one material (steps 1, 2 and 4 to 8 of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). For Bambu PLA Basic at 225 °C the calibration proposes **0.0297**; the printed pressure advance line test reads **0.032**. Other materials, temperatures and nozzles are not tested yet; step 3 is still open.
+Status: validated on the K2 Pro on 2026-10-06 for one material (all eight steps of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro)). For Bambu PLA Basic at 225 °C the calibration proposes **0.0297**; the printed pressure advance line test reads **0.032**. Other materials, temperatures and nozzles are not tested yet.
 
 ## Why APAX
 
@@ -237,6 +237,7 @@ Switch the heaters off before restarting the Klipper service: with the nozzle he
 | --- | --- |
 | 1. Diagnostic | `available`; CS1237 1280 Hz nominal, gain 128; no late blocks. The first attempt failed at startup: Klipper refuses command names whose second character is a digit (`K2_…` parses as `K` with argument `2`). The commands are now `LOAD_CELL_…`. |
 | 2. Rest, nozzle cold | `complete`: 2505 samples in 1.95 s, **1283.8 Hz**; noise 210 counts, drift 76 counts/s; no decode, length or duplicate errors; no `Timer too close`; nozzle MCU retransmits unchanged. **Link load 11.7 kB/s, 51% of the 230400 baud link.** One gap was counted inside the 50 ms settle window, where the sensor pauses about 5 ms while it is reconfigured (57 samples dropped instead of ~64); gaps now count only in kept data. |
+| 3. Press by hand, nozzle at 45 °C | Four 10 s captures, all `complete`, 0 gaps. A light upward push on the nozzle gives **−130 000 to −172 000 counts** (pushing up lowers the counts; extrusion, which pushes the nozzle down, raises them). After every release the value comes back to rest within 1 000 counts (under 1 % of the change), and three releases in one capture land on the same level. No saturation (the CS1237 range is ±8.4 million). |
 | 4. Probe after captures | `PROBE_ACCURACY SAMPLES=5` at the center: range 0.0023 mm, standard deviation 0.0009 mm. |
 | 5. Extrusion, 215 °C PLA, 10 mm at 3 mm/s over the wastebin | `complete`, 8662 samples, 0 gaps, link load 13 kB/s. Derived velocity **+3.00 mm/s** for 3.34 s (3.33 s commanded). Load: rest 157 ± 800 counts; **~49 000 within 0.1 s** of the start, easing to ~33 000 at 0.9 s; then a rise to a **flat ~92 000 from 1.5 s to the stop**, the blob resting on the bottom of the wastebin. After the stop: 71 000 → 26 000 (0.1 s) → 14 000 (0.3 s) → 7 700 (1 s) → 5 000 (2 s). |
 | 4. Probe, again after the hot captures | First reading -0.394 mm average: the `G28` after a Klipper restart had touched on the blob left by step 5. Re-homed with a clean nozzle at 119 °C: -0.029 mm, range 0.027 mm (soft PLA on the tip). **Cold and clean: range 0.0039 mm, standard deviation 0.0011 mm over 10 samples**, as before the captures. APAX does not affect PRTouch. |
@@ -252,6 +253,5 @@ Switch the heaters off before restarting the Klipper service: with the nozzle he
 Note on the CFS: `T0` at print start sets the nozzle to the file's `nozzle_temperature`, not to `START_PRINT EXTRUDER_TEMP`: the coarse test was sliced at 230 °C and printed at 231 °C although the start macro asked for 220.
 
 Next:
-- step 3 (press the nozzle by hand during a capture);
 - other materials (PETG, ABS) and temperatures, each checked with a printed line test;
 - one full calibration with the analysis in its thread, to confirm that "Timer too close" is gone.
