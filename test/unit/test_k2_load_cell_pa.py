@@ -787,7 +787,7 @@ def test_box_wastebin_and_clean_after_each_capture(tmp_path, monkeypatch):
 
 
 def test_box_clean_only_at_the_end(tmp_path, monkeypatch):
-    printer, lc = make(tmp_path, pa_calibration="experimental")
+    printer, lc = make(tmp_path, pa_calibration="experimental", pa_prime=0)
     printer.box = Box(printer.gcode)
     fake_captures(lc, monkeypatch, printer)
     lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "2,5", "REPLICATES": 1, "CLEAN": "end"}))
@@ -1110,3 +1110,28 @@ def test_reprime_default_covers_the_ooze_and_can_be_set(tmp_path, monkeypatch):
     lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5,8", "REPLICATES": 1, "REPRIME": 2}))
     assert "G1 E2.0000 F120" in printer.gcode.scripts
     assert "G1 E3.0000 F120" not in printer.gcode.scripts
+
+
+def test_clean_at_the_end_still_cleans_the_priming_purge(tmp_path, monkeypatch):
+    # with short pulses the captures can run back to back (no retract and
+    # reprime between them); the purge blob is still cleaned first
+    printer, lc = make(
+        tmp_path, pa_calibration="experimental", pa_warmup=0, pa_reprime=1.2
+    )
+    printer.box = Box(printer.gcode)
+    fake_captures(lc, monkeypatch, printer)
+    lc.cmd_PA_CALIBRATE(GCmd({"FLOWS": "5,8", "REPLICATES": 1, "CLEAN": "end"}))
+    seq = [
+        s
+        for s in printer.gcode.scripts
+        if s.startswith(("<", "G1 E20", "G1 E1.2000"))
+    ]
+    assert seq == [
+        "<wastebin>",
+        "G1 E20.0000 F120.0",
+        "<clean>",
+        "G1 E1.2000 F120",
+        "<capture flow=5>",
+        "<capture flow=8>",
+        "<clean>",
+    ]
