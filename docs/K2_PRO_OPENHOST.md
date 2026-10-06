@@ -222,6 +222,7 @@ Each slot in `printer.objects.box.slots` reports `pressure_advance`, `max_flow` 
 _BOX_FILAMENT_SET ID=90002 MATERIAL=PETG-CF ... PRESSURE_ADVANCE=0.040 MAX_FLOW=15
 _BOX_MATERIAL_SET MATERIAL=PLA PRESSURE_ADVANCE=0.032 MAX_FLOW=20   # TARGET_TEMP only for a new material
 _BOX_MATERIAL_SET MATERIAL=PLA MAX_FLOW=
+_BOX_SLOT_PA_SET SLOT=0 PRESSURE_ADVANCE=0.040   # into the slot's filament profile, e.g. after a printed test
 ```
 
 The K2-RFID catalogs read `max_flow` (compact form) or `kvParam.filament_max_volumetric_speed` (Creality form).
