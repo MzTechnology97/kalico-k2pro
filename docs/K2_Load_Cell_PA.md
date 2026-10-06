@@ -2,7 +2,7 @@
 
 `[k2_load_cell_pa]` records the K2 nozzle load cell (CS1237) continuously through the stock nozzle firmware. It also offers diagnostics, CSV export, offline replay and an **experimental** pressure advance analysis. It is optional: without the section nothing changes, and PRTouch, homing, Cartographer, nozzle cleaning and the start print macros work as before.
 
-Status: tested on the K2 Pro on 2026-10-06 with all eight steps of the [hardware procedure](#hardware-validation-procedure), see [Results on the K2 Pro](#results-on-the-k2-pro). **It matches a printed test for one material and not for another:** Bambu PLA Basic at 225 °C, candidate 0.0297 against 0.032 printed; Generic PETG-CF at 250 °C, about 0.023 against **about 0.040** printed (40 % low). Use the candidate only as a starting point for a printed test.
+Status: **archived on 2026-10-06, still to be developed.** Neither the E-only decay method nor the closed-loop sweep prototype gives a value that matches printed tests for more than one material; see [Results on the K2 Pro](#results-on-the-k2-pro) and [Closed-loop sweep](#closed-loop-sweep-prototype). The module is disabled on the reference printer. The capture side (APAX stream, CSV export, diagnostics) works and stays usable for research.
 
 ## Why APAX
 
@@ -285,8 +285,23 @@ Switch the heaters off before restarting the Klipper service: with the nozzle he
 
 Note on the CFS: `T0` at print start sets the nozzle to the file's `nozzle_temperature`, not to `START_PRINT EXTRUDER_TEMP`: the coarse test was sliced at 230 °C and printed at 231 °C although the start macro asked for 220.
 
-Next:
-- choose the feed rates from the material's maximum volumetric flow (for example `MAX_FLOW=15` → 20, 30 and 40 % of it), not fixed 5 and 8 mm/s;
-- reject a run whose force stops growing with the feed rate (past the flow limit);
-- repeat PLA at low feed rates, to see whether 0.030 holds;
-- until then the candidate is a starting point for a printed test, not a value to apply.
+## Closed-loop sweep (prototype)
+
+On 2026-10-06 the method used by [bd_pressure](https://github.com/markniu/bd_pressure) and by CNC Kitchen's [PrusaPATuner](https://github.com/CNCKitchen/PrusaPATuner) was tried: instead of converting a decay time into a value, extrude while sweeping real pressure advance values and look at the shape of the force.
+
+- Kalico applies pressure advance only to moves with X or Y motion (`klippy/kinematics/extruder.py`), so E-only pulses never show its effect. The prototype prints lines in the air, 50 mm above the bed: slow 1 s, fast 0.4 s, slow 1 s, at 5000 mm/s², one capture per value.
+- Time reference: the first E step of each line, which does not depend on the pressure advance value. Measuring the transitions on the E velocity moves them by about K seconds.
+- With the nozzle cold, the X/Y moves alone add ±1 000-1 500 counts at the transitions.
+
+| Run | Undershoot onset | Fall area zero (150-300 ms) | Printed test |
+| --- | --- | --- | --- |
+| Bambu PLA Basic 225 °C, 2.2 / 22 mm³/s | 0.031 | 0.046 | 0.032 |
+| same, repeated | 0.031 | 0.045 | 0.032 |
+| IEMAI PETG-CF 250 °C, 1.0 / 10 mm³/s | 0.030 | 0.040 | 0.040 |
+| IEMAI PETG-CF 250 °C, 1.4 / 15 mm³/s | not valid: the force kept rising inside the fast segment (50k → 146k), the material is at its flow limit | | 0.040 |
+
+- **Repeatable:** the two PLA runs are almost identical.
+- **No single criterion matches both materials:** the undershoot onset (CNC Kitchen's criterion) matches PLA, the fall area matches PETG-CF. The response has a fast part (20-30 ms) and a slow tail (100-300 ms) that pressure advance cannot cancel; the two criteria weigh them differently.
+- **Weak signal on PETG-CF:** the fast-slow force step is ~30 000 counts against ~155 000 for PLA, and the strand hanging to the bed changes the force with the line direction.
+
+Prototype scripts, run on the host through Moonraker: [`scripts/k2_pa_sweep`](../scripts/k2_pa_sweep). To continue: a third material with a printed value (to choose the criterion), shorter lines or an in-place wiggle to reduce the strand drag, and denser values near the result.
