@@ -1271,23 +1271,51 @@ class BoxChangeEngine:
     def metadata_filament(self, slot):
         """Slicer settings of the file tool loaded into slot, or None.
 
-        Only for the print whose metadata PARSE_FLUSH_VOLUMES read.
+        During a print only. Uses what PARSE_FLUSH_VOLUMES read, or reads the
+        file's metadata itself once per print (the start macros do not all
+        call PARSE_FLUSH_VOLUMES).
         """
-        if not self._parsed_is_current():
+        lists = self._print_filament_metadata()
+        if lists is None:
             return None
         tool = self._metadata_tool(slot)
         if tool is None or tool < 0:
             return None
+        enabled, values, flows = lists
 
-        def pick(values):
-            return values[tool] if values and tool < len(values) else None
+        def pick(items):
+            return items[tool] if items and tool < len(items) else None
 
         return {
             "tool": tool,
-            "pressure_advance_enabled": pick(self.pa_enabled),
-            "pressure_advance": pick(self.pa_values),
-            "max_flow": pick(self.max_flow_values),
+            "pressure_advance_enabled": pick(enabled),
+            "pressure_advance": pick(values),
+            "max_flow": pick(flows),
         }
+
+    def _print_filament_metadata(self):
+        epoch = self._print_epoch()
+        if epoch is None or not self._is_print_active():
+            return None
+        if self._parsed_is_current():
+            return self.pa_enabled, self.pa_values, self.max_flow_values
+        cached = getattr(self, "_filament_metadata", None)
+        if cached is not None and cached[0] == epoch:
+            return cached[1]
+        lists = None
+        try:
+            sd = self.printer.lookup_object("virtual_sdcard")
+            path = sd.get_status(
+                self.printer.get_reactor().monotonic()).get("file_path")
+            if path:
+                metadata = read_metadata(path)
+                lists = (metadata.get("pa_enabled"),
+                         metadata.get("pressure_advance"),
+                         metadata.get("max_flow"))
+        except (OSError, ValueError):
+            lists = None
+        self._filament_metadata = (epoch, lists)
+        return lists
 
     def _metadata_tool(self, slot, source=False):
         if self.mapping_filename is None:
