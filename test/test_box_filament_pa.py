@@ -329,3 +329,16 @@ def test_change_engine_reads_the_print_metadata_once_per_print(tmp_path):
     stats.state = "complete"
     sd.is_active = lambda: False
     assert engine.metadata_filament(3) is None
+
+
+def test_slot_pa_set_saves_in_the_profile(tmp_path):
+    box = make_box(tmp_path)
+    box.store.set_filament("90002", dict(PETG_CF, pressure_advance=0.02))
+    assign(box, 0, "90002")
+    box.cmd_slot_pa_set(FakeGcmd({"SLOT": 0, "PRESSURE_ADVANCE": 0.04}))
+    assert box.store.filament("90002")["pressure_advance"] == 0.04
+    assert "saved in filament 90002" in box.messages[-1]
+    with pytest.raises(BoxError, match="PRESSURE_ADVANCE"):
+        box.cmd_slot_pa_set(FakeGcmd({"SLOT": 0}))
+    with pytest.raises(BoxError, match="no filament profile"):
+        box.cmd_slot_pa_set(FakeGcmd({"SLOT": 3, "PRESSURE_ADVANCE": 0.04}))

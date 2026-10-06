@@ -42,6 +42,7 @@ SAFE_WIDGET_COMMANDS = frozenset((
     "_BOX_SLOT_SET",
     "_BOX_SLOT_CLEAR",
     "_BOX_MATERIAL_SET",
+    "_BOX_SLOT_PA_SET",
     "_BOX_FILAMENT_SET",
     "_BOX_FILAMENT_DELETE",
     "_BOX_SLOT_ASSIGN",
@@ -1272,6 +1273,8 @@ class Box:
             ("_BOX_SLOT_SET", self.cmd_slot_set, "Save slot metadata"),
             ("_BOX_SLOT_CLEAR", self.cmd_slot_clear, "Clear slot metadata"),
             ("_BOX_MATERIAL_SET", self.cmd_material_set, "Save material metadata"),
+            ("_BOX_SLOT_PA_SET", self.cmd_slot_pa_set,
+             "Save a pressure advance in the slot's filament profile"),
             ("_BOX_FILAMENT_SET", self.cmd_filament_set, "Save a reusable filament profile"),
             ("_BOX_FILAMENT_DELETE", self.cmd_filament_delete, "Delete a reusable filament profile"),
             ("_BOX_FILAMENT_RELOAD", self.cmd_filament_reload,
@@ -2109,6 +2112,26 @@ class Box:
         where = self._store_slot_setting(slot, "pressure_advance", value)
         self._apply_pressure_advance(slot)
         return where
+
+    def cmd_slot_pa_set(self, gcmd):
+        """_BOX_SLOT_PA_SET SLOT=n PRESSURE_ADVANCE=x: e.g. after a printed test."""
+        slot = gcmd.get_int(
+            "SLOT", None, minval=0,
+            maxval=MAX_ADDRESSES * SLOTS_PER_BOX)
+        if slot is None or not self.is_valid_slot(slot):
+            raise gcmd.error("[BOX]: SLOT must be an online box slot")
+        value = gcmd.get_float(
+            "PRESSURE_ADVANCE", None, minval=0.0, maxval=2.0)
+        if value is None:
+            raise gcmd.error("[BOX]: PRESSURE_ADVANCE is required")
+        if not self.profile(slot).get("material"):
+            raise gcmd.error("[BOX]: %s has no filament profile"
+                             % self.slot_label(slot))
+        try:
+            where = self.save_slot_pressure_advance(slot, value)
+        except BoxError as exc:
+            raise gcmd.error("[BOX]: %s" % exc)
+        self._info(gcmd, "Pressure advance %.4f saved in %s" % (value, where))
 
     def _store_slot_setting(self, slot, field, value):
         """Write field into the slot's custom library filament, else the slot."""
