@@ -49,6 +49,7 @@ SAFE_WIDGET_COMMANDS = frozenset((
     "BOX_RFID_SCAN",
     "BOX_INFO_REFRESH",
     "_BOX_SET_RUNOUT_SWAP",
+    "_BOX_SET_CLOG_DETECTION",
     "_BOX_SET_RUNOUT_ORDER",
     "BOX_ENABLE_AUTO_REFILL",
     "_BOX_SET_UNLOAD_AFTER_PRINT",
@@ -94,7 +95,8 @@ UNLOAD_RETRY_MM = 25.0
 UNLOAD_RETRIES = 3
 ENCODER_CLEAR_MM = 20.0
 
-CLOG_EXTRUDER_MM = 80.0
+# The CFS refills the buffer in ~25-30mm chunks, so any single refill moves
+# the encoder past this and proves filament is flowing.
 CLOG_ENCODER_RESET_MM = 18.0
 
 CFS_COMMAND_FATAL_STATUSES = frozenset((
@@ -129,6 +131,8 @@ CLEAN_MINIMUM_CRUISE_RATIO = 0.5
 CLEAN_LIMIT_SCV = 5
 CLEAN_SERPENTINE_Y_STEP = 2.0
 CLEAN_SCRAPER_PASSES = 3
+# Toolhead moves between the wastebin visits of a filament retry.
+DEFAULT_FILAMENT_RETRY_MOVES = "Y350, X300, Y50, X50"
 
 SNAP_RETRACT_MM = 1.2
 
@@ -168,6 +172,27 @@ class _VirtualSDGCodeObserver:
                 self.enabled = False
                 _klog('runout feature observer disabled', level=logging.exception)
         return result
+
+
+def _parse_retry_moves(text, error):
+    """Parse comma-separated XY moves such as "Y350, X300 Y50"."""
+    moves = []
+    for item in str(text).split(","):
+        move = {}
+        try:
+            words = item.upper().split()
+            if not words:
+                raise ValueError(item)
+            for word in words:
+                axis, value = word[0].lower(), float(word[1:])
+                if axis not in "xy" or axis in move or not math.isfinite(value):
+                    raise ValueError(item)
+                move[axis] = value
+        except ValueError:
+            raise error(
+                "Invalid filament_retry_moves entry %r" % (item.strip(),))
+        moves.append(move)
+    return tuple(moves)
 
 
 def _spool_id_from_reserve(value):
@@ -1024,6 +1049,9 @@ class Box:
             raise config.error("Invalid clean pad boundaries")
         self.wastebin_x = config.getfloat("wastebin_pos_x", 133.0)
         self.wastebin_y = config.getfloat("wastebin_pos_y", 378.0)
+        self.filament_retry_moves = _parse_retry_moves(config.get(
+            "filament_retry_moves", DEFAULT_FILAMENT_RETRY_MOVES),
+            config.error)
         self.travel_velocity = config.getfloat(
             "travel_velocity", 18000.0, above=0.0)
         self.z_velocity = config.getfloat(
@@ -1046,6 +1074,11 @@ class Box:
         self.pre_cut_cal_x = config.getfloat("pre_cut_cal_pos_x", -5.0)
         self.cut_check_max_x = config.getfloat("check_cut_pos_x_max", -5.5)
         self.cut_check_min_x = config.getfloat("check_cut_pos_x_min", -9.5)
+        # Default until _BOX_SET_CLOG_DETECTION saves a runtime value.
+        self.clog_detection_default = config.getboolean("clog_detection", True)
+        # Below one refill chunk, normal buffer draw would read as a clog.
+        self.clog_extruder_length = config.getfloat(
+            "clog_extruder_length", 80.0, minval=30.0)
 
         self.serial = None
         self.drivers = {}
@@ -1221,6 +1254,8 @@ class Box:
              "HelixScreen/Creality-compatible slot metadata update"),
             ("_BOX_SET_RUNOUT_SWAP", self.cmd_runout_swap,
              "Set automatic runout swapping"),
+            ("_BOX_SET_CLOG_DETECTION", self.cmd_clog_detection,
+             "Turn clog detection on or off (saved)"),
             ("_BOX_SET_RUNOUT_ORDER", self.cmd_runout_order,
              "Set the manual order of identical spools for runout swap"),
             ("BOX_ENABLE_AUTO_REFILL", self.cmd_runout_swap,
@@ -1355,7 +1390,22 @@ class Box:
             )
             self.registered_tools.add(tool)
 
+    def _check_retry_moves(self):
+        """filament_retry_moves must stay inside the X/Y travel limits."""
+        status = self.printer.lookup_object("toolhead").get_status(
+            self.reactor.monotonic())
+        low, high = status["axis_minimum"], status["axis_maximum"]
+        for move in self.filament_retry_moves:
+            for axis, value in move.items():
+                index = "xy".index(axis)
+                if not low[index] <= value <= high[index]:
+                    raise self.printer.config_error(
+                        "filament_retry_moves: %s%g is outside the %s travel "
+                        "(%g to %g)" % (axis.upper(), value, axis.upper(),
+                                        low[index], high[index]))
+
     def _klippy_ready(self, *args):
+        self._check_retry_moves()
         self.klippy_ready = True
         lane_data = getattr(self, "lane_data", None)
         if lane_data is not None:
@@ -1468,6 +1518,7 @@ class Box:
             "runout": self._runout_status(physical, snap),
             "runout_groups": self._runout_groups(physical),
             "runout_swap_enabled": self.runout_swap_enabled,
+            "clog_detection_enabled": self.clog_detection,
             "runout_order": self.runout_order,
             "unload_after_print_enabled": self.unload_after_print_enabled,
             "rfid_insert_reading_enabled": self.rfid_insert_reading_enabled,
@@ -1613,10 +1664,18 @@ class Box:
                 "state_code": None if reply is None else reply.box_state,
                 "temp_c": None if reply is None else reply.temp_c,
                 "humidity_pct": None if reply is None else reply.humidity_pct,
+                # Shape of the command-0x0A state reply: CFS firmware 1.1.3
+                # sends 4 bytes (box_k2pro), the K2 Plus implementation 6.
+                "state_payload_bytes": self._state_payload_bytes(reply),
                 "slots": [self._global_slot(address, local)
                           for local in range(SLOTS_PER_BOX)],
             })
         return units
+
+    @staticmethod
+    def _state_payload_bytes(reply):
+        payload = getattr(reply, "payload", None)
+        return None if payload is None else len(payload)
 
     def _external_status(self, snap):
         return self._slot_status(self.external_slot, snap, external=True)
@@ -1874,6 +1933,11 @@ class Box:
         return bool(self.store.setting("runout_swap_enabled", True))
 
     @property
+    def clog_detection(self):
+        return bool(self.store.setting(
+            "clog_detection_enabled", self.clog_detection_default))
+
+    @property
     def runout_order(self):
         """Physical slots in the user's runout order (empty: automatic)."""
         store = getattr(self, "store", None)
@@ -2098,17 +2162,22 @@ class Box:
             encoder_delta = abs(
                 self.clog_baseline.get("last_encoder", 0.0) - self.clog_baseline["encoder"])
         triggered = (
-            extruder_delta is not None and extruder_delta > CLOG_EXTRUDER_MM
+            extruder_delta is not None
+            and extruder_delta > self.clog_extruder_length
             and encoder_delta <= CLOG_ENCODER_RESET_MM)
-        state = "disabled" if self.runout_active else (
-            "inactive" if not self.snapshot.tracking else (
-                "triggered" if triggered else "active"))
+        if not self.clog_detection or self.runout_active:
+            state = "disabled"
+        elif not self.snapshot.tracking:
+            state = "inactive"
+        else:
+            state = "triggered" if triggered else "active"
         return {
             "state": state,
+            "enabled": self.clog_detection,
             "baseline_ready": self.clog_baseline is not None,
             "extruder_delta_mm": extruder_delta,
             "encoder_delta_mm": encoder_delta,
-            "extruder_threshold_mm": CLOG_EXTRUDER_MM,
+            "extruder_threshold_mm": self.clog_extruder_length,
             "encoder_reset_mm": CLOG_ENCODER_RESET_MM,
             "triggered": triggered,
             "event_count": self.clog_event_count,
@@ -2643,6 +2712,10 @@ class Box:
             "box %d RFID slot mask" % address)
         if not (presence.value & (1 << local)):
             raise gcmd.error("[BOX]: T%d has no spool present" % slot)
+        if self._rfid_reread_blocked(slot):
+            raise gcmd.error(
+                "[BOX]: T%d is loaded toward the printhead; unload it first "
+                "(BOX_UNLOAD), then reread its tag" % slot)
         applied = self._force_rfid_results(
             address, driver, 1 << local, "manual T%d reread" % slot)
         if slot not in applied:
@@ -2650,6 +2723,19 @@ class Box:
                 "[BOX]: RFID reread for T%d did not return a valid tag record; retry the slot read" % slot)
         self._read_rfid_remaining(slot)
         self._info(gcmd, "RFID reread complete for T%d" % slot)
+
+    def _rfid_reread_blocked(self, slot):
+        """True when slot's filament is loaded toward the printhead.
+
+        A reread makes the CFS pull the filament back past its reader. With
+        the filament out in the feed path and held by the printhead gears,
+        the hub motor stalls: a forced reread of a loaded slot on the
+        reference printer ended in UNLOAD_MOTOR_BLOCKED. Same rule as the
+        slot's "loaded" status (loaded slot, or fed out per loaded_mask).
+        """
+        snap = self.snapshot
+        return snap.loaded_slot == slot or bool(
+            (snap.loaded_mask or 0) & (1 << slot))
 
     def cmd_info_refresh(self, gcmd):
         address = gcmd.get_int(
@@ -2671,6 +2757,13 @@ class Box:
                 driver.query_slot_mask(timeout=0.5),
                 "box %d RFID refresh slot mask" % current)
             selected = mask & int(presence.value) & ((1 << SLOTS_PER_BOX) - 1)
+            for local in range(SLOTS_PER_BOX):
+                slot = (current - 1) * SLOTS_PER_BOX + local
+                if selected & (1 << local) and self._rfid_reread_blocked(slot):
+                    selected &= ~(1 << local)
+                    self._info(
+                        gcmd, "T%d is loaded toward the printhead: its tag "
+                        "is not reread" % slot)
             if not selected:
                 continue
             applied = self._force_rfid_results(
@@ -2727,6 +2820,14 @@ class Box:
         enabled = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
         self.store.set_setting("runout_swap_enabled", enabled)
         self._info(gcmd, "Runout swap %s" % ("enabled" if enabled else "disabled"))
+
+    def cmd_clog_detection(self, gcmd):
+        enabled = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
+        self.store.set_setting("clog_detection_enabled", enabled)
+        # A new count starts when detection comes back.
+        self.clog_baseline = None
+        self._info(gcmd, "Clog detection %s" % (
+            "enabled" if enabled else "disabled"))
 
     def cmd_runout_order(self, gcmd):
         raw = str(gcmd.get("ORDER", "") or "").strip()
@@ -3979,6 +4080,29 @@ class Box:
         finally:
             setter(max(0.0, min(float(restore), 1.0)))
 
+    def _z_homed(self):
+        toolhead = self.printer.lookup_object("toolhead")
+        return "z" in toolhead.get_status(
+            self.reactor.monotonic()).get("homed_axes", "")
+
+    def _service_move(self, x=None, y=None, velocity=None):
+        """Move XY for service travel; callers must have G90 active.
+
+        With Z homed, G0 keeps bed mesh compensation so travel holds the
+        hop above the bed and print. With Z unhomed the mesh has no Z
+        reference and would fail the move (G28 Z cleans before homing Z),
+        so move in toolhead space. extended_zone_transform routes both.
+        """
+        if not self._z_homed():
+            self.printer.lookup_object("extended_zone_transform").manual_move(
+                [x, y], velocity / 60.0)
+            return
+        # Fixed-point: %g's exponent form ("Y1e-05") parses as Y1 E-5.
+        words = "".join(
+            " %s%s" % (axis, ("%.3f" % value).rstrip("0").rstrip("."))
+            for axis, value in (("X", x), ("Y", y)) if value is not None)
+        self.gcode.run_script_from_command("G0%s F%.0f" % (words, velocity))
+
     def nozzle_clean(self):
         toolhead = self.printer.lookup_object("toolhead")
         save_motion_limits(
@@ -4000,18 +4124,13 @@ class Box:
             center_x = (left + right) / 2.0
             amplitude_x = (right - left) / 2.0
             segments = y_steps * 8
-            self.gcode.run_script_from_command(
-                "G0 Y%g F%.0f" % (back, self.travel_velocity))
-            self.gcode.run_script_from_command(
-                "G0 X%g F%.0f" % (left, self.clean_velocity))
+            self._service_move(y=back, velocity=self.travel_velocity)
+            self._service_move(x=left, velocity=self.clean_velocity)
             for _index in range(CLEAN_SCRAPER_PASSES):
-                self.gcode.run_script_from_command(
-                    "G0 X%g F%.0f" % (
-                        self.wastebin_x, self.clean_velocity))
-                self.gcode.run_script_from_command(
-                    "G0 X%g F%.0f" % (left, self.clean_velocity))
-            self.gcode.run_script_from_command(
-                "G0 X%g F%.0f" % (right, self.clean_velocity))
+                self._service_move(
+                    x=self.wastebin_x, velocity=self.clean_velocity)
+                self._service_move(x=left, velocity=self.clean_velocity)
+            self._service_move(x=right, velocity=self.clean_velocity)
             for pass_index in range(self.clean_pad_passes):
                 direction = -1.0 if (pass_index * y_steps) % 2 else 1.0
                 for index in range(1, segments + 1):
@@ -4019,17 +4138,14 @@ class Box:
                     x = center_x + direction * amplitude_x * math.cos(
                         math.pi * y_steps * progress)
                     y = back + (front - back) * progress
-                    self.gcode.run_script_from_command(
-                        "G0 X%.3f Y%.3f F%.0f" % (
-                            x, y, self.clean_velocity))
-                self.gcode.run_script_from_command(
-                    "G0 X%g F%.0f" % (center_x, self.clean_velocity))
-                self.gcode.run_script_from_command(
-                    "G0 Y%g F%.0f" % (back, self.clean_velocity))
-            self.gcode.run_script_from_command(
-                "G0 X%g F%.0f" % (self.wastebin_x, self.clean_velocity))
-            self.gcode.run_script_from_command(
-                "G0 Y%g F%.0f" % (self.wastebin_y, self.travel_velocity))
+                    self._service_move(
+                        x=x, y=y, velocity=self.clean_velocity)
+                self._service_move(x=center_x, velocity=self.clean_velocity)
+                self._service_move(y=back, velocity=self.clean_velocity)
+            self._service_move(
+                x=self.wastebin_x, velocity=self.clean_velocity)
+            self._service_move(
+                y=self.wastebin_y, velocity=self.travel_velocity)
             toolhead.wait_moves()
         finally:
             restore_motion_limits(
@@ -4061,10 +4177,12 @@ class Box:
         # Cleaning may run inside HOME_IF_NEEDED during Z homing.
         if "x" not in homed or "y" not in homed:
             self.gcode.run_script_from_command("HOME_IF_NEEDED AXIS=XY")
-        # Compare in G-code coordinates, matching the absolute moves below.
-        gcode_move = self.printer.lookup_object("gcode_move")
-        position = gcode_move.get_status(
-            self.reactor.monotonic())["gcode_position"]
+        # Compare in the coordinate space _service_move will use.
+        if self._z_homed():
+            position = self.printer.lookup_object("gcode_move").get_status(
+                self.reactor.monotonic())["gcode_position"]
+        else:
+            position = toolhead.get_position()
         if (abs(position[0] - self.wastebin_x) < 1.0e-6
                 and abs(position[1] - self.wastebin_y) < 1.0e-6):
             return
@@ -4077,13 +4195,12 @@ class Box:
                 "MINIMUM_CRUISE_RATIO=%g SQUARE_CORNER_VELOCITY=%d"
                 % (CLEAN_LIMIT_VELOCITY, CLEAN_LIMIT_ACCEL,
                    CLEAN_MINIMUM_CRUISE_RATIO, CLEAN_LIMIT_SCV))
-            self.gcode.run_script_from_command(
-                "G0 X%g Y%g F%.0f" % (
-                    self.wastebin_x + 10.0, self.wastebin_y,
-                    self.travel_velocity))
-            self.gcode.run_script_from_command(
-                "G0 X%g Y%g F%.0f" % (
-                    self.wastebin_x, self.wastebin_y, self.travel_velocity))
+            self._service_move(
+                x=self.wastebin_x + 10.0, y=self.wastebin_y,
+                velocity=self.travel_velocity)
+            self._service_move(
+                x=self.wastebin_x, y=self.wastebin_y,
+                velocity=self.travel_velocity)
         finally:
             restore_motion_limits(
                 self.gcode, "_box_wastebin_limits", include_gcode=True, move=0)
@@ -4105,11 +4222,9 @@ class Box:
                 "MINIMUM_CRUISE_RATIO=%g SQUARE_CORNER_VELOCITY=%d"
                 % (CLEAN_LIMIT_VELOCITY, CLEAN_LIMIT_ACCEL,
                    CLEAN_MINIMUM_CRUISE_RATIO, CLEAN_LIMIT_SCV))
-            wastebin = "X%g Y%g" % (self.wastebin_x, self.wastebin_y)
-            for move in (
-                    wastebin, "Y350", "X300", "Y50", "X50", wastebin):
-                self.gcode.run_script_from_command(
-                    "G0 %s F%.0f" % (move, self.travel_velocity))
+            wastebin = {"x": self.wastebin_x, "y": self.wastebin_y}
+            for move in (wastebin,) + self.filament_retry_moves + (wastebin,):
+                self._service_move(velocity=self.travel_velocity, **move)
             toolhead.wait_moves()
         finally:
             restore_motion_limits(
@@ -4145,9 +4260,8 @@ class Box:
                 "MINIMUM_CRUISE_RATIO=%g SQUARE_CORNER_VELOCITY=%d"
                 % (CUT_LIMIT_VELOCITY, CUT_LIMIT_ACCEL,
                    CUT_LIMIT_CRUISE, CUT_LIMIT_SCV))
-            self.gcode.run_script_from_command(
-                "G0 X%.2f Y%.2f F%.0f" % (
-                    self.pre_cut_x, self.cut_y, self.travel_velocity))
+            self._service_move(
+                x=self.pre_cut_x, y=self.cut_y, velocity=self.travel_velocity)
             toolhead.wait_moves()
             if not self.get_cut_sensor_state():
                 raise BoxError("Cut sensor is not in standby")
@@ -4157,11 +4271,10 @@ class Box:
             for attempt in range(3):
                 if attempt:
                     self._info(self.gcode, "Cut retry %d/3" % (attempt + 1))
-                self.gcode.run_script_from_command(
-                    "G0 X%.2f F%.0f" % (self.cut_x, self.cut_velocity))
+                self._service_move(x=self.cut_x, velocity=self.cut_velocity)
                 toolhead.wait_moves()
-                self.gcode.run_script_from_command(
-                    "G0 X%.2f F%.0f" % (self.pre_cut_x, self.travel_velocity))
+                self._service_move(
+                    x=self.pre_cut_x, velocity=self.travel_velocity)
                 toolhead.wait_moves()
                 if self._wait_cut_return(1.0):
                     returned = True
@@ -4572,7 +4685,8 @@ class Box:
                 lane_data.update(self._slot_statuses(snap))
             if include_topology:
                 self.last_topology_refresh = eventtime
-            if snap.tracking and not self.runout_active:
+            if (self.clog_detection and snap.tracking
+                    and not self.runout_active):
                 self._check_clog(eventtime, snap)
             else:
                 self.clog_baseline = None
@@ -4679,7 +4793,7 @@ class Box:
                 "last_extruder": position, "last_encoder": snap.encoder_mm,
             }
             return
-        if extruder_delta <= CLOG_EXTRUDER_MM:
+        if extruder_delta <= self.clog_extruder_length:
             return
         self.clog_event_count += 1
         self.last_clog = {

@@ -1429,6 +1429,19 @@ def decode_untyped_payload(payload: bytes):
     return payload.hex()
 
 
+class TransportBusyError(RuntimeError):
+    """Another query is still waiting for its answer on this transport.
+
+    The nozzle transparent channel carries one request at a time. A reactor
+    timer that fires while another one waits (the motor temperature poll and
+    the protection poll share it) finds the channel busy.
+    """
+
+
+def transport_busy(client) -> bool:
+    return bool(getattr(getattr(client, "transport", None), "busy", False))
+
+
 class MotorFirmwareClient:
     def __init__(self, transport, *, framed: bool = False):
         self.transport = transport
@@ -2228,6 +2241,10 @@ class NozzleTransparentTransportAdapter:
         # Cached counters only; never touches the MCU.
         return self.stats.snapshot(self.is_configured(), self._send_busy)
 
+    @property
+    def busy(self) -> bool:
+        return self._send_busy
+
     @classmethod
     def lookup_nozzle_mcu(cls, printer):
         return printer.lookup_object("mcu nozzle_mcu")
@@ -2339,7 +2356,8 @@ class NozzleTransparentTransportAdapter:
         if self._send_busy:
             self.stats.busy += 1
             self.stats.note("busy", self._now())
-            raise RuntimeError("transparent transport send already in progress")
+            raise TransportBusyError(
+                "transparent transport send already in progress")
         self._send_busy = True
         self.stats.sends += 1
         try:
@@ -2783,6 +2801,8 @@ class MotorStallMonitor:
 GET_MCU_TEMP_INDEX = 17
 POLL_INTERVAL = 6.0
 POLL_TIMEOUT = 0.25
+# The channel is busy with another query: read the same axis this much later.
+POLL_BUSY_RETRY = 0.1
 
 
 # A sample stays current for two full X/Y/E polling rounds (one axis every
@@ -2919,6 +2939,8 @@ class Mot2TempSensorHub:
         if not self._started:
             return self.reactor.NEVER
         if self.replacement.is_ready and self.replacement.motor_params_init:
+            if self._channel_busy(ALL_AXES[self._axis_index]):
+                return self.reactor.monotonic() + POLL_BUSY_RETRY
             axis = ALL_AXES[self._axis_index]
             self._axis_index = (self._axis_index + 1) % len(ALL_AXES)
             sample = self.samples[axis]
@@ -2943,6 +2965,12 @@ class Mot2TempSensorHub:
                 sample["read_errors"] += 1
                 sample["consecutive_errors"] += 1
         return self.reactor.monotonic() + POLL_INTERVAL
+
+    def _channel_busy(self, axis):
+        try:
+            return transport_busy(self.replacement.axes.target(axis).client)
+        except Exception:
+            return False
 
 # ──────────────────────────────────────────────────────────────────────────
 # motor_control_debug_surface
@@ -3412,12 +3440,18 @@ PROTECTION_POLL_INTERVAL = 60.0
 # MOTOR_RETRY_STARTUP or a Klipper restart.
 STARTUP_RECOVERY_MIN = 30.0
 STARTUP_RECOVERY_MAX = 300.0
+# A periodic poll that finds an axis' channel busy waits for it up to this
+# long, in PROTECTION_BUSY_STEP steps, before skipping the axis for the round.
+PROTECTION_BUSY_WAIT = 1.0
+PROTECTION_BUSY_STEP = 0.05
 # Protection data stays current across one missed periodic poll: two poll
 # intervals plus the worst-case time of one poll round (every axis, each with
-# DEFAULT_ATTEMPTS tries of MOTOR_COMMAND_TIMEOUT). 126 s with today's values.
+# a busy wait and DEFAULT_ATTEMPTS tries of MOTOR_COMMAND_TIMEOUT). 129 s with
+# today's values.
 PROTECTION_STALE_AFTER = (
     2 * PROTECTION_POLL_INTERVAL
-    + len(ALL_AXES) * DEFAULT_ATTEMPTS * MOTOR_COMMAND_TIMEOUT)
+    + len(ALL_AXES) * (
+        PROTECTION_BUSY_WAIT + DEFAULT_ATTEMPTS * MOTOR_COMMAND_TIMEOUT))
 CALIBRATION_STAGE_ENCODER = "encoder"
 CALIBRATION_STAGE_OFFSET = "offset"
 # Stage 1 completes only after firmware observes 0xC0 and returns 0x0C.
@@ -5627,12 +5661,19 @@ class MotorControl(MotorControlDebugSurfaceMixin):
         try:
             axes_result = {}
             for axis in ALL_AXES:
+                if not self._wait_protection_channel(axis):
+                    _klog("periodic protection poll skipped axis=%s: "
+                          "channel busy", axis)
+                    continue
                 try:
                     axes_result.update(
                         self.query_protection_status(
                             axes=(axis,), data=PROTECTION_QUERY_DATA,
                             timeout=MOTOR_COMMAND_TIMEOUT,
                             source="periodic_poll"))
+                except TransportBusyError:
+                    _klog("periodic protection poll skipped axis=%s: "
+                          "channel busy", axis)
                 except Exception:
                     _klog(
                         "periodic protection poll failed axis=%s",
@@ -5651,6 +5692,20 @@ class MotorControl(MotorControlDebugSurfaceMixin):
             _klog(
                 "periodic protection poll failed",
                 level=logging.exception)
+
+    def _wait_protection_channel(self, axis):
+        # Wait for another query's answer instead of failing this axis.
+        try:
+            client = self.axes.target(axis).client
+        except Exception:
+            return True
+        deadline = self.reactor.monotonic() + PROTECTION_BUSY_WAIT
+        while transport_busy(client):
+            now = self.reactor.monotonic()
+            if now >= deadline:
+                return False
+            self.reactor.pause(now + PROTECTION_BUSY_STEP)
+        return True
 
     def check_protection_code(self, axis=None, data: int = PROTECTION_QUERY_DATA,
                               timeout: float = MOTOR_COMMAND_TIMEOUT,
