@@ -199,6 +199,88 @@ def test_restored_is_reported():
     assert w.printer.events == ["serial_485:link_restored"]
 
 
+def test_lost_with_cancel_cancels_the_print():
+    w = wrapper("cancel")
+    w._link_changed("ok", "lost")
+    assert w.printer.pauses == [] and w.printer.shutdowns == []
+    assert len(w.callbacks) == 1
+    w.callbacks[0](0.0)
+    assert w.scripts == ["CANCEL_PRINT"]
+    assert "RS-485 link lost" in w.raw[0]
+
+
+def test_cancel_is_a_valid_action():
+    assert serial_485.LINK_LOST_ACTIONS["cancel"] == "cancel"
+
+
+def test_cancel_while_idle_only_warns():
+    w = wrapper("cancel", state="standby")
+    w._link_changed("ok", "lost")
+    assert w.callbacks == [] and w.raw
+
+
+# --- RS-485 counters per print ------------------------------------------------
+
+
+def stats(**values):
+    base = {key: 0 for _name, key in serial_485.SESSION_COUNTERS}
+    base.update(values)
+    return base
+
+
+def test_session_snapshot_and_deltas():
+    clock = Clock(1000.0)
+    s = serial_485.PrintSessionCounters(clock=clock)
+    assert s.update("standby", stats(tx_frames=50), 1) is None
+    assert s.current(stats(), 0) is None
+    s.update("printing", stats(tx_frames=50, timeouts=2), 1)
+    clock.now += 3600
+    cur = s.current(
+        stats(tx_frames=1050, rx_frames=990, timeouts=5, rx_invalid_crc=1), 2
+    )
+    assert cur["duration_s"] == 3600.0
+    assert cur["deltas"]["tx_frames"] == 1000
+    assert cur["deltas"]["rx_frames"] == 990
+    assert cur["deltas"]["timeouts"] == 3
+    assert cur["deltas"]["crc_errors"] == 1
+    assert cur["deltas"]["link_lost"] == 1
+
+
+def test_pause_and_resume_are_the_same_print():
+    s = serial_485.PrintSessionCounters(clock=Clock())
+    s.update("printing", stats(tx_frames=10), 0)
+    assert s.update("paused", stats(tx_frames=20), 0) is None
+    assert s.update("printing", stats(tx_frames=30), 0) is None
+    assert s.current(stats(tx_frames=40), 0)["deltas"]["tx_frames"] == 30
+
+
+def test_print_end_returns_the_summary_once():
+    clock = Clock()
+    s = serial_485.PrintSessionCounters(clock=clock)
+    s.update("printing", stats(), 0)
+    clock.now += 67 * 60
+    done = s.update(
+        "complete", stats(tx_frames=500, rx_frames=498, timeouts=2), 0
+    )
+    assert done["result"] == "complete" and done["deltas"]["timeouts"] == 2
+    assert s.last is done and s.current(stats(), 0) is None
+    assert s.update("complete", stats(), 0) is None
+    msg = serial_485.format_session_summary(done)
+    assert "complete" in msg and "1 h 07 min" in msg and "2 timeouts" in msg
+
+
+def test_wrapper_reports_the_summary_at_print_end():
+    w = wrapper(state="printing")
+    w._stats = stats()
+    w.print_session = serial_485.PrintSessionCounters(clock=Clock())
+    w._track_print_session()
+    w._stats["tx_frames"] = 7
+    w.printer.print_stats.state = "cancelled"
+    w._track_print_session()
+    assert len(w.info) == 1 and "cancelled" in w.info[0]
+    assert w.print_session.last["deltas"]["tx_frames"] == 7
+
+
 def test_wait_for_response_feeds_the_watchdog():
     w = serial_485.Serial_485_Wrapper.__new__(serial_485.Serial_485_Wrapper)
     w._rx_cond = threading.Condition()

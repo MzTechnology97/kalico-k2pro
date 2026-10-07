@@ -248,8 +248,84 @@ class LinkWatchdog:
             }
 
 
-LINK_LOST_ACTIONS = {"pause": "pause", "warn": "warn", "shutdown": "shutdown"}
+LINK_LOST_ACTIONS = {
+    "pause": "pause", "warn": "warn", "cancel": "cancel",
+    "shutdown": "shutdown"}
 LINK_CHECK_INTERVAL = 1.0
+
+PRINT_ACTIVE_STATES = ("printing", "paused")
+# (status name, internal counter) reported for each print
+SESSION_COUNTERS = (
+    ("tx_frames", "tx_frames"),
+    ("rx_frames", "rx_frames"),
+    ("timeouts", "timeouts"),
+    ("crc_errors", "rx_invalid_crc"),
+    ("invalid_len", "rx_invalid_len"),
+    ("unmatched", "rx_unmatched"),
+    ("stale_dropped", "rx_stale_dropped"),
+    ("send_errors", "send_errors"),
+    ("reader_errors", "reader_errors"),
+    ("disconnects", "disconnects"),
+)
+
+
+class PrintSessionCounters:
+    """RS-485 counters since the current print started.
+
+    ``update`` is called once a second with the print state. Entering
+    printing/paused from any other state takes a snapshot; leaving them
+    returns the summary of the finished print (kept as ``last``). Resuming
+    a paused print is the same print.
+    """
+
+    def __init__(self, clock=time.time):
+        self.clock = clock
+        self.base = None
+        self.started = None
+        self.last = None
+
+    @staticmethod
+    def _snapshot(stats, link_lost):
+        snap = {name: int(stats.get(key, 0)) for name, key in SESSION_COUNTERS}
+        snap["link_lost"] = int(link_lost)
+        return snap
+
+    def current(self, stats, link_lost):
+        if self.base is None:
+            return None
+        now = self._snapshot(stats, link_lost)
+        return {
+            "started": self.started,
+            "duration_s": round(max(0.0, self.clock() - self.started), 1),
+            "deltas": {k: now[k] - self.base[k] for k in now},
+        }
+
+    def update(self, print_state, stats, link_lost):
+        active = print_state in PRINT_ACTIVE_STATES
+        if active and self.base is None:
+            self.base = self._snapshot(stats, link_lost)
+            self.started = self.clock()
+            return None
+        if not active and self.base is not None:
+            finished = self.current(stats, link_lost)
+            finished["result"] = print_state
+            self.last = finished
+            self.base = None
+            self.started = None
+            return finished
+        return None
+
+
+def format_session_summary(summary):
+    d = summary["deltas"]
+    minutes = int(summary["duration_s"] // 60)
+    return (
+        "RS-485 during the print (%s, %d h %02d min): %d requests, %d answers, "
+        "%d timeouts, %d CRC errors, %d invalid, %d unmatched, link lost %d "
+        "time(s), %d disconnect(s)"
+        % (summary.get("result") or "?", minutes // 60, minutes % 60,
+           d["tx_frames"], d["rx_frames"], d["timeouts"], d["crc_errors"],
+           d["invalid_len"], d["unmatched"], d["link_lost"], d["disconnects"]))
 
 
 class Serial_485_Wrapper:
@@ -274,6 +350,7 @@ class Serial_485_Wrapper:
         self.link_lost_action = config.getchoice(
             "link_lost_action", LINK_LOST_ACTIONS, "pause")
         self._link_timer = None
+        self.print_session = PrintSessionCounters()
         # Request round trips for [link_monitor] (write -> matched answer).
         self._rtt_samples = deque(maxlen=20000)
         self._rtt_lock = threading.Lock()
@@ -358,7 +435,21 @@ class Serial_485_Wrapper:
                 self._link_changed(*change)
         except Exception:
             _klog("link watchdog failed", level=logging.exception)
+        try:
+            self._track_print_session()
+        except Exception:
+            _klog("print session counters failed", level=logging.exception)
         return eventtime + LINK_CHECK_INTERVAL
+
+    def _track_print_session(self):
+        print_stats = self.printer.lookup_object("print_stats", None)
+        state = getattr(print_stats, "state", None)
+        finished = self.print_session.update(
+            state, self._stats, self.link.lost_count)
+        if finished is not None:
+            msg = format_session_summary(finished)
+            _klog("%s", msg)
+            self.gcode.respond_info(msg)
 
     def _printing(self):
         print_stats = self.printer.lookup_object("print_stats", None)
@@ -381,6 +472,8 @@ class Serial_485_Wrapper:
             self.gcode.respond_raw("!! " + msg)
             if printing and self.link_lost_action == "pause":
                 self._pause_for_link_loss()
+            elif printing and self.link_lost_action == "cancel":
+                self._cancel_for_link_loss()
         elif old == "lost" and new == "ok":
             msg = "RS-485 link restored"
             _klog("%s", msg)
@@ -398,6 +491,16 @@ class Serial_485_Wrapper:
                     lambda e: self.gcode.run_script("PAUSE"))
         except Exception:
             _klog("pause after RS-485 link loss failed",
+                  level=logging.exception)
+
+    def _cancel_for_link_loss(self):
+        # CANCEL_PRINT (and the K2 END_PRINT it runs) needs no RS-485: it
+        # turns the heaters off and parks the toolhead.
+        try:
+            self.reactor.register_async_callback(
+                lambda e: self.gcode.run_script("CANCEL_PRINT"))
+        except Exception:
+            _klog("cancel after RS-485 link loss failed",
                   level=logging.exception)
 
     def _log_warning_ratelimited(self, key, msg, *args, interval=1.0):
@@ -974,6 +1077,9 @@ class Serial_485_Wrapper:
             "reader_errors": self._stats["reader_errors"],
             **self.link.snapshot(),
             "link_lost_action": self.link_lost_action,
+            "print_session": self.print_session.current(
+                self._stats, self.link.lost_count),
+            "last_print_session": self.print_session.last,
         }
 
     def get_status(self, eventtime):
