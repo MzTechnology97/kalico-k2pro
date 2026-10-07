@@ -145,7 +145,7 @@ def test_without_motor_control_the_sensor_stays_idle():
 
 
 def test_k2_config_declares_the_three_sensors():
-    text = (ROOT / "config/k2/motor_control.cfg").read_text()
+    text = (ROOT / "config/k2/macros/motor_control.cfg").read_text()
     for axis in "XYE":
         assert "[temperature_sensor motor_%s_MCU]" % axis in text
     assert text.count("sensor_type: motor_mcu") == 3

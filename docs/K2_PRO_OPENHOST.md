@@ -138,7 +138,7 @@ The compatibility surface includes the flat `slots[]` payload, `external: true` 
 
 K2-OpenHost keeps Jacob's `box.api_version: 1` contract for OrcaSlicer compatibility and advertises the additive library separately as `filament_inventory_version: 2`. The inventory layer adds a persistent filament library on top of the existing slot profiles. The library and slot assignments live in the configured `state_path` (normally `~/printer_data/filament_box.json`) and are published through `printer.objects.box.filaments` and `printer.objects.box.slots`.
 
-With `library_path` (default in `config/k2/box.cfg`: `~/printer_data/config/cfs_filaments.json`) the custom profiles live in their own JSON file:
+With `library_path` (default in `config/k2/macros/box.cfg`: `~/printer_data/config/cfs_filaments.json`) the custom profiles live in their own JSON file:
 - it is visible in the Mainsail file manager and in Moonraker backups;
 - a replaced file is reloaded automatically or with `_BOX_FILAMENT_RELOAD`;
 - profiles from an older state file move there once, with a backup `<state_path>.pre-library`.
@@ -161,7 +161,7 @@ RFID resolution order is: Spoolman ID in `reserve` when present, K2-OpenHost cus
 
 K2-OpenHost ships `config/k2/cfs_system_filaments.json`, generated from the current DnG-Crafts/K2-RFID `db/k2.json` by `scripts/generate_cfs_system_filaments.py`. The shipped catalog contains the complete Creality + Generic subset (currently 30 Creality and 31 Generic profiles) including material type, target/min/max nozzle temperatures, pressure-advance metadata and RFID material IDs. System profiles are read-only in Mainsail. A separate Creality/K2-RFID `material_database.json` (or the compact K2-OpenHost `materials` JSON form) can still be supplied with `material_database_path`; it extends the system catalog and is reloaded when its mtime changes. When `auto_register_rfid_filaments: true`, inserting a tag whose material ID exists in either catalog automatically creates or reuses the K2-OpenHost library profile. Profile identity is based on brand/name/material, not spool color, so differently coloured tags reuse one material profile while each slot keeps the colour read from the tag. `auto_seed_material_database: true` imports both catalogs at startup.
 
-RFID remaining filament is tracked in two layers. The CFS-reported percentage is retained as `rfid_reported_percent`; K2-OpenHost also keeps an estimated `rfid_percent`/`rfid_remaining_m` from the RFID spool length and `print_stats.filament_used`. `BOX_RFID_SCAN` performs an explicit all-populated-slot scan, while `_BOX_RFID_READ_SLOT SLOT=n` rereads one physical bay on demand. During printing the estimate is decremented from actual positive extrusion usage and persisted periodically and when printing stops. A later hardware reread may lower the estimate but a stale CFS percentage never increases it. `_BOX_RFID_READ_SLOT SLOT=n` forces a single-slot RFID reread and refreshes the hardware percentage. Confirmed runout persists the source estimate at zero and clears its active slot profile after a successful swap (or before pausing when the CFS has positively reported runout but no replacement exists). K2-RFID Windows/Android tags that use the non-unique serial `000001` use a portable fingerprint based on supplier/material/color/nominal length/reserve, so moving a spool between CFS slots preserves its local remaining estimate. If two simultaneously inserted tags are indistinguishable by those fields, the second live instance is deliberately split by slot to prevent the two physical spools from corrupting each other's estimate. The previous slot-scoped estimate format is migrated on first use.
+RFID remaining filament is tracked in two layers. The CFS-reported percentage is retained as `rfid_reported_percent`; K2-OpenHost also keeps an estimated `rfid_percent`/`rfid_remaining_m` from the RFID spool length and `print_stats.filament_used`. `BOX_RFID_SCAN` performs an explicit all-populated-slot scan, while `_BOX_RFID_READ_SLOT SLOT=n` rereads one physical bay on demand. During printing the estimate is decremented from actual positive extrusion usage and persisted periodically and when printing stops. A later hardware reread may lower the estimate but a stale CFS percentage never increases it. `_BOX_RFID_READ_SLOT SLOT=n` forces a single-slot RFID reread and refreshes the hardware percentage. A reread is refused for a slot loaded toward the printhead (the loaded slot, or a slot whose filament the CFS reports fed out): the CFS pulls the filament back past its reader, and with the printhead gears holding it the hub motor stalls (`UNLOAD_MOTOR_BLOCKED`). Unload the slot first. `BOX_INFO_REFRESH` and the all-slot scan skip such a slot with a message. Confirmed runout persists the source estimate at zero and clears its active slot profile after a successful swap (or before pausing when the CFS has positively reported runout but no replacement exists). K2-RFID Windows/Android tags that use the non-unique serial `000001` use a portable fingerprint based on supplier/material/color/nominal length/reserve, so moving a spool between CFS slots preserves its local remaining estimate. If two simultaneously inserted tags are indistinguishable by those fields, the second live instance is deliberately split by slot to prevent the two physical spools from corrupting each other's estimate. The previous slot-scoped estimate format is migrated on first use.
 
 Runout groups are formed from present slots with exactly the same material string and colour. When RFID percentages are known, both automatic print mapping between otherwise equal candidates and runout replacement chains prefer the lowest remaining percentage first; slots without a known percentage are used after known RFID spools. Manual slot selection still remains authoritative for the currently loaded source.
 
@@ -331,7 +331,7 @@ Notes from those tests:
 
 ### The T113 from Kalico (`[k2_t113]`)
 
-`config/k2/k2_t113.cfg` talks to `k2oh-ctl`, the control service of the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) (slot B). Every request runs in a worker thread, so the reactor never waits for the network. With `host` empty the section does nothing; the installer helper fills in `host` and copies the shared token to `token_file`.
+`config/k2/macros/k2_t113.cfg` talks to `k2oh-ctl`, the control service of the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) (slot B). Every request runs in a worker thread, so the reactor never waits for the network. With `host` empty the section does nothing; the installer helper fills in `host` and copies the shared token to `token_file`.
 
 | G-code | Effect |
 | --- | --- |
@@ -528,7 +528,7 @@ sensor_type: motor_mcu   # K2 Pro closed-loop motor board MCU
 motor_axis: x            # x, y or e
 ```
 
-- `config/k2/motor_control.cfg` declares X, Y and E.
+- `config/k2/macros/motor_control.cfg` declares X, Y and E.
 - The sensor takes its value from `motor_control`'s polling, so it adds no bus traffic.
 - Optional `min_temp` / `max_temp` shut the printer down outside the range, as for `temperature_host`.
 - The `motor_mcu` type is registered in `klippy/extras/temperature_sensors.cfg` (`motor_mcu_temperature.py`).
@@ -594,10 +594,12 @@ Hardware still to confirm: the real latch-bit behaviour after a clear, with the 
 | `clear_pending` | a clear was sent and no valid query has confirmed its outcome yet |
 | `query_failed` | the last query of this axis failed (timeout, unverified answer) |
 | `unknown` | no valid answer in this session; every motor startup or retry opens a new session |
-| `stale` | the last valid answer is older than 126 s |
+| `stale` | the last valid answer is older than 129 s |
 | `current` | a valid answer in this session, recent enough; `valid: true` only here |
 
-126 s is two 60 s polls plus the worst case of one poll round: 3 axes × 2 attempts × 1 s. One missed poll does not make the data stale; two do. The 36 s temperature threshold is not reused.
+129 s is two 60 s polls plus the worst case of one poll round: 3 axes × (1 s busy wait + 2 attempts × 1 s). One missed poll does not make the data stale; two do. The 36 s temperature threshold is not reused.
+
+**Busy channel:** the protection poll and the motor temperature poll share the channel of each axis, and axis E's nozzle channel takes one request at a time. A poll that finds it busy waits up to 1 s for the other answer, then skips that axis for the round with one log line (`periodic protection poll skipped axis=e: channel busy`), without recording a failed query. The temperature poll reads a busy axis 0.1 s later. Before, the collision logged `transparent transport send already in progress` with a traceback, 2 to 5 times a day.
 
 `validity` has these fields:
 - `last_attempt`, `last_success`, `query_age` (reactor monotonic seconds);
