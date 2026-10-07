@@ -406,7 +406,7 @@ class BoxChangeEngine:
                     heater_used = True
                     temperature = self._purge_temperature(source, None)
                     can_cut = self._cutter_ready()
-                    self._start_heat_home_and_wait(
+                    self._start_heat_and_wait_at_wastebin(
                         gcmd, temperature, fault_generation)
                     if can_cut:
                         self.box.retract_for_cut(
@@ -926,7 +926,7 @@ class BoxChangeEngine:
         try:
             if not sensor_clear and request.retracted_source != source:
                 request.last_step = "retract"
-                self._start_heat_home_and_wait(
+                self._start_heat_and_wait_at_wastebin(
                     gcmd, self._purge_temperature(source, None),
                     fault_generation, request)
                 self.box.retract_for_cut(
@@ -966,7 +966,7 @@ class BoxChangeEngine:
         self.box.disable_filament_sensor()
         try:
             if request is None or request.retracted_source != source:
-                self._start_heat_home_and_wait(
+                self._start_heat_and_wait_at_wastebin(
                     gcmd, self._purge_temperature(source, None),
                     fault_generation, request)
                 self._relative_extrude(
@@ -1006,7 +1006,7 @@ class BoxChangeEngine:
     def _load_external(self, gcmd, source, fault_generation, request):
         temperature = self._purge_temperature(
             source, self.box.external_slot)
-        self._start_heat_home_and_wait(
+        self._start_heat_and_wait_at_wastebin(
             gcmd, temperature, fault_generation, request)
         self._check_abort(fault_generation)
         self._move_to_wastebin(request)
@@ -1040,11 +1040,17 @@ class BoxChangeEngine:
             value for value in (source_temp, target_temp)
             if value is not None)
 
-    def _start_heat_home_and_wait(
+    def _start_heat_and_wait_at_wastebin(
             self, gcmd, temperature, fault_generation, request=None):
+        # The heater starts first and keeps heating while X/Y home and the
+        # head travels; the wait is over the wastebin, where the nozzle can
+        # ooze. Waiting where homing ended left the head at the X/Y endstop
+        # corner for the whole heat-up, before an unload or a slot change.
         self._start_heat(temperature)
         self._enter_service(request)
         self.gcode.run_script_from_command("HOME_IF_NEEDED AXIS=XY")
+        self._check_abort(fault_generation)
+        self._move_to_wastebin(request)
         self._check_abort(fault_generation)
         self._wait_for_heat(gcmd, temperature, fault_generation)
 
