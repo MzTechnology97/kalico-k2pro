@@ -42,6 +42,7 @@ SAFE_WIDGET_COMMANDS = frozenset((
     "_BOX_SLOT_SET",
     "_BOX_SLOT_CLEAR",
     "_BOX_MATERIAL_SET",
+    "_BOX_SLOT_PA_SET",
     "_BOX_FILAMENT_SET",
     "_BOX_FILAMENT_DELETE",
     "_BOX_SLOT_ASSIGN",
@@ -63,6 +64,20 @@ DEFAULT_MATERIALS = {
     "PLA": {"target_temp": 220},
     "PETG": {"target_temp": 245},
 }
+
+# Maximum volumetric flow (mm3/s) of the generic materials, from OrcaSlicer's
+# "Generic <material> @K2 Pro-all" profiles. Used only when no filament, slot
+# or material setting gives one. Their pressure advance is not imported.
+DEFAULT_MAX_FLOW = {
+    "ABS": 16.0, "ASA": 12.0, "BVOH": 6.0, "PA": 8.0, "PA-CF": 8.0,
+    "PA6-CF": 8.0, "PA612-CF": 8.0, "PAHT-CF": 3.0, "PC": 16.0, "PET": 8.0,
+    "PET-CF": 8.0, "PETG": 16.0, "PETG-CF": 10.0, "PETG-GF": 10.0,
+    "PLA": 12.0, "PLA-CF": 18.0, "PLA-SILK": 10.0, "PP": 10.0, "PVA": 6.0,
+    "TPU": 2.0,
+}
+
+# set_material(): leave a field as it is
+_KEEP = object()
 
 POLL_START_DELAY = 5.0
 ACTIVE_POLL = 1.0
@@ -382,6 +397,12 @@ class BoxStore:
                     isinstance(target, bool) or not isinstance(target, int)):
                 raise BoxError("Invalid target temperature for %s" % name)
             result[name] = {"target_temp": target}
+            for field, clean in (
+                    ("pressure_advance", BoxStore._clean_pressure_advance),
+                    ("max_flow", BoxStore._clean_max_flow)):
+                cleaned = clean(value.get(field))
+                if cleaned is not None:
+                    result[name][field] = cleaned
         return result
 
     @staticmethod
@@ -395,6 +416,19 @@ class BoxStore:
         if not 0.0 <= value <= 2.0:
             return None
         return round(value, 6)
+
+    @staticmethod
+    def _clean_max_flow(value):
+        """Maximum volumetric flow in mm3/s, or None."""
+        if value in (None, ""):
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not 0.1 <= value <= 200.0:
+            return None
+        return round(value, 2)
 
     @staticmethod
     def _filaments(values, strict=True):
@@ -459,6 +493,14 @@ class BoxStore:
                 raise BoxError(
                     "Invalid pressure_advance for filament %s" % filament_id)
             pressure_advance = round(pressure_advance, 6)
+        max_flow = value.get("max_flow")
+        if max_flow in (None, ""):
+            max_flow = None
+        else:
+            max_flow = BoxStore._clean_max_flow(max_flow)
+            if max_flow is None:
+                raise BoxError(
+                    "Invalid max_flow for filament %s" % filament_id)
         spoolman_id = value.get("spoolman_id")
         if spoolman_id is not None:
             try:
@@ -489,6 +531,7 @@ class BoxStore:
             "min_temp": ranges["min_temp"],
             "max_temp": ranges["max_temp"],
             "pressure_advance": pressure_advance,
+            "max_flow": max_flow,
             "rfid_code": codes[0] if codes else "",
             "rfid_codes": codes,
             "aliases": aliases,
@@ -774,6 +817,7 @@ class BoxStore:
             profile["name"] = clean["name"]
             profile["target_temp"] = clean["target_temp"]
             profile["pressure_advance"] = clean.get("pressure_advance")
+            profile["max_flow"] = clean.get("max_flow")
             if source == "library":
                 profile["spoolman_id"] = clean["spoolman_id"]
                 profile["rfid_code"] = clean["rfid_code"]
@@ -865,11 +909,29 @@ class BoxStore:
                 return dict(filament)
         return None
 
-    def set_material(self, name, target):
+    def set_material(self, name, target=None, pressure_advance=_KEEP,
+                     max_flow=_KEEP):
+        """Create or update a generic material; fields left as _KEEP stay."""
         key = str(name).strip().upper()
         if not key:
             raise ValueError("material is required")
-        self.data["materials"][key] = {"target_temp": int(target)}
+        entry = dict(self.data["materials"].get(key) or {})
+        if target is not None:
+            entry["target_temp"] = int(target)
+        elif entry.get("target_temp") is None:
+            raise ValueError("a new material needs a target temperature")
+        for field, value, clean in (
+                ("pressure_advance", pressure_advance,
+                 self._clean_pressure_advance),
+                ("max_flow", max_flow, self._clean_max_flow)):
+            if value is _KEEP:
+                continue
+            value = clean(value)
+            if value is None:
+                entry.pop(field, None)
+            else:
+                entry[field] = value
+        self.data["materials"][key] = entry
         self.save()
         return key
 
@@ -888,6 +950,7 @@ class BoxStore:
             "target_temp": target_temp,
             "pressure_advance": self._clean_pressure_advance(
                 value.get("pressure_advance")),
+            "max_flow": self._clean_max_flow(value.get("max_flow")),
             "spoolman_id": value.get("spoolman_id"),
             "filament_id": str(value.get("filament_id", "")).strip().upper(),
             "source": str(value.get("source", "manual")).strip().lower() or "manual",
@@ -910,6 +973,7 @@ class BoxStore:
             "target_temp": target_temp,
             "pressure_advance": self._clean_pressure_advance(
                 profile.get("pressure_advance")),
+            "max_flow": self._clean_max_flow(profile.get("max_flow")),
             "spoolman_id": profile.get("spoolman_id"),
             "filament_id": str(profile.get("filament_id", "")).strip().upper(),
             "source": str(profile.get("source", "manual")).strip().lower() or "manual",
@@ -1024,6 +1088,12 @@ class Box:
             config.get("material_database_path", ""))
         self.auto_register_rfid_filaments = config.getboolean(
             "auto_register_rfid_filaments", True)
+        # K2-OpenHost: apply the pressure advance of the loaded slot's
+        # filament profile (unless the print file sets it for that filament)
+        # and learn the maximum flow from the slicer metadata.
+        self.apply_pressure_advance = config.getboolean(
+            "apply_pressure_advance", True)
+        self.default_pressure_advance = None
         self.auto_seed_material_database = config.getboolean(
             "auto_seed_material_database", True)
         # CFS slots in Moonraker's lane_data namespace for OrcaSlicer "Sync".
@@ -1236,6 +1306,8 @@ class Box:
             ("_BOX_SLOT_SET", self.cmd_slot_set, "Save slot metadata"),
             ("_BOX_SLOT_CLEAR", self.cmd_slot_clear, "Clear slot metadata"),
             ("_BOX_MATERIAL_SET", self.cmd_material_set, "Save material metadata"),
+            ("_BOX_SLOT_PA_SET", self.cmd_slot_pa_set,
+             "Save a pressure advance in the slot's filament profile"),
             ("_BOX_FILAMENT_SET", self.cmd_filament_set, "Save a reusable filament profile"),
             ("_BOX_FILAMENT_DELETE", self.cmd_filament_delete, "Delete a reusable filament profile"),
             ("_BOX_FILAMENT_RELOAD", self.cmd_filament_reload,
@@ -1407,6 +1479,10 @@ class Box:
     def _klippy_ready(self, *args):
         self._check_retry_moves()
         self.klippy_ready = True
+        stepper = self._extruder_stepper()
+        if stepper is not None:
+            # printer.cfg value, restored for a filament without its own PA
+            self.default_pressure_advance = stepper.pressure_advance
         lane_data = getattr(self, "lane_data", None)
         if lane_data is not None:
             lane_data.start()
@@ -1682,6 +1758,7 @@ class Box:
 
     def _slot_status(self, slot, snap, external=False):
         profile = self.profile(slot)
+        settings = self.slot_filament_settings(slot, profile)
         slot_key = self._runtime_slot_key(slot)
         unknown = self.unknown_rfid.get(slot_key)
         unknown_fields = unknown.get("fields", {}) if unknown else {}
@@ -1706,7 +1783,10 @@ class Box:
             "brand": profile["brand"],
             "name": profile["name"],
             "target_temp": profile.get("target_temp"),
-            "pressure_advance": profile.get("pressure_advance"),
+            "pressure_advance": settings["pressure_advance"],
+            "pressure_advance_source": settings["pressure_advance_source"],
+            "max_flow": settings["max_flow"],
+            "max_flow_source": settings["max_flow_source"],
             "spoolman_id": profile["spoolman_id"],
             "filament_id": profile.get("filament_id", ""),
             "source": profile.get("source", "manual"),
@@ -2002,6 +2082,134 @@ class Box:
         spoolman_id = self.profile(slot)["spoolman_id"]
         if spoolman_id is not None:
             self._set_active_spool(int(spoolman_id))
+        try:
+            self._learn_max_flow(slot)
+            self._apply_pressure_advance(slot)
+        except Exception:
+            # Never let the filament settings fail a load.
+            _klog("filament settings for %s failed" % self.slot_label(slot),
+                  level=logging.exception)
+
+    # --- K2-OpenHost: pressure advance and max flow per filament -------------
+    def slot_filament_settings(self, slot, profile=None):
+        """Pressure advance and maximum flow (mm3/s) for a slot.
+
+        Looked up in the slot's own profile, then its library filament, then
+        the generic material, then (max flow only) the OrcaSlicer generic
+        table. Each value comes with the place it was found.
+        """
+        if profile is None:
+            profile = self.profile(slot)
+        filament_id = profile.get("filament_id") or ""
+        entry = self.store.filament(filament_id) if filament_id else None
+        material = profile.get("material") or ""
+        generic = self.store.materials.get(material) or {}
+        layers = (
+            ("slot", profile),
+            ("filament %s" % filament_id, entry or {}),
+            ("material %s" % material, generic),
+        )
+        result = {"material": material, "filament_id": filament_id}
+        for field in ("pressure_advance", "max_flow"):
+            result[field] = None
+            result[field + "_source"] = None
+            for source, values in layers:
+                if values.get(field) is not None:
+                    result[field] = values[field]
+                    result[field + "_source"] = source
+                    break
+        if result["max_flow"] is None and material in DEFAULT_MAX_FLOW:
+            result["max_flow"] = DEFAULT_MAX_FLOW[material]
+            result["max_flow_source"] = "OrcaSlicer generic %s" % material
+        return result
+
+    def _extruder_stepper(self):
+        toolhead = self.printer.lookup_object("toolhead", None)
+        if toolhead is None:
+            return None
+        return getattr(toolhead.get_extruder(), "extruder_stepper", None)
+
+    def _apply_pressure_advance(self, slot):
+        if not self.apply_pressure_advance:
+            return
+        stepper = self._extruder_stepper()
+        if stepper is None:
+            return
+        metadata = self.change_engine.metadata_filament(slot)
+        if metadata and metadata.get("pressure_advance_enabled"):
+            # The slicer profile enables pressure advance: the file sets it.
+            return
+        settings = self.slot_filament_settings(slot)
+        value = settings["pressure_advance"]
+        source = settings["pressure_advance_source"]
+        if value is None:
+            value, source = self.default_pressure_advance, "printer.cfg"
+            if value is None:
+                return
+        if abs(stepper.pressure_advance - value) < 1e-9:
+            return
+        stepper._set_pressure_advance(
+            value, stepper.pressure_advance_smooth_time)
+        self._info(self.gcode, "Pressure advance %.4f for %s (%s)" % (
+            value, self.slot_label(slot), source))
+
+    def _learn_max_flow(self, slot):
+        """Keep the slicer's maximum flow when the profile has none."""
+        metadata = self.change_engine.metadata_filament(slot)
+        value = BoxStore._clean_max_flow(
+            (metadata or {}).get("max_flow"))
+        if value is None:
+            return
+        settings = self.slot_filament_settings(slot)
+        source = settings["max_flow_source"] or ""
+        if source == "slot" or source.startswith("filament "):
+            return
+        where = self._store_slot_setting(slot, "max_flow", value)
+        self._info(self.gcode, "Max flow %g mm3/s from the slicer saved in %s"
+                   % (value, where))
+
+    def save_slot_pressure_advance(self, slot, value):
+        """Store a calibrated pressure advance in the slot's filament profile."""
+        value = BoxStore._clean_pressure_advance(value)
+        if value is None:
+            raise BoxError("pressure advance must be 0..2")
+        where = self._store_slot_setting(slot, "pressure_advance", value)
+        self._apply_pressure_advance(slot)
+        return where
+
+    def cmd_slot_pa_set(self, gcmd):
+        """_BOX_SLOT_PA_SET SLOT=n PRESSURE_ADVANCE=x: e.g. after a printed test."""
+        slot = gcmd.get_int(
+            "SLOT", None, minval=0,
+            maxval=MAX_ADDRESSES * SLOTS_PER_BOX)
+        if slot is None or not self.is_valid_slot(slot):
+            raise gcmd.error("[BOX]: SLOT must be an online box slot")
+        value = gcmd.get_float(
+            "PRESSURE_ADVANCE", None, minval=0.0, maxval=2.0)
+        if value is None:
+            raise gcmd.error("[BOX]: PRESSURE_ADVANCE is required")
+        if not self.profile(slot).get("material"):
+            raise gcmd.error("[BOX]: %s has no filament profile"
+                             % self.slot_label(slot))
+        try:
+            where = self.save_slot_pressure_advance(slot, value)
+        except BoxError as exc:
+            raise gcmd.error("[BOX]: %s" % exc)
+        self._info(gcmd, "Pressure advance %.4f saved in %s" % (value, where))
+
+    def _store_slot_setting(self, slot, field, value):
+        """Write field into the slot's custom library filament, else the slot."""
+        profile = self.profile(slot)
+        filament_id = profile.get("filament_id") or ""
+        entry = self.store.filament(filament_id) if filament_id else None
+        if entry is not None and not entry.get("system"):
+            # set_filament also updates the slots that use this filament
+            self.store.set_filament(filament_id, dict(entry, **{field: value}))
+            return "filament %s" % filament_id
+        # Manual profile, or a read-only catalog filament: keep it on the slot.
+        if profile.get("material"):
+            self.set_profile(slot, dict(profile, **{field: value}))
+        return "%s profile" % self.slot_label(slot)
 
     def clear_active_spool(self, slot):
         if (self.is_valid_slot(slot)
@@ -2472,6 +2680,10 @@ class Box:
                 (existing or {}).get("pressure_advance")
                 if (existing or {}).get("pressure_advance") is not None
                 else entry.get("pressure_advance")),
+            "max_flow": (
+                (existing or {}).get("max_flow")
+                if (existing or {}).get("max_flow") is not None
+                else entry.get("max_flow")),
             "rfid_codes": codes,
             "aliases": aliases,
             "spoolman_id": (existing or {}).get("spoolman_id"),
@@ -2586,10 +2798,11 @@ class Box:
         if (min_temp is not None and max_temp is not None
                 and min_temp > max_temp):
             raise gcmd.error("[BOX]: MIN_TEMP cannot be greater than MAX_TEMP")
-        pressure_advance = (
-            gcmd.get_float("PRESSURE_ADVANCE", minval=0.0, maxval=2.0)
-            if "PRESSURE_ADVANCE" in params
-            else existing.get("pressure_advance"))
+        pressure_advance = self._optional_number(
+            gcmd, "PRESSURE_ADVANCE", existing.get("pressure_advance"),
+            0.0, 2.0)
+        max_flow = self._optional_number(
+            gcmd, "MAX_FLOW", existing.get("max_flow"), 0.1, 200.0)
         rfid_code = str(
             self._param(gcmd, "RFID_CODE")
             if "RFID_CODE" in params
@@ -2606,6 +2819,7 @@ class Box:
             "min_temp": min_temp,
             "max_temp": max_temp,
             "pressure_advance": pressure_advance,
+            "max_flow": max_flow,
             "rfid_codes": rfid_codes,
             "aliases": list(existing.get("aliases") or []),
             "spoolman_id": spoolman,
@@ -2620,6 +2834,23 @@ class Box:
             self.store.set_material(saved["material"], saved["target_temp"])
         self._apply_new_filament(saved)
         self._info(gcmd, "Saved filament %s (%s)" % (saved["id"], saved["material"]))
+
+    def _optional_number(self, gcmd, name, current, minval, maxval):
+        """A number parameter; absent keeps current, empty or NONE clears it."""
+        params = gcmd.get_command_parameters()
+        if name not in params:
+            return current
+        raw = str(params[name]).strip()
+        if raw == "" or raw.upper() == "NONE":
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            raise gcmd.error("[BOX]: %s must be a number" % name)
+        if not minval <= value <= maxval:
+            raise gcmd.error(
+                "[BOX]: %s must be between %g and %g" % (name, minval, maxval))
+        return value
 
     def cmd_filament_delete(self, gcmd):
         filament_id = self._param(gcmd, "ID")
@@ -2666,6 +2897,7 @@ class Box:
             "name": filament.get("name", ""),
             "target_temp": filament.get("target_temp"),
             "pressure_advance": filament.get("pressure_advance"),
+            "max_flow": filament.get("max_flow"),
             "spoolman_id": filament.get("spoolman_id"),
             "filament_id": filament["id"],
             "source": "library",
@@ -2695,10 +2927,30 @@ class Box:
     def cmd_material_set(self, gcmd):
         material = self._param(gcmd, "MATERIAL")
         target = gcmd.get_int("TARGET_TEMP", None, minval=170, maxval=350)
-        if not material or target is None:
-            raise gcmd.error("[BOX]: MATERIAL and TARGET_TEMP are required")
-        key = self.store.set_material(material, target)
-        self._info(gcmd, "Saved material %s: %dC" % (key, target))
+        if not material:
+            raise gcmd.error("[BOX]: MATERIAL is required")
+        key = str(material).strip().upper()
+        if target is None and key not in self.store.materials:
+            raise gcmd.error(
+                "[BOX]: TARGET_TEMP is required for a new material")
+        params = gcmd.get_command_parameters()
+        fields = {}
+        if "PRESSURE_ADVANCE" in params:
+            fields["pressure_advance"] = self._optional_number(
+                gcmd, "PRESSURE_ADVANCE", None, 0.0, 2.0)
+        if "MAX_FLOW" in params:
+            fields["max_flow"] = self._optional_number(
+                gcmd, "MAX_FLOW", None, 0.1, 200.0)
+        key = self.store.set_material(material, target, **fields)
+        saved = self.store.materials[key]
+        extra = []
+        if saved.get("pressure_advance") is not None:
+            extra.append("PA %.4f" % saved["pressure_advance"])
+        if saved.get("max_flow") is not None:
+            extra.append("max flow %g mm3/s" % saved["max_flow"])
+        self._info(gcmd, "Saved material %s: %dC%s" % (
+            key, saved["target_temp"],
+            (", " + ", ".join(extra)) if extra else ""))
 
     def cmd_rfid_read_slot(self, gcmd):
         slot = gcmd.get_int(
@@ -3563,6 +3815,7 @@ class Box:
                 "name": filament.get("name", ""),
                 "target_temp": filament.get("target_temp"),
                 "pressure_advance": filament.get("pressure_advance"),
+                "max_flow": filament.get("max_flow"),
             }
 
         mapping = self.store.rfid_mapping(code)
@@ -3594,6 +3847,7 @@ class Box:
                 "name": catalog.get("name", ""),
                 "target_temp": self._catalog_target(catalog),
                 "pressure_advance": catalog.get("pressure_advance"),
+                "max_flow": catalog.get("max_flow"),
             }
             if saved:
                 resolved["filament_id"] = saved["id"]
@@ -3663,16 +3917,19 @@ class Box:
             name = str(resolved.get("name", "")).strip()
             target = resolved.get("target_temp")
             pressure_advance = resolved.get("pressure_advance")
+            max_flow = resolved.get("max_flow")
         else:
             material = raw_code
             brand = self._clean_rfid(fields["supplier"])
             name = ""
             target = None
             pressure_advance = None
+            max_flow = None
         return ({
             "material": material, "color": color, "brand": brand,
             "name": name, "target_temp": target,
-            "pressure_advance": pressure_advance, "spoolman_id": None,
+            "pressure_advance": pressure_advance, "max_flow": max_flow,
+            "spoolman_id": None,
             "filament_id": str(resolved.get("filament_id", "")).strip().upper() if resolved else "",
             "source": "rfid",
             "rfid_code": code,
