@@ -23,6 +23,27 @@ This configuration is no longer only a passive structural starting point. The ex
 
 Machine-specific values should still be changed only when they are backed by the known-good K2 Pro configuration or a controlled OpenHost hardware test.
 
+## Layout
+
+`printer.cfg` keeps the MCUs, motion, heaters, `[input_shaper]` and the
+includes: the sections `SAVE_CONFIG` writes (PID, input shaper, axis twist)
+must stay in it. Every other printer file lives in `macros/`, grouped by
+purpose:
+
+| file | content |
+| --- | --- |
+| `macros/system.cfg` | print files, power-loss recovery, link monitor, timeouts, arcs, object exclusion, pause/resume |
+| `macros/sensors.cfg` | MCU and host temperatures, printhead filament sensor, accelerometer, resonance tester |
+| `macros/leds.cfg` | chamber light and its idle switch-off |
+| `macros/print.cfg` | `START_PRINT` and its nozzle clean, `PAUSE` / `RESUME` / `CANCEL_PRINT` / `END_PRINT`, homing and mesh helpers |
+| `macros/kamp.cfg` | KAMP purge line (`LINE_PURGE`, `_KAMP_Settings`) |
+| `macros/fans.cfg` | fans with their tachometers, `M106`/`M107` (toolhead part fan P0, side part fan P2, chamber exhaust P3), `M141`/`M191` |
+| `macros/maintenance.cfg` | rail lubrication, PID, motion stress tests (`WARMUP`, `AUTO_WARMUP`, `TEST_SPEED`, `ACCELL_TEST_X/Y`, kept on the bed area) |
+| `macros/box.cfg`, `macros/motor_control.cfg`, `macros/prtouch.cfg`, `macros/cartographer.cfg`, `macros/k2_t113.cfg`, `macros/openhost_controls.cfg` | printer modules |
+| `macros/overrides.cfg` | local values, loaded last |
+
+Moonraker, Mainsail, webcam and integration files stay in the config root.
+
 ## OpenHost host paths
 
 The current stable T113 bridge mapping is:
