@@ -129,7 +129,7 @@ def test_new_session_makes_old_data_unknown(rig):
 def test_stale_threshold(rig):
     rig.queue("x", healthy("x"))
     rig.query("x")
-    assert mc.PROTECTION_STALE_AFTER == 126.0
+    assert mc.PROTECTION_STALE_AFTER == 129.0
     rig.clock += mc.PROTECTION_STALE_AFTER
     assert rig.validity("x")["state"] == "current"
     rig.clock += 1

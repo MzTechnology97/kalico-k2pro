@@ -542,10 +542,12 @@ Hardware still to confirm: the real latch-bit behaviour after a clear, with the 
 | `clear_pending` | a clear was sent and no valid query has confirmed its outcome yet |
 | `query_failed` | the last query of this axis failed (timeout, unverified answer) |
 | `unknown` | no valid answer in this session; every motor startup or retry opens a new session |
-| `stale` | the last valid answer is older than 126 s |
+| `stale` | the last valid answer is older than 129 s |
 | `current` | a valid answer in this session, recent enough; `valid: true` only here |
 
-126 s is two 60 s polls plus the worst case of one poll round: 3 axes × 2 attempts × 1 s. One missed poll does not make the data stale; two do. The 36 s temperature threshold is not reused.
+129 s is two 60 s polls plus the worst case of one poll round: 3 axes × (1 s busy wait + 2 attempts × 1 s). One missed poll does not make the data stale; two do. The 36 s temperature threshold is not reused.
+
+**Busy channel:** the protection poll and the motor temperature poll share the channel of each axis, and axis E's nozzle channel takes one request at a time. A poll that finds it busy waits up to 1 s for the other answer, then skips that axis for the round with one log line (`periodic protection poll skipped axis=e: channel busy`), without recording a failed query. The temperature poll reads a busy axis 0.1 s later. Before, the collision logged `transparent transport send already in progress` with a traceback, 2 to 5 times a day.
 
 `validity` has these fields:
 - `last_attempt`, `last_success`, `query_age` (reactor monotonic seconds);
