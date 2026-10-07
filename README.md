@@ -66,15 +66,35 @@ Allwinner T113 (slot B: K2-OpenHost T113 bootstrap)
            | service Micro-USB
            v
 Raspberry Pi CM5 / external Linux host
-    |-- this Kalico branch
+    |-- this Kalico branch (+ klipper-virtual-pins for the Mainsail switches)
     |-- Moonraker
-    |-- Mainsail / Fluidd
+    |-- Mainsail K2-OpenHost fork
+    |-- crowsnest -> chamber camera (USB, rewired to the host)
+    |-- crowsnest -> nozzle camera (USB, rewired to the host)
     `-- direct USB -> Cartographer
 ```
 
-The three K2 gadget channels get stable names from the installer's udev rule: `/dev/k2-main`, `/dev/k2-nozzle` and `/dev/k2-rs485` (the `/dev/ttyUSBn` numbers change when the gadget reconnects). Cartographer connects directly to the CM5 USB host as `/dev/k2-cartographer` rather than sharing the K2 gadget serial transport.
+The three K2 gadget channels get stable names from the installer's udev rule: `/dev/k2-main`, `/dev/k2-nozzle` and `/dev/k2-rs485` (the `/dev/ttyUSBn` numbers change when the gadget reconnects). Cartographer connects directly to the CM5 USB host as `/dev/k2-cartographer` rather than sharing the K2 gadget serial transport. The T113 cannot drive the chamber and nozzle cameras in OpenHost mode: both are rewired to the host's USB ports and streamed by crowsnest.
 
-## Hardware-validated milestone — 2026-10-02
+## Hardware-validated milestone — 2026-10-07
+
+The reference K2 Pro now prints from the external host with the T113 on slot B, on Creality 1.1.7.0 board firmware.
+
+Validated since the 2026-10-02 milestone:
+
+- **T113 slot B** installed with the installer helper and kept as the default; a full power cycle brings the boards, the bridges and Klipper up with no intervention; programs updated in place without reinstalling;
+- **board firmware** flashed from slot B to Creality 1.1.7.0 (motors/extruder 081, RFID 010, CFS 153);
+- **long CFS prints** (9 h and 18 h) with automatic mapping, CFS loading and a live **runout swap** to an identical spool;
+- the **RS-485 link watchdog** seen live (link lost, then restored by itself with Klipper ready); 3 single RS-485 timeouts in an 8.4 h print;
+- **CFS state on firmware 1.5.3:** the original six-byte reply, with the loaded slot reported by the CFS (the four-byte path stays for 1.1.3);
+- **load, unload and slot change from unhomed axes:** the nozzle heats while X/Y home and the head waits over the wastebin;
+- **RFID:** no reread of the slot loaded toward the printhead;
+- **native fan tachometers** on the part, heatbreak and chamber heater fans;
+- **clog detection** switch and Jacob10383's service moves with Z unhomed, also with a bed mesh loaded;
+- **bottom-switch Z drop** three times faster (`quick_speed: 30`, ~9.4 mm/s);
+- the printer configuration reorganised as `printer.cfg` + `macros/`, with the same configuration loaded.
+
+## Previous milestone — 2026-10-02
 
 This branch has now been exercised as a real Klippy/Kalico service on the K2 Pro hardware.
 
@@ -143,9 +163,7 @@ For generic Kalico documentation and original project information, use:
 
 ## Status
 
-Experimental / pre-production. Core machine control now reaches full PRTouch homing, `[z_align]` homing, thermal tests, resonance measurement and an operational persistent CFS inventory from the external host.
-
-Validated on the reference printer since then (see the [K2-OpenHost test status](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/TEST_STATUS.md)): long CFS prints from the T113 slot B, a runout swap and the RS-485 watchdog seen live, load and unload from unhomed axes, the CFS six-byte state on firmware 1.5.3, native fan tachometers, the clog detection switch and service moves with Z unhomed and a mesh loaded.
+Experimental / pre-production. The reference K2 Pro prints from the external host with the T113 on slot B (see the milestone above and the [K2-OpenHost test status](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/TEST_STATUS.md)).
 
 Built but not yet fully hardware-validated:
 - mapping warnings and the strict variant rule;
@@ -154,8 +172,7 @@ Built but not yet fully hardware-validated:
 - the hot nozzle clean in a real `START_PRINT`.
 
 Remaining major milestones:
-- direct-USB Cartographer validation;
-- controlled mapped CFS printing, tool change and runout validation;
-- remaining-filament tracking over a complete print;
-- a supervised power cut with `PLR_RECOVER`;
-- a complete supervised OpenHost print path, including the T113 bootstrap on slot B.
+- direct-USB Cartographer validation, then the PRTouch + Cartographer mixed mode;
+- a multi-colour print with repeated tool changes;
+- remaining-filament tracking checked against a weighed spool over a complete print;
+- a supervised power cut with `PLR_RECOVER`.
