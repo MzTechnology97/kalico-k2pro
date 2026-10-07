@@ -138,6 +138,7 @@ def get_func_desc(addr, func):
             0x0E: "ENCODER_QUERY",
             0x10: "LOAD_STAGE",
             0x11: "RETRACT_PHASE",
+            0x57: "RFID_DIAG",
             0xA0: "CMD_ASSIGN",
             0xA1: "CMD_DISCOVER",
             0xA2: "CMD_HW_STATUS",

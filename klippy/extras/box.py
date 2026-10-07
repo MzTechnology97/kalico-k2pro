@@ -1088,6 +1088,11 @@ class Box:
             config.get("material_database_path", ""))
         self.auto_register_rfid_filaments = config.getboolean(
             "auto_register_rfid_filaments", True)
+        # Keep Creality RFID as the primary path. Only after the stock CFS
+        # returns an invalid/unknown record may the optional Bambu helper try
+        # a vendor-specific authenticated read. Unsupported firmware is a no-op.
+        self.auto_bambu_rfid_fallback = config.getboolean(
+            "auto_bambu_rfid_fallback", True)
         # K2-OpenHost: apply the pressure advance of the loaded slot's
         # filament profile (unless the print file sets it for that filament)
         # and learn the maximum flow from the slicer metadata.
@@ -4040,6 +4045,140 @@ class Box:
             reply.fields.get(name),
         )
 
+    @staticmethod
+    def _bambu_profile_id(data):
+        material_id = str(data.get("material_id") or "").strip().upper()
+        variant_id = str(data.get("variant_id") or "").strip().upper()
+        safe = lambda value: "".join(
+            c if c.isalnum() or c in ("-", "_") else "-" for c in value)
+        if material_id:
+            return ("BAMBU-%s-%s" % (
+                safe(material_id), safe(variant_id or "DEFAULT")))[:64]
+        # API7 stock capture intentionally reads only block4 detail + block5
+        # RGBA. Use the stable Bambu preset identity rather than inventing IDs.
+        fallback = (str(data.get("profile_name") or "").strip()
+                    or str(data.get("material") or "UNKNOWN").strip())
+        return ("BAMBU-%s" % safe(fallback).upper())[:64]
+
+    def _bambu_library_match(self, data):
+        material = str(data.get("material") or "").strip().upper()
+        brand = str(data.get("brand") or "Bambulab").strip() or "Bambulab"
+        name = str(data.get("profile_name") or "").strip()
+        exact = self.store.filament_by_identity(brand, name, material)
+        if exact:
+            return exact
+        # Some imported Orca profiles use a slightly different material family
+        # but the same Bambulab preset name. Prefer that existing preset over
+        # creating a duplicate and use its material/settings as authoritative.
+        for filament in self.store.filaments.values():
+            if (str(filament.get("brand", "")).strip().casefold()
+                    == brand.casefold()
+                    and str(filament.get("name", "")).strip().casefold()
+                    == name.casefold()):
+                return dict(filament)
+        return None
+
+    def _apply_bambu_rfid_tag(self, slot, tagdata):
+        if tagdata is None:
+            return False
+        data = tagdata.as_dict() if hasattr(tagdata, "as_dict") else dict(tagdata)
+        material = str(data.get("material") or "").strip().upper()
+        color = self._normal_color(data.get("color")) or ""
+        name = str(data.get("profile_name") or "").strip()
+        brand = str(data.get("brand") or "Bambulab").strip() or "Bambulab"
+        if not material or not name or not color:
+            return False
+
+        filament = self._bambu_library_match(data)
+        if filament is None:
+            # Persist an identity profile so future spools of the same Bambu
+            # material/variant can reuse it. Do not invent PA/max-flow. The tag
+            # temperature range is stored, while target temp remains the generic
+            # material/library decision when available.
+            filament_id = self._bambu_profile_id(data)
+            generic = self.store.materials.get(material) or {}
+            value = {
+                "material": material,
+                "color": "",
+                "brand": brand,
+                "name": name,
+                "target_temp": generic.get("target_temp"),
+                "min_temp": data.get("min_hotend_c"),
+                "max_temp": data.get("max_hotend_c"),
+                "pressure_advance": None,
+                "max_flow": None,
+                "rfid_codes": [],
+                "aliases": [],
+                "spoolman_id": None,
+                "source": "rfid",
+            }
+            try:
+                filament = self.store.set_filament(filament_id, value)
+            except Exception as exc:
+                _klog("Bambu RFID library profile %s could not be saved: %s",
+                      filament_id, exc, level=logging.warning)
+                filament = dict(value, id=filament_id)
+
+        profile = {
+            "material": str(filament.get("material", material)).strip().upper(),
+            "color": color,
+            "brand": str(filament.get("brand", brand)).strip(),
+            "name": str(filament.get("name", name)).strip(),
+            "target_temp": filament.get("target_temp"),
+            "pressure_advance": filament.get("pressure_advance"),
+            "max_flow": filament.get("max_flow"),
+            "spoolman_id": filament.get("spoolman_id"),
+            "filament_id": str(filament.get("id", "")).strip().upper(),
+            "source": "rfid",
+            "rfid_code": "BAMBU:%s" % (
+                str(data.get("material_id")
+                    or data.get("detailed_filament_type")
+                    or material).strip().upper()),
+            "rfid_reserve": "",
+        }
+        self.set_profile(slot, profile)
+        self._ensure_material(profile["material"], profile.get("target_temp"))
+        self.unknown_rfid.pop(self._runtime_slot_key(slot), None)
+
+        # Feed the existing spool-usage estimator with a stable Bambu identity.
+        uid = str(data.get("uid") or "").strip().upper()
+        fields = {
+            "supplier": "BAMBU",
+            "mat_id": str(
+                data.get("material_id")
+                or data.get("detailed_filament_type")
+                or material).strip().upper(),
+            "number": uid,
+            "color": color,
+            "len": str(int(data.get("filament_length_m") or 0)),
+            "reserve": "",
+        }
+        self._remember_rfid_spool(slot, fields)
+        self.rfid_live_slots.add(slot)
+        self.rfid_percent.pop(slot, None) if not data.get("filament_length_m") else None
+        self._clear_rfid_watch(slot)
+        self._info(
+            self.gcode,
+            "%s: Creality RFID unknown; Bambu fallback applied %s / %s %s"
+            % (self.slot_label(self._runtime_slot(slot)),
+               profile["name"], color,
+               ("[%s]" % profile["filament_id"]) if profile["filament_id"] else ""))
+        return True
+
+    def _try_bambu_rfid_fallback(self, slot):
+        if not self.auto_bambu_rfid_fallback or not self.is_physical_slot(slot):
+            return False
+        helper = self.printer.lookup_object("box_rfid_bambu", None)
+        if helper is None:
+            return False
+        try:
+            tagdata = helper.try_auto_read(slot)
+        except Exception as exc:
+            _klog("%s Bambu RFID fallback failed: %s",
+                  self.slot_label(slot), exc, level=logging.warning)
+            return False
+        return self._apply_bambu_rfid_tag(slot, tagdata) if tagdata else False
+
     def _read_rfid_result(self, slot):
         sample = self._query_rfid_sample(slot)
         if sample is None:
@@ -4053,6 +4192,8 @@ class Box:
             return "none"
         if not self._rfid_record_ready(sample):
             self.rfid_seen_invalid.add(slot)
+            if record.lower() in ("", "unknown") and self._try_bambu_rfid_fallback(slot):
+                return "bambu"
             self.rfid_live_slots.discard(slot)
             self.rfid_percent.pop(slot, None)
             return record.lower() or "unknown"
@@ -4104,6 +4245,10 @@ class Box:
                 break
             if attempt < 2:
                 self.reactor.pause(self.reactor.monotonic() + 0.35)
+        for slot in sorted(tuple(pending)):
+            if self._try_bambu_rfid_fallback(slot):
+                applied.add(slot)
+                pending.discard(slot)
         for slot in sorted(pending):
             _klog("%s forced RFID result was invalid after retries",
                  self.slot_label(slot))
