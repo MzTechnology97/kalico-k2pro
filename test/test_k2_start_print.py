@@ -457,7 +457,7 @@ def test_switch_restored_after_start(switch_config, saved, default, expected):
     parser, _start, variables = switch_config
     variables = dict(variables, adaptive_axis_twist_comp=default)
     template = ENV.from_string(
-        parser.get("delayed_gcode _AXIS_TWIST_SWITCH_RESTORE", "gcode")
+        parser.get("delayed_gcode _OPENHOST_CONTROLS_RESTORE", "gcode")
     )
     text = template.render(
         printer=printer(variables, "cartographer", saved=saved), params={}
@@ -468,7 +468,7 @@ def test_switch_restored_after_start(switch_config, saved, default, expected):
     )
     assert (
         parser.get(
-            "delayed_gcode _AXIS_TWIST_SWITCH_RESTORE", "initial_duration"
+            "delayed_gcode _OPENHOST_CONTROLS_RESTORE", "initial_duration"
         )
         == "1"
     )
@@ -484,3 +484,46 @@ def test_wrapped_names_have_no_digits(switch_config):
         if parser.has_option(section, "rename_existing"):
             name = parser.get(section, "rename_existing")
             assert not any(ch.isdigit() for ch in name), name
+
+
+# --- Clog Detection switch ---------------------------------------------------
+
+
+def test_clog_switch_is_a_virtual_pin_on_by_default(switch_config):
+    parser, _start, _variables = switch_config
+    assert parser.get("output_pin clog_detection", "pin") == (
+        "virtual_pin:clog_detection"
+    )
+    assert parser.get("output_pin clog_detection", "value") == "1"
+
+
+@pytest.mark.parametrize("value, enable", [("0", 0), ("1.00", 1)])
+def test_clog_switch_tells_the_cfs(switch_config, value, enable):
+    parser, _start, variables = switch_config
+    lines = render(
+        parser,
+        "SET_PIN",
+        printer(variables, "cartographer"),
+        PIN="clog_detection",
+        VALUE=value,
+    )
+    assert lines == [
+        "_SET_PIN_OPENHOST",
+        "_BOX_SET_CLOG_DETECTION ENABLE=%d" % enable,
+    ]
+
+
+@pytest.mark.parametrize("enabled, value", [(True, 1), (False, 0)])
+def test_clog_switch_restored_from_the_cfs(switch_config, enabled, value):
+    parser, _start, variables = switch_config
+    status = printer(variables, "cartographer", saved={})
+    status["box"] = {"clog_detection_enabled": enabled}
+    template = ENV.from_string(
+        parser.get("delayed_gcode _OPENHOST_CONTROLS_RESTORE", "gcode")
+    )
+    lines = [
+        line.strip()
+        for line in template.render(printer=status, params={}).splitlines()
+        if line.strip()
+    ]
+    assert lines[-1] == "_SET_PIN_OPENHOST PIN=clog_detection VALUE=%d" % value
