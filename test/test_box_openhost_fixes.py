@@ -416,7 +416,10 @@ def test_auto_mapping_does_not_run_during_explicit_start():
 
 def test_k2_macros_only_call_registered_box_commands():
     import re
-    macros = (ROOT / "config" / "k2" / "macros.cfg").read_text()
+    macros = "".join(
+        (ROOT / "config" / "k2" / "macros" / name).read_text()
+        for name in ("print.cfg", "fans.cfg", "maintenance.cfg")
+    )
     box_source = (ROOT / "klippy" / "extras" / "box.py").read_text()
     registered = set(re.findall(r'\("(_?[A-Z][A-Z0-9_]+)",', box_source))
     defined = set(re.findall(r"^\[(?:gcode_macro|delayed_gcode) (\S+)\]", macros, re.M))
