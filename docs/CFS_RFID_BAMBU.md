@@ -1,6 +1,6 @@
 # K2 Pro CFS — Bambu RFID fallback
 
-The `k2-pro-openhost` branch supports the hardware-validated CFS RFID **v3.3 / API7 stock-capture** firmware.
+In my `k2-pro-openhost` branch I added support for the CFS RFID **v3.3 / API7 stock-capture** firmware that I validated on hardware.
 
 ## Behaviour
 
@@ -28,13 +28,13 @@ caps           0xE8
 SHA-256        5bab3acff49253a54089e779ea473d2cf587db09ab0d9c07c4d6c2e31b810388
 ```
 
-Firmware, source handler and standalone porting documentation are published in:
+I publish the firmware, source handler and standalone porting documentation in:
 
 `MzTechnology97/k2-cfs-rfid-tools/firmware/v3.3-stockcapture/`
 
 ## Configuration
 
-The K2 profile includes:
+My K2 profile includes:
 
 ```ini
 [box]
@@ -76,7 +76,7 @@ max_index=3
 cache_size=16
 ```
 
-On the validated K2 Pro the runtime backend is legacy with blocks `4,5,6`.
+On my validated K2 Pro the runtime backend is legacy with blocks `4,5,6`.
 
 ## Safety
 
