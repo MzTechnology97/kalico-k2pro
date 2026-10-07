@@ -101,7 +101,7 @@ Do not enable mixed mode until direct-USB Cartographer has first been validated 
 
 The axis twist calibration at print start is switched from Mainsail with the **Axis Twist Compensation** switch (`openhost_controls.cfg`: a `virtual_pin:axis_twist_compensation` output pin, needs [klipper-virtual-pins](https://github.com/pedrolamas/klipper-virtual-pins) linked into `klippy/extras`), or from the console with `START_PRINT_ATC ENABLE=1` or `ENABLE=0`; `START_PRINT_ATC` alone shows it. Every change is saved in `save_variables` (`~/printer_data/config/k2_start_print_variables.cfg`) and the switch is restored to its last state one second after each Klipper start. Without `openhost_controls.cfg` the console command still works with the saved value.
 
-The **Clog Detection** switch (`openhost_controls.cfg`) turns the CFS clog check on or off: the extruder feeds `clog_extruder_length` (80 mm) while the CFS does not refill, and the print pauses. The CFS saves the switch in its own state (`_BOX_SET_CLOG_DETECTION ENABLE=0|1`), so it survives restarts; `clog_detection` in `box.cfg` is the default until then.
+**Clog detection** pauses the print when the extruder feeds `clog_extruder_length` (80 mm) while the CFS does not refill. It is switched in Mainsail's CFS settings menu next to Runout swap, or with `_BOX_SET_CLOG_DETECTION ENABLE=0|1`; the CFS saves it in its own state, so it survives restarts, and `clog_detection` in `box.cfg` is the default until then.
 
 `filament_retry_moves` in `box.cfg` is the tour between wastebin visits before a stalled load or blocked unload is retried; Klipper refuses to start when a move is outside the X/Y travel (the K2 Plus default `Y350` does not fit the K2 Pro's 332 mm).
 
