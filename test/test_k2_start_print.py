@@ -17,8 +17,8 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONFIGS = (
-    ROOT / "config" / "k2" / "start_print.cfg",
-    ROOT / "config" / "k2" / "reference" / "k2pro-cm5" / "start_print.cfg",
+    ROOT / "config" / "k2" / "macros" / "print.cfg",
+    ROOT / "config" / "k2" / "reference" / "k2pro-cm5" / "macros" / "print.cfg",
 )
 ENV = jinja2.Environment(
     "{%",
@@ -336,7 +336,7 @@ def test_save_variables_file_is_declared(config):
     parser, _variables = config
     assert (
         parser.get("save_variables", "filename")
-        == "~/printer_data/config/k2_start_print_variables.cfg"
+        == "~/printer_data/config/macros/k2_start_print_variables.cfg"
     )
 
 
@@ -349,7 +349,7 @@ def switch_config(request):
         strict=False, inline_comment_prefixes=(";", "#")
     )
     parser.read(request.param / "openhost_controls.cfg", encoding="utf-8")
-    start, variables = load(request.param / "start_print.cfg")
+    start, variables = load(request.param / "print.cfg")
     return parser, start, variables
 
 
