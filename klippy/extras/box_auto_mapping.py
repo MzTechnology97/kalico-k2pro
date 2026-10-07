@@ -130,6 +130,42 @@ def _slot_by_index(slots, index):
     return None
 
 
+def live_filament_check(tools, slots, mapping, swap, used_m, progress):
+    """During a print: filament each mapped tool still needs vs what is left.
+
+    With one tool the slicer length minus the filament already used is exact.
+    With several tools the per-tool use is not known, so the need is scaled
+    by the remaining file progress (``estimated``). ``available_m`` is None
+    when no RFID estimate exists; such a slot is never reported short.
+    """
+    single = len(tools) == 1
+    results = []
+    for tool in tools:
+        tool_id = int(tool["tool"])
+        if tool_id not in mapping:
+            continue
+        slot = _slot_by_index(slots, mapping[tool_id])
+        need = needed_m(tool)
+        if slot is None or need is None:
+            continue
+        if single:
+            left = max(0.0, need - max(0.0, float(used_m or 0.0)))
+        else:
+            left = need * max(0.0, 1.0 - min(1.0, float(progress or 0.0)))
+        have = available_m(slot, slots, swap)
+        results.append({
+            "tool": tool_id,
+            "slot": int(slot["index"]),
+            "needed_m": round(left, 2),
+            "available_m": None if have is None else round(have, 2),
+            "includes_swap": bool(
+                swap and have is not None and have != _remaining_m(slot)),
+            "estimated": not single,
+            "short": have is not None and have < left,
+        })
+    return results
+
+
 def evaluate_mapping(tools, slots, mapping, swap=False):
     """Warnings for a tool -> slot map. They never block a print."""
     warnings = []

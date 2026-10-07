@@ -14,17 +14,27 @@ what K2-OpenHost needs on top of it:
 * warnings for the chosen map: a spool that may run out (RFID estimate below
   the slicer length) or a base material on a filled variant (PETG on
   PETG-CF). They are printed in the console and published, never block;
-* three extra ``box.get_status()`` fields:
+* a check every minute during the print: the filament each tool still
+  needs against what its spool (and the identical spools runout swap would
+  continue on) has left. A newly short tool is reported once in the console
+  and added to ``mapping_warnings`` as ``low_filament_live``; it never
+  pauses the print;
+* four extra ``box.get_status()`` fields:
 
     print_mapping_enabled
     auto_mapping
     mapping_warnings
+    filament_check
 """
 
+import logging
 import os
 
-from extras.box_auto_mapping import evaluate_mapping, suggest_mapping_report
+from extras.box_auto_mapping import (
+    evaluate_mapping, live_filament_check, suggest_mapping_report)
 from extras.box_gcode import read_metadata
+
+LIVE_CHECK_INTERVAL = 60.0
 
 
 class BoxPrintMapping:
@@ -42,6 +52,13 @@ class BoxPrintMapping:
         # Warnings of the map used by the current print (automatic or chosen).
         self.mapping_warnings = []
         self._explicit_start_in_progress = False
+        # Live filament check during the print.
+        self.filament_check = {"active": False, "tools": []}
+        self._live_warned = set()
+        self._live_tools_cache = (None, [])
+        self.reactor = self.printer.get_reactor()
+        self._live_timer = self.reactor.register_timer(self._live_check)
+        self.printer.register_event_handler("klippy:ready", self._start_live_check)
 
         # Extend the canonical box Moonraker object instead of publishing a
         # second competing CFS state object.
@@ -82,6 +99,10 @@ class BoxPrintMapping:
             getattr(self.box, "observation_mode", False))
         status["auto_mapping"] = dict(self.auto_mapping)
         status["mapping_warnings"] = list(self.mapping_warnings)
+        status["filament_check"] = {
+            "active": self.filament_check["active"],
+            "tools": [dict(item) for item in self.filament_check["tools"]],
+        }
         return status
 
     # ------------------------------------------------------------------
@@ -91,6 +112,86 @@ class BoxPrintMapping:
     def _reset_auto_mapping(self, *args):
         self.auto_mapping = {"state": "idle", "map": {}, "unresolved": [], "warnings": []}
         self.mapping_warnings = []
+        self.filament_check = {"active": False, "tools": []}
+        self._live_warned = set()
+
+    # ------------------------------------------------------------------
+    # Live filament check
+    # ------------------------------------------------------------------
+
+    def _start_live_check(self):
+        self.reactor.update_timer(
+            self._live_timer, self.reactor.monotonic() + LIVE_CHECK_INTERVAL)
+
+    def _current_tools(self, sd):
+        """Tools of the file being printed (the dialog's print_info only
+        when it describes that file; otherwise read the file once)."""
+        current = getattr(sd, "current_file", None) if sd else None
+        path = getattr(current, "name", None)
+        if not path:
+            return []
+        filename = os.path.basename(path)
+        info = self.box.print_info or {}
+        if os.path.basename(str(info.get("filename", ""))) == filename:
+            return info.get("tools", []) or []
+        cached_path, tools = self._live_tools_cache
+        if cached_path != path:
+            try:
+                tools = read_metadata(path).get("tools", [])
+            except (OSError, ValueError):
+                tools = []
+            self._live_tools_cache = (path, tools)
+        return tools
+
+    def _live_check(self, eventtime):
+        try:
+            self._run_live_check(eventtime)
+        except Exception:
+            logging.exception("box_print_mapping: live filament check failed")
+        return eventtime + LIVE_CHECK_INTERVAL
+
+    def _run_live_check(self, eventtime):
+        stats = self.printer.lookup_object("print_stats", None)
+        state = getattr(stats, "state", None)
+        if state != "printing":
+            if state != "paused":
+                self.filament_check = {"active": False, "tools": []}
+            return
+        sd = self.printer.lookup_object("virtual_sdcard", None)
+        tools = self._current_tools(sd)
+        if not tools:
+            self.filament_check = {"active": False, "tools": []}
+            return
+        mapping = dict(getattr(self.change_engine, "tool_map", {}) or {})
+        if not mapping and len(tools) == 1:
+            loaded = getattr(getattr(self.box, "snapshot", None), "loaded_slot", None)
+            if isinstance(loaded, int) and loaded >= 0:
+                mapping = {int(tools[0]["tool"]): loaded}
+        stats_status = stats.get_status(eventtime)
+        used_m = float(stats_status.get("filament_used", 0.0) or 0.0) / 1000.0
+        progress = sd.get_status(eventtime).get("progress", 0.0) if sd else 0.0
+        results = live_filament_check(
+            tools, self._slots(), mapping, self._swap_enabled(), used_m, progress)
+        self.filament_check = {"active": True, "tools": results}
+        live = []
+        for item in results:
+            if not item["short"]:
+                continue
+            warning = {
+                "kind": "low_filament_live", "tool": item["tool"],
+                "slot": item["slot"], "needed_m": item["needed_m"],
+                "remaining_m": item["available_m"],
+                "includes_swap": item["includes_swap"],
+                "estimated": item["estimated"],
+            }
+            live.append(warning)
+            key = (item["tool"], item["slot"])
+            if key not in self._live_warned:
+                self._live_warned.add(key)
+                self.gcode.respond_info("[BOX]: Warning: " + self._warning_text(warning))
+        self.mapping_warnings = [
+            w for w in self.mapping_warnings if w.get("kind") != "low_filament_live"
+        ] + live
 
     def _slots(self):
         status = self._base_get_status(
@@ -121,6 +222,13 @@ class BoxPrintMapping:
     def _warning_text(self, warning):
         tool = "T%d" % warning["tool"]
         where = self.box.slot_label(warning["slot"])
+        if warning["kind"] == "low_filament_live":
+            return ("%s still needs about %.1f m%s, %s has about %.1f m left%s. "
+                    "Load more filament or the print pauses at runout." % (
+                        tool, warning["needed_m"],
+                        " (estimated)" if warning.get("estimated") else "",
+                        where, warning["remaining_m"],
+                        " including identical spools" if warning.get("includes_swap") else ""))
         if warning["kind"] == "low_filament":
             return ("%s needs about %.1f m of filament, %s has about %.1f m left%s. "
                     "The print continues and pauses at runout unless more filament is loaded." % (
