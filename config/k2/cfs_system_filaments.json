@@ -18,7 +18,8 @@
         "07001",
         "107001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "03001",
@@ -34,7 +35,8 @@
         "03001",
         "103001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 23.0
     },
     {
       "id": "19001",
@@ -50,7 +52,8 @@
         "19001",
         "119001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "11001",
@@ -66,7 +69,8 @@
         "11001",
         "111001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 12.0
     },
     {
       "id": "12003",
@@ -82,7 +86,8 @@
         "12003",
         "112003"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 4.0
     },
     {
       "id": "12002",
@@ -98,7 +103,8 @@
         "12002",
         "112002"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 8.0
     },
     {
       "id": "12005",
@@ -114,7 +120,8 @@
         "12005",
         "112005"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 10.0
     },
     {
       "id": "12004",
@@ -130,7 +137,8 @@
         "12004",
         "112004"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 10.0
     },
     {
       "id": "07002",
@@ -146,7 +154,8 @@
         "07002",
         "107002"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "06001",
@@ -162,7 +171,8 @@
         "06001",
         "106001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "06002",
@@ -178,7 +188,8 @@
         "06002",
         "106002"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 23.0
     },
     {
       "id": "06003",
@@ -194,7 +205,8 @@
         "06003",
         "106003"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 12.0
     },
     {
       "id": "04001",
@@ -210,7 +222,8 @@
         "04001",
         "104001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "15001",
@@ -226,7 +239,8 @@
         "15001",
         "115001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "14001",
@@ -242,7 +256,8 @@
         "14001",
         "114001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "05001",
@@ -258,7 +273,8 @@
         "05001",
         "105001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 10.0
     },
     {
       "id": "17001",
@@ -274,7 +290,8 @@
         "17001",
         "117001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "09001",
@@ -290,7 +307,8 @@
         "09001",
         "109001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "09002",
@@ -306,7 +324,8 @@
         "09002",
         "109002"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 23.0
     },
     {
       "id": "08001",
@@ -322,7 +341,8 @@
         "08001",
         "108001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "18001",
@@ -338,7 +358,8 @@
         "18001",
         "118001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "01002",
@@ -354,7 +375,8 @@
         "01002",
         "101002"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "29001",
@@ -370,7 +392,8 @@
         "29001",
         "129001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "01001",
@@ -386,7 +409,8 @@
         "01001",
         "101001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 23.0
     },
     {
       "id": "01004",
@@ -402,7 +426,8 @@
         "01004",
         "101004"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "01601",
@@ -418,7 +443,8 @@
         "01601",
         "101601"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 16.0
     },
     {
       "id": "13001",
@@ -434,7 +460,8 @@
         "13001",
         "113001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "02001",
@@ -450,7 +477,8 @@
         "02001",
         "102001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 23.0
     },
     {
       "id": "16001",
@@ -466,7 +494,8 @@
         "16001",
         "116001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 2.0
     },
     {
       "id": "10001",
@@ -482,7 +511,8 @@
         "10001",
         "110001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 3.0
     },
     {
       "id": "00004",
@@ -498,7 +528,8 @@
         "00004",
         "100004"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 16.0
     },
     {
       "id": "00007",
@@ -514,7 +545,8 @@
         "00007",
         "100007"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 12.0
     },
     {
       "id": "00033",
@@ -530,7 +562,8 @@
         "00033",
         "100033"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 16.0
     },
     {
       "id": "00010",
@@ -546,7 +579,8 @@
         "00010",
         "100010"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "00012",
@@ -562,7 +596,8 @@
         "00012",
         "100012"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 10.0
     },
     {
       "id": "00008",
@@ -578,7 +613,8 @@
         "00008",
         "100008"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 8.0
     },
     {
       "id": "00023",
@@ -594,7 +630,8 @@
         "00023",
         "100023"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "00009",
@@ -610,7 +647,8 @@
         "00009",
         "100009"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "00025",
@@ -626,7 +664,8 @@
         "00025",
         "100025"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 8.0
     },
     {
       "id": "00022",
@@ -642,7 +681,8 @@
         "00022",
         "100022"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 8.0
     },
     {
       "id": "00034",
@@ -658,7 +698,8 @@
         "00034",
         "100034"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "00015",
@@ -674,7 +715,8 @@
         "00015",
         "100015"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 8.0
     },
     {
       "id": "00016",
@@ -690,7 +732,8 @@
         "00016",
         "100016"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 3.0
     },
     {
       "id": "00021",
@@ -706,7 +749,8 @@
         "00021",
         "100021"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 16.0
     },
     {
       "id": "00032",
@@ -722,7 +766,8 @@
         "00032",
         "100032"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 8.0
     },
     {
       "id": "00020",
@@ -738,7 +783,8 @@
         "00020",
         "100020"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 8.0
     },
     {
       "id": "00013",
@@ -754,7 +800,8 @@
         "00013",
         "100013"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 8.0
     },
     {
       "id": "00003",
@@ -770,7 +817,8 @@
         "00003",
         "100003"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 16.0
     },
     {
       "id": "00014",
@@ -786,7 +834,8 @@
         "00014",
         "100014"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 10.0
     },
     {
       "id": "00027",
@@ -802,7 +851,8 @@
         "00027",
         "100027"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 10.0
     },
     {
       "id": "00001",
@@ -818,7 +868,8 @@
         "00001",
         "100001"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 12.0
     },
     {
       "id": "00002",
@@ -834,7 +885,8 @@
         "00002",
         "100002"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 10.0
     },
     {
       "id": "00024",
@@ -850,7 +902,8 @@
         "00024",
         "100024"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "00006",
@@ -866,7 +919,8 @@
         "00006",
         "100006"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 18.0
     },
     {
       "id": "00019",
@@ -882,7 +936,8 @@
         "00019",
         "100019"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 10.0
     },
     {
       "id": "00031",
@@ -898,7 +953,8 @@
         "00031",
         "100031"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "00017",
@@ -914,7 +970,8 @@
         "00017",
         "100017"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 2.0
     },
     {
       "id": "00018",
@@ -930,7 +987,8 @@
         "00018",
         "100018"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "00011",
@@ -946,7 +1004,8 @@
         "00011",
         "100011"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 6.0
     },
     {
       "id": "00005",
@@ -962,7 +1021,8 @@
         "00005",
         "100005"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 2.0
     },
     {
       "id": "00026",
@@ -978,7 +1038,8 @@
         "00026",
         "100026"
       ],
-      "system": true
+      "system": true,
+      "max_flow": 2.0
     }
   ]
 }

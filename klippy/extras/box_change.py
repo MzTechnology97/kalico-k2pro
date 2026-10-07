@@ -532,6 +532,9 @@ class BoxChangeEngine:
         self.matrix = metadata["matrix"]
         self.temp_print = metadata["temp_print"]
         self.temp_initial_layer = metadata["temp_initial_layer"]
+        self.pa_enabled = metadata.get("pa_enabled")
+        self.pa_values = metadata.get("pressure_advance")
+        self.max_flow_values = metadata.get("max_flow")
         self.parsed_epoch = self._print_epoch()
         if self.matrix is None:
             self._info(gcmd, "No usable flush_volumes_matrix; using fallback purge")
@@ -1271,6 +1274,55 @@ class BoxChangeEngine:
             return True
         return previous != current
 
+    def metadata_filament(self, slot):
+        """Slicer settings of the file tool loaded into slot, or None.
+
+        During a print only. Uses what PARSE_FLUSH_VOLUMES read, or reads the
+        file's metadata itself once per print (the start macros do not all
+        call PARSE_FLUSH_VOLUMES).
+        """
+        lists = self._print_filament_metadata()
+        if lists is None:
+            return None
+        tool = self._metadata_tool(slot)
+        if tool is None or tool < 0:
+            return None
+        enabled, values, flows = lists
+
+        def pick(items):
+            return items[tool] if items and tool < len(items) else None
+
+        return {
+            "tool": tool,
+            "pressure_advance_enabled": pick(enabled),
+            "pressure_advance": pick(values),
+            "max_flow": pick(flows),
+        }
+
+    def _print_filament_metadata(self):
+        epoch = self._print_epoch()
+        if epoch is None or not self._is_print_active():
+            return None
+        if self._parsed_is_current():
+            return self.pa_enabled, self.pa_values, self.max_flow_values
+        cached = getattr(self, "_filament_metadata", None)
+        if cached is not None and cached[0] == epoch:
+            return cached[1]
+        lists = None
+        try:
+            sd = self.printer.lookup_object("virtual_sdcard")
+            path = sd.get_status(
+                self.printer.get_reactor().monotonic()).get("file_path")
+            if path:
+                metadata = read_metadata(path)
+                lists = (metadata.get("pa_enabled"),
+                         metadata.get("pressure_advance"),
+                         metadata.get("max_flow"))
+        except (OSError, ValueError):
+            lists = None
+        self._filament_metadata = (epoch, lists)
+        return lists
+
     def _metadata_tool(self, slot, source=False):
         if self.mapping_filename is None:
             return slot
@@ -1310,6 +1362,9 @@ class BoxChangeEngine:
         self.matrix = None
         self.temp_print = None
         self.temp_initial_layer = None
+        self.pa_enabled = None
+        self.pa_values = None
+        self.max_flow_values = None
         self.parsed_epoch = None
 
     def _print_epoch(self):

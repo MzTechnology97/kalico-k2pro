@@ -35,6 +35,16 @@ def _pressure_advance(item):
     return round(value, 6)
 
 
+def _max_flow(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0.1 <= value <= 200.0:
+        return None
+    return round(value, 2)
+
+
 def _compact_pressure_advance(item):
     value = item.get("pressure_advance")
     if value in (None, ""):
@@ -146,6 +156,8 @@ class K2RfidMaterialCatalog:
                     "min_temp": base.get("minTemp"),
                     "max_temp": base.get("maxTemp"),
                     "pressure_advance": _pressure_advance(item),
+                    "max_flow": _max_flow((item.get("kvParam") or {}).get(
+                        "filament_max_volumetric_speed")),
                     "aliases": [],
                     "rfid_codes": [],
                     "system": bool(item.get("system", False)),
@@ -161,6 +173,7 @@ class K2RfidMaterialCatalog:
                     "min_temp": item.get("min_temp"),
                     "max_temp": item.get("max_temp"),
                     "pressure_advance": _compact_pressure_advance(item),
+                    "max_flow": _max_flow(item.get("max_flow")),
                     "aliases": list(item.get("aliases") or []),
                     "rfid_codes": list(item.get("rfid_codes") or []),
                     "system": bool(item.get("system", False)),

@@ -22,7 +22,8 @@ def read_metadata(path):
         footer = footer.partition(b"\n")[2]
     fields = dict(re.findall(
         r"^;[ \t]*(filament used \[mm\]|filament_colour|filament_type|filament_settings_id|"
-        r"flush_volumes_matrix|nozzle_temperature|nozzle_temperature_initial_layer)"
+        r"flush_volumes_matrix|nozzle_temperature|nozzle_temperature_initial_layer|"
+        r"enable_pressure_advance|pressure_advance|filament_max_volumetric_speed)"
         r"[ \t]*=[ \t]*([^\r\n]*)", footer.decode("utf-8", errors="replace"), re.M))
 
     def numbers(key):
@@ -52,6 +53,13 @@ def read_metadata(path):
     size = math.isqrt(len(volumes))
     matrix = ([volumes[i * size:(i + 1) * size] for i in range(size)]
               if size and size * size == len(volumes) else None)
+    enabled = numbers("enable_pressure_advance")
     return {"tools": tools, "matrix": matrix,
             "temp_print": numbers("nozzle_temperature"),
-            "temp_initial_layer": numbers("nozzle_temperature_initial_layer")}
+            "temp_initial_layer": numbers("nozzle_temperature_initial_layer"),
+            # OrcaSlicer writes SET_PRESSURE_ADVANCE itself for a filament
+            # whose profile enables pressure advance.
+            "pa_enabled": (None if enabled is None
+                           else [value != 0 for value in enabled]),
+            "pressure_advance": numbers("pressure_advance"),
+            "max_flow": numbers("filament_max_volumetric_speed")}
