@@ -38,7 +38,7 @@ purpose:
 | `macros/print.cfg` | `START_PRINT` and its nozzle clean, `PAUSE` / `RESUME` / `CANCEL_PRINT` / `END_PRINT`, homing and mesh helpers |
 | `macros/kamp.cfg` | KAMP purge line (`LINE_PURGE`, `_KAMP_Settings`) |
 | `macros/fans.cfg` | fans with their tachometers, `M106`/`M107` (toolhead part fan P0, side part fan P2, chamber exhaust P3), `M141`/`M191` |
-| `macros/maintenance.cfg` | rail lubrication, PID, motion stress tests (`WARMUP`, `AUTO_WARMUP`, `TEST_SPEED`, `ACCELL_TEST_X/Y`, kept on the bed area) |
+| `macros/maintenance.cfg` | rail lubrication, PID, motion stress tests kept on the bed area: `WARMUP`, `AUTO_WARMUP`, `TEST_SPEED`, and `ACCELL_TEST_X` / `ACCELL_TEST_Y` (one axis each; every pass sets `ACCEL_START + n*ACCEL_STEP` and `VELOCITY + n*VELOCITY_STEP` above the configured limits, with `MINIMUM_CRUISE_RATIO=0`, logs it, and the limits are restored at the end) |
 | `macros/box.cfg`, `macros/motor_control.cfg`, `macros/prtouch.cfg`, `macros/cartographer.cfg`, `macros/k2_t113.cfg`, `macros/openhost_controls.cfg` | printer modules |
 | `macros/overrides.cfg` | local values, loaded last |
 
