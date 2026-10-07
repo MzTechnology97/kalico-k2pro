@@ -138,7 +138,7 @@ The compatibility surface includes the flat `slots[]` payload, `external: true` 
 
 K2-OpenHost keeps Jacob's `box.api_version: 1` contract for OrcaSlicer compatibility and advertises the additive library separately as `filament_inventory_version: 2`. The inventory layer adds a persistent filament library on top of the existing slot profiles. The library and slot assignments live in the configured `state_path` (normally `~/printer_data/filament_box.json`) and are published through `printer.objects.box.filaments` and `printer.objects.box.slots`.
 
-With `library_path` (default in `config/k2/box.cfg`: `~/printer_data/config/cfs_filaments.json`) the custom profiles live in their own JSON file:
+With `library_path` (default in `config/k2/macros/box.cfg`: `~/printer_data/config/cfs_filaments.json`) the custom profiles live in their own JSON file:
 - it is visible in the Mainsail file manager and in Moonraker backups;
 - a replaced file is reloaded automatically or with `_BOX_FILAMENT_RELOAD`;
 - profiles from an older state file move there once, with a backup `<state_path>.pre-library`.
@@ -279,7 +279,7 @@ Notes from those tests:
 
 ### The T113 from Kalico (`[k2_t113]`)
 
-`config/k2/k2_t113.cfg` talks to `k2oh-ctl`, the control service of the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) (slot B). Every request runs in a worker thread, so the reactor never waits for the network. With `host` empty the section does nothing; the installer helper fills in `host` and copies the shared token to `token_file`.
+`config/k2/macros/k2_t113.cfg` talks to `k2oh-ctl`, the control service of the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) (slot B). Every request runs in a worker thread, so the reactor never waits for the network. With `host` empty the section does nothing; the installer helper fills in `host` and copies the shared token to `token_file`.
 
 | G-code | Effect |
 | --- | --- |
@@ -476,7 +476,7 @@ sensor_type: motor_mcu   # K2 Pro closed-loop motor board MCU
 motor_axis: x            # x, y or e
 ```
 
-- `config/k2/motor_control.cfg` declares X, Y and E.
+- `config/k2/macros/motor_control.cfg` declares X, Y and E.
 - The sensor takes its value from `motor_control`'s polling, so it adds no bus traffic.
 - Optional `min_temp` / `max_temp` shut the printer down outside the range, as for `temperature_host`.
 - The `motor_mcu` type is registered in `klippy/extras/temperature_sensors.cfg` (`motor_mcu_temperature.py`).
