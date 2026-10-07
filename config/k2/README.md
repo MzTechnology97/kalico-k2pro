@@ -89,6 +89,18 @@ The official Cartographer3D plugin supports:
 
 Do not enable mixed mode until direct-USB Cartographer has first been validated independently.
 
+### Nozzle cleaning and axis twist at print start
+
+`START_PRINT` cleans the nozzle before any nozzle contact, in every probe setup (PRTouch as the probe, Cartographer alone, PRTouch homing with a Cartographer mesh):
+
+1. `_NOZZLE_HOT_CLEAN` heats the nozzle over the wastebin to the print temperature minus `variable_hot_clean_offset` (10 °C), retracts `variable_hot_clean_retract` (2 mm) and runs `NOZZLE_CLEAN` while residue is soft;
+2. the nozzle cools to the probing temperature (140 °C) over the wastebin with the part fan at full speed, then the fan returns to its previous speed;
+3. a last `NOZZLE_CLEAN` at the probing temperature removes the strings left while cooling.
+
+`variable_hot_clean: 0` keeps only step 3. The hot clean is skipped when the print temperature is within 30 °C of the probing temperature. Nothing scrubs the nozzle on the plate; `variable_prtouch_scrub` stays 0 on the reference machine.
+
+The axis twist calibration at print start is switched with `START_PRINT_ATC ENABLE=1` or `ENABLE=0`; the value is kept across restarts in `save_variables` (`~/printer_data/config/k2_start_print_variables.cfg`), and `START_PRINT_ATC` alone shows it. Until a value is saved, `variable_adaptive_axis_twist_comp` is the default; a print's own `ATC=` parameter still overrides both. With Cartographer alone it runs `CARTOGRAPHER_AXIS_TWIST_COMPENSATION`, in mixed mode `PRTOUCH_AXIS_TWIST_COMPENSATION`. With PRTouch as the probe the nozzle itself touches the bed, so there is no twist to compensate: the calibration is skipped with a message.
+
 ## Attribution and caution
 
 - K2 Kalico structure and extras: Jacob10383/Jacobean and upstream contributors.
