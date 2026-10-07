@@ -27,7 +27,8 @@ This is the branch currently used on the external CM5/OpenHost machine.
 - Jacob/Kalico core lineage;
 - K2 Pro configuration baseline (closed-loop motors, PRTouch, `[z_align]` and power-loss recovery on the single-Z K2 Pro);
 - K2-specific Jacobean extras, **maintained in this repository** (the former `k2-pro-custom-firmware` mirror is archived), including Jacob10383's 071c813 update: native logical-tool mapping and the `_BOX_PAUSE_CAPTURE` / `_BOX_RESUME_PREPARE` / `_BOX_RESUME_COMMIT` pause contract;
-- K2 Pro CFS four-byte state compatibility and the protected `observation_mode` safety layer;
+- K2 Pro CFS state compatibility: the four-byte reply of CFS firmware 1.1.3 and the original six-byte reply of 1.5.3 (Creality 1.1.7.0), plus the protected `observation_mode` safety layer;
+- Jacob10383's K2 extras up to his 2026-10-06 release: service moves that work with Z unhomed, configurable retry tour and clog detection, native fan tachometers (`fan_feedback`);
 - CFS filament inventory:
   - persistent slots and RFID remaining estimates;
   - a separate custom filament library (`cfs_filaments.json`) with brands;
@@ -36,6 +37,10 @@ This is the branch currently used on the external CM5/OpenHost machine.
   - warnings for low filament and material variants that never block a print;
   - a strict rule that never maps a base material onto its CF/GF/KF/AF variant;
 - runout swap groups with a manual order (`_BOX_SET_RUNOUT_ORDER`, editable from the Mainsail Runout swap widget);
+- unload and slot change heat the nozzle over the wastebin after homing X/Y; no RFID reread of the slot loaded toward the printhead; a live low-filament check during the print;
+- pressure advance and max flow per filament profile; RS-485 counters per print and `link_lost_action`; motor startup that recovers when RS-485 comes back;
+- `START_PRINT` with a hot nozzle clean before probing; Mainsail switches and sliders for the axis twist calibration, clog detection and the chamber exhaust fans;
+- K2 profile in `config/k2/`: a lean `printer.cfg` and the printer files in `macros/` grouped by purpose (see [config/k2/README.md](config/k2/README.md));
 - official OrcaSlicer filament **Sync**: the CFS slots are published to Moonraker's `lane_data` namespace (`publish_lane_data`);
 - external-host motor-control startup delay/retry handling;
 - tracked `gcode_shell_command.py` needed by the current host setup;
@@ -67,7 +72,7 @@ Raspberry Pi CM5 / external Linux host
     `-- direct USB -> Cartographer
 ```
 
-The three K2 gadget channels map to `/dev/ttyUSB0`, `/dev/ttyUSB1` and `/dev/ttyUSB2`. Cartographer is now intended to connect directly to the CM5 USB host through a persistent `/dev/serial/by-id/...` path rather than sharing the K2 gadget serial transport.
+The three K2 gadget channels get stable names from the installer's udev rule: `/dev/k2-main`, `/dev/k2-nozzle` and `/dev/k2-rs485` (the `/dev/ttyUSBn` numbers change when the gadget reconnects). Cartographer connects directly to the CM5 USB host as `/dev/k2-cartographer` rather than sharing the K2 gadget serial transport.
 
 ## Hardware-validated milestone — 2026-10-02
 
@@ -77,7 +82,7 @@ Validated from the external host:
 
 - native AArch64 C helper build and runtime;
 - simultaneous Main MCU + Nozzle MCU sessions at 230400 baud;
-- RS-485 transport on `/dev/ttyUSB2`;
+- RS-485 transport on the third gadget channel (now `/dev/k2-rs485`);
 - closed-loop X/Y controller startup and runtime communication;
 - automatic recovery from transient motor-controller discovery failures through startup delay/retry logic;
 - normal CoreXY motion;
@@ -140,11 +145,13 @@ For generic Kalico documentation and original project information, use:
 
 Experimental / pre-production. Core machine control now reaches full PRTouch homing, `[z_align]` homing, thermal tests, resonance measurement and an operational persistent CFS inventory from the external host.
 
-Built since the 2026-10-02 milestone, but not yet hardware-validated:
-- the 071c813 pause contract;
+Validated on the reference printer since then (see the [K2-OpenHost test status](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/TEST_STATUS.md)): long CFS prints from the T113 slot B, a runout swap and the RS-485 watchdog seen live, load and unload from unhomed axes, the CFS six-byte state on firmware 1.5.3, native fan tachometers, the clog detection switch and service moves with Z unhomed and a mesh loaded.
+
+Built but not yet fully hardware-validated:
 - mapping warnings and the strict variant rule;
 - the manual runout order;
-- OrcaSlicer `lane_data` Sync, verified with OrcaSlicer 2.4.2.
+- OrcaSlicer `lane_data` Sync, verified with OrcaSlicer 2.4.2;
+- the hot nozzle clean in a real `START_PRINT`.
 
 Remaining major milestones:
 - direct-USB Cartographer validation;
