@@ -348,7 +348,7 @@ def switch_config(request):
     parser = configparser.RawConfigParser(
         strict=False, inline_comment_prefixes=(";", "#")
     )
-    parser.read(request.param / "axis_twist_switch.cfg", encoding="utf-8")
+    parser.read(request.param / "openhost_controls.cfg", encoding="utf-8")
     start, variables = load(request.param / "start_print.cfg")
     return parser, start, variables
 
@@ -472,3 +472,15 @@ def test_switch_restored_after_start(switch_config, saved, default, expected):
         )
         == "1"
     )
+
+
+# --- wrapped command names ----------------------------------------------------
+
+
+def test_wrapped_names_have_no_digits(switch_config):
+    # Klipper's G-code parser splits a command name at its first digit.
+    parser, _start, _variables = switch_config
+    for section in parser.sections():
+        if parser.has_option(section, "rename_existing"):
+            name = parser.get(section, "rename_existing")
+            assert not any(ch.isdigit() for ch in name), name
