@@ -4,6 +4,8 @@
 #
 # This keeps temperature_fan as the only owner of the physical fan pin while
 # allowing a separate command path, such as M106 P3, to request filtration.
+# With generic_fan: True the floor also shows as a [fan_generic] of the same
+# name (a slider in Mainsail) and SET_FAN_SPEED FAN=<name> sets it.
 import logging
 
 MAX_FAN_TIME = 5.0
@@ -24,6 +26,7 @@ class TemperatureFanManualFloor:
         self.min_update_delta = config.getfloat(
             "min_update_delta", 0.05, minval=0.0, maxval=1.0
         )
+        self.generic_fan = config.getboolean("generic_fan", False)
         self.manual_speed = 0.0
         self.auto_stage = 0.0
         self.last_auto_speed = 0.0
@@ -40,6 +43,20 @@ class TemperatureFanManualFloor:
             self.cmd_SET_TEMPERATURE_FAN_MANUAL_SPEED,
             desc=self.cmd_SET_TEMPERATURE_FAN_MANUAL_SPEED_help,
         )
+        if self.generic_fan:
+            # Not a second fan: the pin stays with temperature_fan, this
+            # object only shows and sets the manual floor.
+            self.printer.add_object(
+                "fan_generic %s" % (self.temperature_fan_name,),
+                ManualFloorFanView(self),
+            )
+            gcode.register_mux_command(
+                "SET_FAN_SPEED",
+                "FAN",
+                self.temperature_fan_name,
+                self.cmd_SET_FAN_SPEED,
+                desc=self.cmd_SET_FAN_SPEED_help,
+            )
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
@@ -156,7 +173,21 @@ class TemperatureFanManualFloor:
     )
 
     def cmd_SET_TEMPERATURE_FAN_MANUAL_SPEED(self, gcmd):
-        speed = gcmd.get_float("SPEED", minval=0.0, maxval=1.0)
+        self._set_manual_speed(gcmd.get_float("SPEED", minval=0.0, maxval=1.0))
+
+    cmd_SET_FAN_SPEED_help = (
+        "Set the manual speed floor of a temperature_fan (generic_fan view)"
+    )
+
+    def cmd_SET_FAN_SPEED(self, gcmd):
+        if gcmd.get("TEMPLATE", None) is not None:
+            raise gcmd.error(
+                "%s: SET_FAN_SPEED takes SPEED only; the temperature_fan "
+                "keeps its own control" % (self.name,)
+            )
+        self._set_manual_speed(gcmd.get_float("SPEED", minval=0.0, maxval=1.0))
+
+    def _set_manual_speed(self, speed):
         self.manual_speed = speed
         if self.temperature_fan is not None:
             self._apply_current_speed()
@@ -175,6 +206,16 @@ class TemperatureFanManualFloor:
             "auto_speed": self.last_auto_speed,
             "effective_speed": self.last_effective_speed,
         }
+
+
+class ManualFloorFanView:
+    """The manual floor as a [fan_generic]: speed is the floor, not the fan."""
+
+    def __init__(self, floor):
+        self.floor = floor
+
+    def get_status(self, eventtime):
+        return {"speed": self.floor.manual_speed, "rpm": None}
 
 
 def load_config_prefix(config):

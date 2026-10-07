@@ -23,6 +23,27 @@ This configuration is no longer only a passive structural starting point. The ex
 
 Machine-specific values should still be changed only when they are backed by the known-good K2 Pro configuration or a controlled OpenHost hardware test.
 
+## Layout
+
+`printer.cfg` keeps the MCUs, motion, heaters, `[input_shaper]` and the
+includes: the sections `SAVE_CONFIG` writes (PID, input shaper, axis twist)
+must stay in it. Every other printer file lives in `macros/`, grouped by
+purpose:
+
+| file | content |
+| --- | --- |
+| `macros/system.cfg` | print files, power-loss recovery, link monitor, timeouts, arcs, object exclusion, pause/resume |
+| `macros/sensors.cfg` | MCU and host temperatures, printhead filament sensor, accelerometer, resonance tester |
+| `macros/leds.cfg` | chamber light and its idle switch-off |
+| `macros/print.cfg` | `START_PRINT` and its nozzle clean, `PAUSE` / `RESUME` / `CANCEL_PRINT` / `END_PRINT`, homing and mesh helpers |
+| `macros/kamp.cfg` | KAMP purge line (`LINE_PURGE`, `_KAMP_Settings`) |
+| `macros/fans.cfg` | fans with their tachometers, `M106`/`M107` (toolhead part fan P0, side part fan P2, chamber exhaust P3), `M141`/`M191` |
+| `macros/maintenance.cfg` | rail lubrication, PID, motion stress tests (`WARMUP`, `AUTO_WARMUP`, `TEST_SPEED`, `ACCELL_TEST_X/Y`, kept on the bed area) |
+| `macros/box.cfg`, `macros/motor_control.cfg`, `macros/prtouch.cfg`, `macros/cartographer.cfg`, `macros/k2_t113.cfg`, `macros/openhost_controls.cfg` | printer modules |
+| `macros/overrides.cfg` | local values, loaded last |
+
+Moonraker, Mainsail, webcam and integration files stay in the config root.
+
 ## OpenHost host paths
 
 The current stable T113 bridge mapping is:
@@ -88,6 +109,24 @@ The official Cartographer3D plugin supports:
 - `register_as_probe: false` for future optional mixed mode with PRTouch retaining the canonical Z-reference probe.
 
 Do not enable mixed mode until direct-USB Cartographer has first been validated independently.
+
+### Nozzle cleaning and axis twist at print start
+
+`START_PRINT` cleans the nozzle before any nozzle contact, in every probe setup (PRTouch as the probe, Cartographer alone, PRTouch homing with a Cartographer mesh):
+
+1. `_NOZZLE_HOT_CLEAN` heats the nozzle over the wastebin to the print temperature minus `variable_hot_clean_offset` (10 °C), retracts `variable_hot_clean_retract` (2 mm) and runs `NOZZLE_CLEAN` while residue is soft;
+2. the nozzle cools to the probing temperature (140 °C) over the wastebin with the part fan at full speed, then the fan returns to its previous speed;
+3. a last `NOZZLE_CLEAN` at the probing temperature removes the strings left while cooling.
+
+`variable_hot_clean: 0` keeps only step 3. The hot clean is skipped when the print temperature is within 30 °C of the probing temperature. Nothing scrubs the nozzle on the plate; `variable_prtouch_scrub` stays 0 on the reference machine.
+
+The axis twist calibration at print start is switched from Mainsail with the **Axis Twist Compensation** switch (`openhost_controls.cfg`: a `virtual_pin:axis_twist_compensation` output pin, needs [klipper-virtual-pins](https://github.com/pedrolamas/klipper-virtual-pins) linked into `klippy/extras`), or from the console with `START_PRINT_ATC ENABLE=1` or `ENABLE=0`; `START_PRINT_ATC` alone shows it. Every change is saved in `save_variables` (`~/printer_data/config/k2_start_print_variables.cfg`) and the switch is restored to its last state one second after each Klipper start. Without `openhost_controls.cfg` the console command still works with the saved value.
+
+**Clog detection** pauses the print when the extruder feeds `clog_extruder_length` (80 mm) while the CFS does not refill. It is switched in Mainsail's CFS settings menu next to Runout swap, or with `_BOX_SET_CLOG_DETECTION ENABLE=0|1`; the CFS saves it in its own state, so it survives restarts, and `clog_detection` in `box.cfg` is the default until then.
+
+`filament_retry_moves` in `box.cfg` is the tour between wastebin visits before a stalled load or blocked unload is retried; Klipper refuses to start when a move is outside the X/Y travel (the K2 Plus default `Y350` does not fit the K2 Pro's 332 mm).
+
+The chamber exhaust fans keep their temperature control. `generic_fan: True` on `[temperature_fan_manual_floor chamber_exhaust_fans]` also shows them in Mainsail's Miscellaneous panel as **Chamber Exhaust Fans**, a `fan_generic` slider that sets the manual speed floor (`SET_FAN_SPEED FAN=chamber_exhaust_fans SPEED=<0..1>`). The fans run at the higher of the floor and the temperature control; `M106 P3` sets the same floor, so the slider always shows it. The pin keeps a single owner, the `temperature_fan`: no `duplicate_pin_override`. Until a value is saved, `variable_adaptive_axis_twist_comp` is the default; a print's own `ATC=` parameter still overrides both. With Cartographer alone it runs `CARTOGRAPHER_AXIS_TWIST_COMPENSATION`, in mixed mode `PRTOUCH_AXIS_TWIST_COMPENSATION`. With PRTouch as the probe the nozzle itself touches the bed, so there is no twist to compensate: the calibration is skipped with a message.
 
 ## Attribution and caution
 
