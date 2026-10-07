@@ -16,8 +16,7 @@ machine.
 - `moonraker.conf` and integrations (Telegram, Obico, OctoEverywhere,
   Mobileraker);
 - locally installed include files referenced by `printer.cfg`:
-  `Shaketune/shaketune.cfg`, `macros/shell_command.cfg`, `KAMP/Line_Purge.cfg`,
-  `KAMP/Smart_Park.cfg`.
+  `Shaketune/shaketune.cfg`, `macros/shell_command.cfg`.
 
 Printer files live in `macros/`, as in the generic profile.
 `macros/motor_control.cfg`, `macros/k2_t113.cfg` and `macros/prtouch.cfg`
