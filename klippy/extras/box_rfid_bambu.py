@@ -329,17 +329,26 @@ class BoxRfidBambu:
         self.last_tag = None
         self.last_error = None
         self.last_unsupported = None
+        self.auto_gate = diag.AutoFallbackGate("Bambu RFID")
 
         self.printer.register_event_handler("serial_485:ready", self._serial_ready)
         self.gcode.register_command(
             "BOX_RFID_BAMBU_DERIVE", self.cmd_derive,
             desc="Passively derive Bambu candidate Key A values from CFS cache")
         self.gcode.register_command(
-            "BOX_RFID_BAMBU_READ", self.cmd_read,
+            "BOX_RFID_BAMBU_READ", self._claimed("BOX_RFID_BAMBU_READ", self.cmd_read),
             desc="Read and decode a Bambu tag using capability-gated Key A auth")
         self.gcode.register_command(
-            "BOX_RFID_BAMBU_PROBE_READ", self.cmd_probe_read,
+            "BOX_RFID_BAMBU_PROBE_READ",
+            self._claimed("BOX_RFID_BAMBU_PROBE_READ", self.cmd_probe_read),
             desc="Diagnostic read-only Bambu auth/read using an explicit known UID")
+
+    def _claimed(self, name, handler):
+        # Manual reads drive the CFS RFID task: share Box's read claim.
+        def claimed(gcmd):
+            with diag.box_rfid_read_guard(self.printer, gcmd, name):
+                return handler(gcmd)
+        return claimed
 
     def _serial_ready(self, *args):
         self.serial = self.printer.lookup_object("serial_485 %s" % self.serial_name)
@@ -524,18 +533,23 @@ class BoxRfidBambu:
 
     def try_auto_read(self, global_slot):
         """Automatic fallback is intentionally API7 stock-task capture only."""
+        if self.auto_gate.disabled:
+            return None
         try:
             address, _local = self._slot_address(global_slot)
             with self._transport().request_session() as transport:
                 info = RfidDiagDriver(transport, address).info(timeout=1.0)
             if info is None:
+                self.auto_gate.info_timeout()
                 raise BambuRfidError("CFS RFID INFO timed out")
+            self.auto_gate.info_ok()
             if info.api_version != diag.API_STOCK_CAPTURE:
                 raise BambuRfidUnsupported(
                     "automatic Bambu fallback requires API7 stock capture")
             return self._read_tag_stock_capture(global_slot, address=address)
         except BambuRfidUnsupported as exc:
             self.last_unsupported = str(exc)
+            self.auto_gate.disable(exc)
             return None
         except Exception as exc:
             self.last_error = str(exc)
@@ -646,6 +660,7 @@ class BoxRfidBambu:
             "transport_ready": self.serial is not None,
             "last_error": self.last_error,
             "last_unsupported": self.last_unsupported,
+            "auto_disabled": self.auto_gate.disabled,
             "last_candidate": None if c is None else {
                 "slot": c.slot, "uid": c.uid.hex().upper(),
                 "atqa": c.atqa.hex().upper(), "sak": c.sak,
