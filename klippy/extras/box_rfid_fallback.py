@@ -24,6 +24,8 @@ A decoder is any printer object with these members:
     rfid_decoder_cost(identity, automatic)      stock rereads of a full try
     rfid_decoder_read(slot, identity, max_reads, automatic)
                                                 -> (tag or None, rereads used)
+    rfid_decoder_known(identity)                optional: the decoder holds
+                                                a hint for this UID
 
 rfid_decoder_read returns (None, used) when the tag is not the decoder's
 (wrong keys, unknown layout) and raises on a CFS or bus error, so an error is
@@ -349,6 +351,71 @@ class RfidFallback:
             _klog("%s UID=%s not recognised by %s after %d reread(s)",
                   label, uid, signature, used_total)
         return None
+
+    def known_decoder(self, slot, identity, decoders):
+        """Decoder that identified this tag before, or (None, None).
+
+        Known means: the UID is in the cache, a decoder holds a hint for it
+        (rfid_decoder_known), or, for slots read before the cache existed,
+        the slot profile carries the decoder's code prefix ("BAMBU:...").
+        """
+        by_name = {d.RFID_DECODER_NAME: d for d in decoders}
+        hit = self._cache()["tags"].get(identity.uid_hex)
+        if isinstance(hit, dict) and hit.get("decoder") in by_name:
+            return by_name[hit["decoder"]], "cache"
+        for decoder in decoders:
+            known = getattr(decoder, "rfid_decoder_known", None)
+            if callable(known) and known(identity):
+                return decoder, "hint"
+        try:
+            code = str(self.box.profile(slot).get("rfid_code") or "")
+        except Exception:
+            code = ""
+        code = code.strip().upper()
+        for decoder in decoders:
+            if code.startswith(decoder.RFID_DECODER_NAME + ":"):
+                return decoder, "slot profile"
+        return None, None
+
+    def run_known(self, slot):
+        """Manual reread of a tag identified before, straight to its decoder.
+
+        Skips the stock Creality reread that would only answer "unknown"
+        (one ~45 s CFS cycle). Returns the decoder name, or None: then the
+        caller runs the normal stock-first path, which also refreshes the
+        cache if the tag was rewritten.
+        """
+        if self.manual_budget < 1:
+            return None
+        decoders = self.decoders()
+        if not decoders:
+            return None
+        identity = self.identity(slot)
+        if identity is None or not identity.mifare_classic_1k:
+            return None
+        decoder, source = self.known_decoder(slot, identity, decoders)
+        if decoder is None:
+            return None
+        name = decoder.RFID_DECODER_NAME
+        label = self.box.slot_label(slot)
+        try:
+            cost = max(1, int(decoder.rfid_decoder_cost(identity, False)))
+            tag, used = decoder.rfid_decoder_read(
+                slot, identity, min(cost, self.manual_budget), False)
+        except Exception as exc:
+            _klog("%s known %s read failed: %s; stock read follows",
+                  label, name, exc, level=logging.warning)
+            return None
+        kind = getattr(decoder, "RFID_DECODER_KIND", "generic")
+        if tag is None or not self._apply(slot, kind, tag):
+            _klog("%s UID=%s no longer read by %s (%s); stock read follows",
+                  label, identity.uid_hex, name, source)
+            return None
+        self.remember_tag(identity, decoder, tag)
+        self.last_result = ("direct", name, identity.uid_hex, used)
+        _klog("%s UID=%s read directly by %s (known from %s), stock "
+              "reread skipped", label, identity.uid_hex, name, source)
+        return name
 
     def get_status(self):
         cache = self._cache()

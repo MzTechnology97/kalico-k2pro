@@ -2,6 +2,7 @@ import pathlib
 import sys
 
 import pytest
+from types import SimpleNamespace
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "klippy"))
@@ -34,6 +35,7 @@ class FakeFallback:
         self.box = box
         self.result = result
         self.has_decoders = True
+        self.known = {}
         self.calls = []
 
     def decoders(self):
@@ -42,6 +44,10 @@ class FakeFallback:
     def run(self, slot, automatic):
         self.calls.append((slot, automatic, self.box.rfid_read_owner))
         return self.result
+
+    def run_known(self, slot):
+        self.calls.append(("known", slot, self.box.rfid_read_owner))
+        return self.known.get(slot)
 
 
 def make_box(state="standby", loaded_slot=-1, result=None):
@@ -246,3 +252,64 @@ def test_auto_gate_keeps_the_first_reason():
     gate.disable("later")
 
     assert gate.disabled == "no API7"
+
+
+class FakeCfsDriver:
+    def __init__(self, records=None):
+        self.masks = []
+        self.records = records or {}
+
+    def force_rfid_read(self, mask):
+        self.masks.append(("force", mask))
+        return SimpleNamespace(status=0)
+
+    def query_rfid_records(self, mask, timeout=None):
+        self.masks.append(("query", mask))
+        return SimpleNamespace(status=0, records=self.records, fields={})
+
+
+def make_reread_box():
+    box, _stats = make_box()
+    box._info = lambda *args: None
+    box._require_reply = lambda reply, context, allowed=(0,): reply
+    box._global_slot = lambda address, local: (address - 1) * 4 + local
+    box.reactor = SimpleNamespace(pause=lambda t: None, monotonic=lambda: 0.0)
+    return box
+
+
+def test_manual_reread_of_known_tags_skips_the_stock_read():
+    box = make_reread_box()
+    box.rfid_fallback.known = {0: "BAMBU", 1: "MIFARE"}
+    driver = FakeCfsDriver()
+
+    applied = box._force_rfid_results(
+        1, driver, 0x3, "BOX_INFO_REFRESH", known_fastpath=True)
+
+    assert applied == {0, 1}
+    assert driver.masks == []
+
+
+def test_stock_read_only_covers_the_slots_left():
+    box = make_reread_box()
+    box.rfid_fallback.known = {0: "BAMBU"}
+    driver = FakeCfsDriver()
+
+    applied = box._force_rfid_results(
+        1, driver, 0x3, "BOX_INFO_REFRESH", known_fastpath=True)
+
+    assert applied == {0}
+    assert driver.masks[0] == ("force", 0x2)
+    assert all(mask == 0x2 for _kind, mask in driver.masks)
+    # Slot 1 then went through the normal stock-first fallback.
+    assert (1, False, "BOX_INFO_REFRESH") in box.rfid_fallback.calls
+
+
+def test_deferred_insertion_read_never_uses_the_fast_path():
+    box = make_reread_box()
+    box.rfid_fallback.known = {0: "BAMBU"}
+    driver = FakeCfsDriver()
+
+    box._force_rfid_results(1, driver, 0x1, "deferred insertion")
+
+    assert driver.masks[0] == ("force", 0x1)
+    assert not any(call[0] == "known" for call in box.rfid_fallback.calls)

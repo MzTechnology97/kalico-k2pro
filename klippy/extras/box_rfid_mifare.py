@@ -400,6 +400,9 @@ class BoxRfidMifare:
             return False
         return not automatic or bool(self._hint_for_uid(identity.uid))
 
+    def rfid_decoder_known(self, identity):
+        return bool(self._hint_for_uid(identity.uid))
+
     def rfid_decoder_cost(self, identity, automatic):
         return len(self._key_plan(identity.uid))
 

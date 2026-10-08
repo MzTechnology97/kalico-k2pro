@@ -74,7 +74,7 @@ def make_box(loaded_slot, mask=0b1111, loaded_mask=0):
     box.reads = []
     box._require_reply = lambda reply, label: reply
     box._force_rfid_results = (
-        lambda address, driver, selected, reason: box.reads.append(selected)
+        lambda address, driver, selected, reason, **_kw: box.reads.append(selected)
         or {s for s in range(4) if selected & (1 << s)})
     box._read_rfid_remaining = lambda slot: None
     box._info = lambda gcmd, msg: gcmd.respond_info(msg)
