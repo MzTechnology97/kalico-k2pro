@@ -16,6 +16,7 @@ belongs on the host side and no tag-write primitive is exposed here.
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import logging
 
 from extras import box_protocol
 from extras.serial_485 import build_485_body
@@ -80,9 +81,81 @@ CAP_STOCK_TASK_KEYS3 = 1 << 3
 
 ACTIVE_SUBCOMMANDS = frozenset((SUB_POLL, SUB_READ, SUB_READ_AUTH_A))
 
+# Commands that drive RF, change the stock RFID task keys or write the type-4
+# remaining RAM. They take Box's forced-RFID-read claim; the passive queries
+# do not need it.
+RF_TASK_COMMANDS = frozenset((
+    "BOX_RFID_DIAG_POLL",
+    "BOX_RFID_DIAG_READ",
+    "BOX_RFID_DIAG_READ_AUTH_A",
+    "BOX_RFID_DIAG_REMAIN_INIT4",
+    "BOX_RFID_DIAG_REMAIN_CLEAR4",
+    "BOX_RFID_DIAG_ARM_KEY",
+    "BOX_RFID_DIAG_CLEAR_KEY",
+    "BOX_RFID_DIAG_ARM_KEYS",
+    "BOX_RFID_DIAG_CLEAR_KEYS",
+    "BOX_RFID_DIAG_STOCK_CAPTURE",
+))
+
 
 class RfidDiagError(RuntimeError):
     pass
+
+
+AUTO_INFO_TIMEOUT_LIMIT = 3
+
+
+class AutoFallbackGate:
+    """Turns a vendor helper's automatic fallback off on unsupported firmware.
+
+    An unsupported firmware answer turns it off at once; INFO timeouts only
+    after AUTO_INFO_TIMEOUT_LIMIT in a row, so one lost reply on a busy bus
+    does not. Stock CFS firmware never answers opcode 0x57, so without this
+    every inserted non-Creality tag would cost INFO timeouts. It stays off
+    until the next Klipper start; the manual commands still work.
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self.disabled = None
+        self.info_timeouts = 0
+
+    def info_ok(self):
+        self.info_timeouts = 0
+
+    def info_timeout(self):
+        self.info_timeouts += 1
+        if self.info_timeouts >= AUTO_INFO_TIMEOUT_LIMIT:
+            self.disable("CFS RFID INFO timed out %d times in a row"
+                         % self.info_timeouts)
+
+    def disable(self, reason):
+        if self.disabled is None:
+            self.disabled = str(reason)
+            logging.info("%s automatic fallback off until restart: %s",
+                         self.name, self.disabled)
+
+
+@contextmanager
+def box_rfid_read_guard(printer, gcmd, owner):
+    """Hold Box's forced-RFID-read claim for a manual helper command.
+
+    Box serializes stock CFS rereads and vendor captures. A manual command
+    that drives the CFS RFID task takes the same claim, so it never overlaps
+    an automatic fallback or a reread. Without Box there is nothing to share.
+    """
+    box = printer.lookup_object("box", None)
+    if box is None or not hasattr(box, "acquire_rfid_read"):
+        yield
+        return
+    try:
+        box.acquire_rfid_read(owner)
+    except Exception as exc:
+        raise gcmd.error(str(exc))
+    try:
+        yield
+    finally:
+        box.release_rfid_read()
 
 
 @dataclass(frozen=True)
@@ -578,7 +651,15 @@ class BoxRfidDiag:
             ("BOX_RFID_DIAG_STOCK_CAPTURE", self.cmd_stock_capture),
         )
         for name, handler in commands:
+            if name in RF_TASK_COMMANDS:
+                handler = self._claim_rfid_read(name, handler)
             self.gcode.register_command(name, handler)
+
+    def _claim_rfid_read(self, name, handler):
+        def claimed(gcmd):
+            with box_rfid_read_guard(self.printer, gcmd, name):
+                return handler(gcmd)
+        return claimed
 
     def _serial_ready(self, *args):
         self.serial = self.printer.lookup_object(
