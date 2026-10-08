@@ -443,6 +443,7 @@ class BoxRfidDiag:
             ("BOX_RFID_DIAG_CLEAR_KEY", self.cmd_clear_key),
             ("BOX_RFID_DIAG_ARM_KEYS", self.cmd_arm_keys),
             ("BOX_RFID_DIAG_CLEAR_KEYS", self.cmd_clear_keys),
+            ("BOX_RFID_DIAG_STOCK_CAPTURE", self.cmd_stock_capture),
         )
         for name, handler in commands:
             self.gcode.register_command(name, handler)
@@ -820,6 +821,123 @@ class BoxRfidDiag:
             gcmd.respond_info(
                 "CFS RFID ARM_KEYS slot=%d status=%s"
                 % (slot, result.status_name))
+
+    @staticmethod
+    def _stock_candidate_from_record(reply):
+        if not isinstance(reply, MemoryReply) or len(reply.data) != 76:
+            return None
+        data = bytes(reply.data)
+        atqa, uid, sak = data[60:62], data[62:66], data[74]
+        if (atqa != b"\x04\x00" or sak != 0x08
+                or uid == b"\x00\x00\x00\x00"):
+            return None
+        return atqa, uid, sak
+
+    def cmd_stock_capture(self, gcmd):
+        """Run one generic API7 stock-task capture with explicit Key A values.
+
+        This is intended for controlled read-only interoperability research
+        (QIDI, Snapmaker, etc.). RF ownership remains with Creality's stock
+        CFS worker; the host only supplies temporary keys and reads scratch.
+        """
+        address, slot = self._address_param(gcmd), self._slot_param(gcmd)
+        if gcmd.get_int("CONFIRM", 0, minval=0, maxval=1) != 1:
+            raise gcmd.error("API7 stock capture requires CONFIRM=1")
+        stats = self.printer.lookup_object("print_stats", None)
+        state = getattr(stats, "state", None)
+        if self.require_idle and state not in ("standby", "complete", "cancelled"):
+            raise gcmd.error(
+                "API7 stock capture requires an idle printer; print state is %s"
+                % (state if state is not None else "unavailable"))
+        try:
+            keys = b"".join(
+                _key_a(gcmd.get("KEY%d" % i, None)) for i in range(3))
+        except ValueError as exc:
+            raise gcmd.error(str(exc))
+
+        box = self.printer.lookup_object("box", None)
+        box_driver = None if box is None else getattr(box, "drivers", {}).get(address)
+        if box_driver is None:
+            raise gcmd.error("CFS Box driver is not ready")
+
+        def inspect():
+            with self._transport().request_session() as transport:
+                driver = RfidDiagDriver(transport, address)
+                info = driver.info()
+                self._require_key_override_api(gcmd, info)
+                if (info.api_version != API_STOCK_CAPTURE
+                        or not (info.capabilities & CAP_STOCK_CAPTURE)):
+                    raise gcmd.error(
+                        "generic stock capture requires API7 with STOCK_CAPTURE")
+                runtime = driver.runtime_info()
+                if runtime is None:
+                    raise gcmd.error("CFS RFID RUNTIME_INFO timed out")
+                if runtime.secure_backend:
+                    raise gcmd.error(
+                        "API7 stock capture is validated only on the legacy CFS RFID backend")
+                state_reply = driver.stock_state()
+                if state_reply is None:
+                    raise gcmd.error("CFS STOCK_STATE timed out")
+                if state_reply.busy:
+                    raise gcmd.error(
+                        "CFS stock RFID manager is busy on logical slot %d"
+                        % state_reply.active_slot)
+                target = driver.internal_record(slot)
+                return driver, self._stock_candidate_from_record(target)
+
+        _driver, candidate = inspect()
+        if candidate is None:
+            # Prime the stock cache once so UID/ATQA/SAK are available before
+            # deriving/arming any third-party key strategy.
+            if box_driver.force_rfid_read(1 << slot) is None:
+                raise gcmd.error("stock CFS RFID cache-prime read timed out")
+            _driver, candidate = inspect()
+            if candidate is None:
+                raise gcmd.error(
+                    "stock CFS record is not a MIFARE Classic 1K candidate after cache prime")
+
+        atqa, uid, sak = candidate
+        try:
+            with self._transport().request_session() as transport:
+                driver = RfidDiagDriver(transport, address)
+                armed = driver.arm_stock_task_keys3(slot, keys)
+                if not isinstance(armed, MemoryReply) or bytes(armed.data) != uid:
+                    status = "timeout" if armed is None else getattr(
+                        armed, "status_name", "invalid")
+                    raise gcmd.error("CFS API7 ARM_KEYS failed: %s" % status)
+
+            if box_driver.force_rfid_read(1 << slot) is None:
+                raise gcmd.error("stock CFS RFID capture read timed out")
+
+            with self._transport().request_session() as transport:
+                driver = RfidDiagDriver(transport, address)
+                target = driver.internal_record(slot)
+                cap1 = driver.internal_record((slot + 2) % 4)
+                cap2 = driver.internal_record((slot + 3) % 4)
+                if not all(isinstance(x, MemoryReply) for x in (target, cap1, cap2)):
+                    raise gcmd.error("API7 capture records are unavailable")
+                t, c1, c2 = bytes(target.data), bytes(cap1.data), bytes(cap2.data)
+                hit, ok, fail = t[9], t[10], t[11]
+                marker1, marker2 = c1[4:8], c2[4:8]
+                block4 = c1[8:20] + c2[8:12]
+                block5 = c2[12:16]
+                driver.clear_stock_task_keys(slot)
+        except Exception:
+            try:
+                with self._transport().request_session() as transport:
+                    RfidDiagDriver(transport, address).clear_stock_task_keys(slot)
+            except Exception:
+                pass
+            raise
+
+        gcmd.respond_info(
+            "CFS RFID stock-capture slot=%d UID=%s ATQA=%s SAK=%02X "
+            "hit=0x%02X ok=0x%02X fail=0x%02X marker1=%s marker2=%s "
+            "block4=%s block5=%s"
+            % (slot, uid.hex().upper(), atqa.hex().upper(), sak,
+               hit, ok, fail, marker1.decode("ascii", "replace"),
+               marker2.decode("ascii", "replace"),
+               block4.hex().upper(), block5.hex().upper()))
 
     def cmd_clear_keys(self, gcmd):
         address, slot = self._address_param(gcmd), self._slot_param(gcmd)
