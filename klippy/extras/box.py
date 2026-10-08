@@ -1962,7 +1962,16 @@ class Box:
 
     @property
     def external_slot(self):
-        return self.max_physical_slot + 1
+        if self.physical_slots:
+            return self.max_physical_slot + 1
+        # No CFS online yet (startup enumeration, CFS rebooting): keep the
+        # external spool after the slots the CFS will have, the persisted
+        # addresses or else box_count. Index 0 here made slot 1 show the
+        # external spool's profile in Mainsail/HelixScreen until the CFS
+        # answered (~20 s after a CFS power cycle).
+        addresses = (list(self.store.known_addresses)
+                     or list(range(1, self.box_count + 1)))
+        return max(addresses) * SLOTS_PER_BOX
 
     def is_physical_slot(self, slot):
         if not isinstance(slot, int) or slot < 0:
