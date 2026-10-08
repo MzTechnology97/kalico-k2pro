@@ -14,7 +14,6 @@ Design constraints:
 from dataclasses import dataclass
 import hashlib
 import hmac
-import logging
 import struct
 
 from extras import box_rfid_diag as diag
@@ -40,17 +39,17 @@ class BambuRfidUnsupported(BambuRfidError):
     pass
 
 
-def _log_decoded_tag(tag, source):
+def _decoded_tag_message(tag, source):
     data = tag.as_dict()
     blocks = data.get("blocks") if isinstance(data.get("blocks"), dict) else {}
-    logging.info(
-        "box_rfid_bambu: decoded source=%s slot=%s uid=%s atqa=%s sak=%02X "
-        "detail=%r material=%s profile=%r color=%s rgba=%s block4=%s block5=%s",
-        source, data.get("slot"), data.get("uid", ""), data.get("atqa", ""),
-        int(data.get("sak") or 0), data.get("detailed_filament_type", ""),
-        data.get("material", ""), data.get("profile_name", ""),
-        data.get("color", ""), data.get("color_rgba", ""),
-        blocks.get(4, ""), blocks.get(5, ""))
+    return (
+        "Bambu RFID decoded source=%s slot=%s UID=%s ATQA=%s SAK=%02X "
+        "detail=%r material=%s profile=%r color=%s RGBA=%s block4=%s block5=%s"
+        % (source, data.get("slot"), data.get("uid", ""), data.get("atqa", ""),
+           int(data.get("sak") or 0), data.get("detailed_filament_type", ""),
+           data.get("material", ""), data.get("profile_name", ""),
+           data.get("color", ""), data.get("color_rgba", ""),
+           blocks.get(4, ""), blocks.get(5, "")))
 
 
 @dataclass(frozen=True)
@@ -476,7 +475,7 @@ class BoxRfidBambu:
         self.last_tag = tagdata
         self.last_error = None
         self.last_unsupported = None
-        _log_decoded_tag(tagdata, "api7-stock")
+        self.gcode.respond_info(_decoded_tag_message(tagdata, "api7-stock"))
         return tagdata
 
     def read_tag(self, global_slot, address=None):
@@ -520,7 +519,7 @@ class BoxRfidBambu:
             self.last_tag = tagdata
             self.last_error = None
             self.last_unsupported = None
-            _log_decoded_tag(tagdata, "api3-direct")
+            self.gcode.respond_info(_decoded_tag_message(tagdata, "api3-direct"))
             return tagdata
 
     def try_auto_read(self, global_slot):
