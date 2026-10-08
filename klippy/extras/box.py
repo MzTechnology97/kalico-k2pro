@@ -1095,6 +1095,11 @@ class Box:
         # a vendor-specific authenticated read. Unsupported firmware is a no-op.
         self.auto_bambu_rfid_fallback = config.getboolean(
             "auto_bambu_rfid_fallback", True)
+        # Generic API7 MIFARE Classic fallback. Vendor-specific key strategies
+        # and parsers live in box_rfid_mifare.py; box.py only consumes the
+        # normalized tag identity/profile metadata.
+        self.auto_mifare_rfid_fallback = config.getboolean(
+            "auto_mifare_rfid_fallback", True)
         # K2-OpenHost: apply the pressure advance of the loaded slot's
         # filament profile (unless the print file sets it for that filament)
         # and learn the maximum flow from the slicer metadata.
@@ -1348,6 +1353,8 @@ class Box:
             ("_BOX_RFID_MAP_SET", self.cmd_rfid_map_set, "Save an RFID mapping"),
             ("_BOX_RFID_ASSOCIATE", self.cmd_rfid_associate,
              "Associate the current RFID tag in a slot with an existing filament profile"),
+            ("_BOX_RFID_REMAINING_DIAG", self.cmd_rfid_remaining_diag,
+             "Read the raw CFS RFID remaining values"),
             ("_BOX_RFID_MAP_DELETE", self.cmd_rfid_map_delete,
              "Delete an RFID mapping"),
         )
@@ -3241,6 +3248,34 @@ class Box:
             filament.get("brand", ""), filament.get("name", ""),
             filament["material"])
 
+    def cmd_rfid_remaining_diag(self, gcmd):
+        slot = gcmd.get_int(
+            "SLOT", None, minval=0,
+            maxval=MAX_ADDRESSES * SLOTS_PER_BOX - 1)
+        if slot is None or not self.is_physical_slot(slot):
+            raise gcmd.error("[BOX]: SLOT must select a physical CFS slot")
+        address, local = self._address_slot(slot)
+        driver = self.drivers.get(address)
+        if driver is None:
+            raise gcmd.error("[BOX]: CFS Box driver is not ready")
+        try:
+            reply = driver.query_rfid_remaining(1 << local, timeout=1.0)
+        except Exception as exc:
+            raise gcmd.error(
+                "[BOX]: %s remaining query failed: %s"
+                % (self.slot_label(slot), exc))
+        if reply is None:
+            raise gcmd.error(
+                "[BOX]: %s remaining query timed out"
+                % self.slot_label(slot))
+        values = getattr(reply, "values", {}) or {}
+        value = values.get(box_protocol.RFID_SLOT_NAMES[local])
+        self._info(
+            gcmd,
+            "%s: CFS RFID remaining status=%s payload=%s values=%s selected=%s"
+            % (self.slot_label(slot), getattr(reply, "status_name", reply.status),
+               reply.payload.hex().upper(), values, value))
+
     def cmd_rfid_map_delete(self, gcmd):
         code = self._param(gcmd, "CODE")
         if not code:
@@ -4304,6 +4339,162 @@ class Box:
                ("[%s]" % profile["filament_id"]) if profile["filament_id"] else ""))
         return True
 
+    @staticmethod
+    def _third_party_profile_id(data):
+        vendor = str(data.get("vendor") or "RFID").strip().upper()
+        fallback = (
+            str(data.get("profile_name") or "").strip()
+            or str(data.get("detailed_filament_type") or "").strip()
+            or str(data.get("material") or "UNKNOWN").strip())
+        safe = lambda value: "".join(
+            c if c.isalnum() or c in ("-", "_") else "-" for c in value)
+        return ("%s-%s" % (safe(vendor), safe(fallback).upper()))[:64]
+
+    def _third_party_library_match(self, data):
+        material = str(data.get("material") or "").strip().upper()
+        brand = str(data.get("brand") or data.get("vendor") or "").strip()
+        name = str(data.get("profile_name") or "").strip()
+        code = str(data.get("identity_code") or "").strip().upper()
+        if code:
+            mapping = self.store.rfid_mapping(code)
+            if mapping:
+                mapped = self.store.filament(mapping.get("filament_id"))
+                if mapped:
+                    return mapped
+        exact = self.store.filament_by_identity(brand, name, material)
+        if exact:
+            return exact
+        # Reuse the same punctuation/case-insensitive identity matching as the
+        # Bambu path. The RFID decoder remains authoritative for live colour.
+        brand_key = self._bambu_identity_key(brand)
+        name_key = self._bambu_identity_key(name)
+        for filament in self.store.filaments.values():
+            if (self._bambu_identity_key(filament.get("brand")) == brand_key
+                    and self._bambu_identity_key(filament.get("name"))
+                    == name_key):
+                return dict(filament)
+        return None
+
+    def _apply_third_party_rfid_tag(self, slot, tagdata):
+        if tagdata is None:
+            return False
+        data = tagdata.as_dict() if hasattr(tagdata, "as_dict") else dict(tagdata)
+        vendor = str(data.get("vendor") or "").strip().upper()
+        identity = str(data.get("identity_code") or "").strip().upper()
+        material = str(data.get("material") or "").strip().upper()
+        detail = str(data.get("detailed_filament_type") or "").strip()
+        brand = str(data.get("brand") or vendor).strip()
+        name = str(data.get("profile_name") or "").strip()
+        color = self._normal_color(data.get("color")) or ""
+        blocks = data.get("blocks") if isinstance(data.get("blocks"), dict) else {}
+        if not vendor or not identity or not material or not name or not color:
+            return False
+
+        self._info(
+            self.gcode,
+            "Third-party RFID decoded %s: vendor=%s UID=%s detail=%r "
+            "material=%s expected_profile=%r color=%s identity=%s "
+            "block4=%s block5=%s"
+            % (self.slot_label(self._runtime_slot(slot)), vendor,
+               data.get("uid", ""), detail, material, name, color, identity,
+               blocks.get(4, ""), blocks.get(5, "")))
+
+        filament = self._third_party_library_match(data)
+        if filament is not None:
+            self._info(
+                self.gcode,
+                "%s RFID library match %s: FILAMENT_ID=%s brand=%r name=%r"
+                % (vendor, self.slot_label(self._runtime_slot(slot)),
+                   filament.get("id", ""), filament.get("brand", ""),
+                   filament.get("name", "")))
+        if filament is None:
+            filament_id = self._third_party_profile_id(data)
+            generic = self.store.materials.get(material) or {}
+            value = {
+                "material": material,
+                "color": "",
+                "brand": brand,
+                "name": name,
+                "target_temp": generic.get("target_temp"),
+                "min_temp": data.get("min_hotend_c"),
+                "max_temp": data.get("max_hotend_c"),
+                "pressure_advance": None,
+                "max_flow": None,
+                "rfid_codes": [],
+                "aliases": [],
+                "spoolman_id": None,
+                "source": "rfid",
+            }
+            self._info(
+                self.gcode,
+                "%s RFID no library match %s: CODE=%s; creating fallback "
+                "profile %s. To bind it to an existing library profile use "
+                "_BOX_RFID_ASSOCIATE SLOT=%d FILAMENT_ID=<id>"
+                % (vendor, self.slot_label(self._runtime_slot(slot)),
+                   identity, filament_id, slot))
+            try:
+                filament = self.store.set_filament(filament_id, value)
+            except Exception as exc:
+                _klog(
+                    "%s RFID library profile %s could not be saved: %s",
+                    vendor, filament_id, exc, level=logging.warning)
+                filament = dict(value, id=filament_id)
+
+        profile = {
+            "material": str(filament.get("material", material)).strip().upper(),
+            "color": color,
+            "brand": str(filament.get("brand", brand)).strip(),
+            "name": str(filament.get("name", name)).strip(),
+            "target_temp": filament.get("target_temp"),
+            "pressure_advance": filament.get("pressure_advance"),
+            "max_flow": filament.get("max_flow"),
+            "spoolman_id": filament.get("spoolman_id"),
+            "filament_id": str(filament.get("id", "")).strip().upper(),
+            "source": "rfid",
+            "rfid_code": identity,
+            "rfid_reserve": "",
+        }
+        self.set_profile(slot, profile)
+        self._ensure_material(profile["material"], profile.get("target_temp"))
+        self.unknown_rfid.pop(self._runtime_slot_key(slot), None)
+
+        uid = str(data.get("uid") or "").strip().upper()
+        fields = {
+            "supplier": vendor,
+            "mat_id": detail.upper() or material,
+            "number": uid,
+            "color": color,
+            "len": str(int(data.get("filament_length_m") or 0)),
+            "reserve": "",
+        }
+        self._remember_rfid_spool(slot, fields)
+        self.rfid_live_slots.add(slot)
+        if not data.get("filament_length_m"):
+            self.rfid_percent.pop(slot, None)
+        self._clear_rfid_watch(slot)
+        self._info(
+            self.gcode,
+            "%s: Creality/Bambu RFID unknown; %s fallback applied %s / %s %s"
+            % (self.slot_label(self._runtime_slot(slot)), vendor,
+               profile["name"], color,
+               ("[%s]" % profile["filament_id"])
+               if profile["filament_id"] else ""))
+        return True
+
+    def _try_mifare_rfid_fallback(self, slot):
+        if not self.auto_mifare_rfid_fallback or not self.is_physical_slot(slot):
+            return False
+        helper = self.printer.lookup_object("box_rfid_mifare", None)
+        if helper is None:
+            return False
+        try:
+            tagdata = helper.try_auto_read(slot)
+        except Exception as exc:
+            _klog("%s third-party MIFARE RFID fallback failed: %s",
+                  self.slot_label(slot), exc, level=logging.warning)
+            return False
+        return self._apply_third_party_rfid_tag(slot, tagdata) if tagdata else False
+
     def _try_bambu_rfid_fallback(self, slot):
         if not self.auto_bambu_rfid_fallback or not self.is_physical_slot(slot):
             return False
@@ -4331,8 +4522,18 @@ class Box:
             return "none"
         if not self._rfid_record_ready(sample):
             self.rfid_seen_invalid.add(slot)
-            if record.lower() in ("", "unknown") and self._try_bambu_rfid_fallback(slot):
-                return "bambu"
+            if record.lower() in ("", "unknown"):
+                mifare = self.printer.lookup_object("box_rfid_mifare", None)
+                known_third_party = bool(
+                    mifare is not None
+                    and getattr(mifare, "is_known_candidate", lambda _s: False)(slot))
+                if known_third_party and self._try_mifare_rfid_fallback(slot):
+                    return "mifare"
+                if self._try_bambu_rfid_fallback(slot):
+                    return "bambu"
+                if (not known_third_party
+                        and self._try_mifare_rfid_fallback(slot)):
+                    return "mifare"
             self.rfid_live_slots.discard(slot)
             self.rfid_percent.pop(slot, None)
             return record.lower() or "unknown"
@@ -4384,8 +4585,22 @@ class Box:
                 break
             if attempt < 2:
                 self.reactor.pause(self.reactor.monotonic() + 0.35)
+        # Previously identified third-party UIDs bypass Bambu. New unknown
+        # tags remain Bambu-first; the generic helper intentionally refuses
+        # automatic vendor guessing until a UID has one successful manual read.
+        for slot in sorted(tuple(pending)):
+            helper = self.printer.lookup_object("box_rfid_mifare", None)
+            if (helper is not None
+                    and getattr(helper, "is_known_candidate", lambda _s: False)(slot)
+                    and self._try_mifare_rfid_fallback(slot)):
+                applied.add(slot)
+                pending.discard(slot)
         for slot in sorted(tuple(pending)):
             if self._try_bambu_rfid_fallback(slot):
+                applied.add(slot)
+                pending.discard(slot)
+        for slot in sorted(tuple(pending)):
+            if self._try_mifare_rfid_fallback(slot):
                 applied.add(slot)
                 pending.discard(slot)
         for slot in sorted(pending):
