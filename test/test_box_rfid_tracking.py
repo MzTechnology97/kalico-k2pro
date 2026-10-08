@@ -173,3 +173,78 @@ def test_external_rfid_record_handler_error_is_contained():
 
     assert reader._last_record["fields"] == {"mat_id": "105628"}
     assert reader._last_error == "record handler failed: boom"
+
+
+def test_cfs_encoder_is_preferred_over_print_stats(tmp_path):
+    box, stats = make_tracking_box(tmp_path)
+    box.drivers = {1: object()}
+    box.rfid_last_encoder_mm = None
+    box.rfid_last_usage_source = None
+
+    stats.filament_used = 100.0
+    box._track_rfid_usage(
+        1.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=500.0))
+
+    # Extruder accounting advances by 1500 mm, while the physical CFS path
+    # encoder advances by 800 mm. The estimator must charge only 800 mm.
+    stats.filament_used = 1600.0
+    box._track_rfid_usage(
+        2.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=1300.0))
+
+    assert box.rfid_spools[1]["remaining_mm"] == 49200.0
+    assert box.rfid_percent[1] == 49.2
+    assert box.rfid_spools[1]["usage_source"] == "cfs_encoder"
+
+
+def test_encoder_reset_does_not_add_or_consume_filament(tmp_path):
+    box, stats = make_tracking_box(tmp_path)
+    box.drivers = {1: object()}
+    box.rfid_last_encoder_mm = None
+    box.rfid_last_usage_source = None
+
+    box._track_rfid_usage(
+        1.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=2000.0))
+    box._track_rfid_usage(
+        2.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=500.0))
+
+    assert box.rfid_spools[1]["remaining_mm"] == 50000.0
+    assert box.rfid_percent[1] == 50.0
+
+
+def test_spool_new_accepts_manual_total_length(tmp_path):
+    box = Box.__new__(Box)
+    box.store = BoxStore(str(tmp_path / "filament_box.json"))
+    box.drivers = {1: object()}
+    box.messages = []
+    box._info = lambda responder, msg: box.messages.append(msg)
+    box.gcode = object()
+    box.printer = FakePrinter(FakePrintStats(state="standby"))
+    box.snapshot = BoxSnapshot(loaded_slot=None)
+    box.rfid_spools = {
+        1: {
+            "key": "tag:QIDI:PET-CF:37101573",
+            "fingerprint": "tag:QIDI:PET-CF:37101573",
+            "total_mm": None,
+            "remaining_mm": None,
+        }
+    }
+    box.rfid_percent = {}
+    box.rfid_reported_percent = {}
+    box.rfid_estimate_dirty = False
+
+    class Gcmd:
+        def __init__(self):
+            self.params = {"SLOT": "1", "TOTAL_M": "250", "REMAINING": "80"}
+        def get_int(self, name, default=None, minval=None, maxval=None):
+            return int(self.params.get(name, default))
+        def get_float(self, name, default=None, minval=None, maxval=None):
+            return float(self.params.get(name, default))
+        def get_command_parameters(self):
+            return self.params
+        def error(self, message):
+            return RuntimeError(message)
+
+    box.cmd_rfid_spool_new(Gcmd())
+    assert box.rfid_spools[1]["total_mm"] == 250000.0
+    assert box.rfid_spools[1]["remaining_mm"] == 200000.0
+    assert box.rfid_percent[1] == 80.0

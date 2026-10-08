@@ -431,6 +431,19 @@ class BoxStore:
         return round(value, 2)
 
     @staticmethod
+    def _clean_nominal_length(value):
+        """Nominal spool filament length in metres, or None."""
+        if value in (None, ""):
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not 1.0 <= value <= 10000.0:
+            return None
+        return round(value, 3)
+
+    @staticmethod
     def _filaments(values, strict=True):
         result = {}
         for key, value in values.items():
@@ -501,6 +514,15 @@ class BoxStore:
             if max_flow is None:
                 raise BoxError(
                     "Invalid max_flow for filament %s" % filament_id)
+        nominal_length_m = value.get("nominal_length_m")
+        if nominal_length_m in (None, ""):
+            nominal_length_m = None
+        else:
+            nominal_length_m = BoxStore._clean_nominal_length(
+                nominal_length_m)
+            if nominal_length_m is None:
+                raise BoxError(
+                    "Invalid nominal_length_m for filament %s" % filament_id)
         spoolman_id = value.get("spoolman_id")
         if spoolman_id is not None:
             try:
@@ -532,6 +554,7 @@ class BoxStore:
             "max_temp": ranges["max_temp"],
             "pressure_advance": pressure_advance,
             "max_flow": max_flow,
+            "nominal_length_m": nominal_length_m,
             "rfid_code": codes[0] if codes else "",
             "rfid_codes": codes,
             "aliases": aliases,
@@ -820,6 +843,7 @@ class BoxStore:
             profile["target_temp"] = clean["target_temp"]
             profile["pressure_advance"] = clean.get("pressure_advance")
             profile["max_flow"] = clean.get("max_flow")
+            profile["nominal_length_m"] = clean.get("nominal_length_m")
             if source == "library":
                 profile["spoolman_id"] = clean["spoolman_id"]
                 profile["rfid_code"] = clean["rfid_code"]
@@ -953,6 +977,8 @@ class BoxStore:
             "pressure_advance": self._clean_pressure_advance(
                 value.get("pressure_advance")),
             "max_flow": self._clean_max_flow(value.get("max_flow")),
+            "nominal_length_m": self._clean_nominal_length(
+                value.get("nominal_length_m")),
             "spoolman_id": value.get("spoolman_id"),
             "filament_id": str(value.get("filament_id", "")).strip().upper(),
             "source": str(value.get("source", "manual")).strip().lower() or "manual",
@@ -976,6 +1002,8 @@ class BoxStore:
             "pressure_advance": self._clean_pressure_advance(
                 profile.get("pressure_advance")),
             "max_flow": self._clean_max_flow(profile.get("max_flow")),
+            "nominal_length_m": self._clean_nominal_length(
+                profile.get("nominal_length_m")),
             "spoolman_id": profile.get("spoolman_id"),
             "filament_id": str(profile.get("filament_id", "")).strip().upper(),
             "source": str(profile.get("source", "manual")).strip().lower() or "manual",
@@ -1185,6 +1213,8 @@ class Box:
         self.rfid_reported_percent = {}
         self.rfid_spools = {}
         self.rfid_last_filament_used = None
+        self.rfid_last_encoder_mm = None
+        self.rfid_last_usage_source = None
         self.rfid_last_print_state = None
         self.rfid_last_usage_slot = None
         self.rfid_estimate_dirty = False
@@ -1816,6 +1846,8 @@ class Box:
             "rfid_estimated_percent": None if external else self.rfid_percent.get(slot),
             "rfid_total_m": None if total_mm is None else round(total_mm / 1000.0, 3),
             "rfid_remaining_m": None if remaining_mm is None else round(remaining_mm / 1000.0, 3),
+            "rfid_usage_source": None if external else spool.get("usage_source"),
+            "nominal_length_m": profile.get("nominal_length_m"),
             "rfid_reserve": profile["rfid_reserve"],
             "runout_rank": None if external else self._runout_rank(slot),
             "external": external,
@@ -2819,6 +2851,9 @@ class Box:
             0.0, 2.0)
         max_flow = self._optional_number(
             gcmd, "MAX_FLOW", existing.get("max_flow"), 0.1, 200.0)
+        nominal_length_m = self._optional_number(
+            gcmd, "NOMINAL_LENGTH_M", existing.get("nominal_length_m"),
+            1.0, 10000.0)
         rfid_code = str(
             self._param(gcmd, "RFID_CODE")
             if "RFID_CODE" in params
@@ -2836,6 +2871,7 @@ class Box:
             "max_temp": max_temp,
             "pressure_advance": pressure_advance,
             "max_flow": max_flow,
+            "nominal_length_m": nominal_length_m,
             "rfid_codes": rfid_codes,
             "aliases": list(existing.get("aliases") or []),
             "spoolman_id": spoolman,
@@ -3712,10 +3748,10 @@ class Box:
                 fresh = True
         self._set_rfid_slot_key(slot, key)
         try:
-            total_m = int(self._clean_rfid(fields.get("len")))
+            total_m = float(self._clean_rfid(fields.get("len")))
         except (TypeError, ValueError):
-            total_m = 0
-        total_mm = float(total_m * 1000) if total_m > 0 else None
+            total_m = 0.0
+        total_mm = float(total_m * 1000.0) if total_m > 0.0 else None
         persisted = self.store.setting("rfid_estimates", {}) or {}
         saved = persisted.get(key, {}) if isinstance(persisted, dict) else {}
         if fresh:
@@ -3832,13 +3868,33 @@ class Box:
             "SLOT", None, minval=0,
             maxval=MAX_ADDRESSES * SLOTS_PER_BOX - 1)
         percent = gcmd.get_float("REMAINING", 100.0, minval=0.0, maxval=100.0)
+        params = (
+            gcmd.get_command_parameters()
+            if hasattr(gcmd, "get_command_parameters")
+            else getattr(gcmd, "params", {}))
+        total_raw = params.get("TOTAL_M")
+        total_m = None
+        if total_raw not in (None, ""):
+            try:
+                total_m = float(total_raw)
+            except (TypeError, ValueError):
+                raise gcmd.error("[BOX]: TOTAL_M must be numeric")
+            if not 1.0 <= total_m <= 10000.0:
+                raise gcmd.error("[BOX]: TOTAL_M must be between 1 and 10000 metres")
         if slot is None or not self.is_physical_slot(slot):
             raise gcmd.error("[BOX]: SLOT must select a physical CFS slot")
         spool = self.rfid_spools.get(slot)
-        if not spool or not spool.get("total_mm") or not spool.get("key"):
+        if not spool or not spool.get("key"):
             raise gcmd.error(
-                "[BOX]: T%d has no RFID spool with a known length; read the "
+                "[BOX]: T%d has no decoded RFID spool identity; read the "
                 "tag first (_BOX_RFID_READ_SLOT SLOT=%d)" % (slot, slot))
+        if total_m is not None:
+            spool["total_mm"] = float(total_m) * 1000.0
+        if not spool.get("total_mm"):
+            raise gcmd.error(
+                "[BOX]: T%d has no known nominal length. Set NOMINAL_LENGTH_M "
+                "in its filament profile or use TOTAL_M=<metres> here."
+                % slot)
         stats = self.printer.lookup_object("print_stats", None)
         if (getattr(stats, "state", None) in ("printing", "paused")
                 and self.snapshot.loaded_slot == slot):
@@ -3861,6 +3917,13 @@ class Box:
             % (self.slot_label(self._runtime_slot(slot)), percent))
 
     def _track_rfid_usage(self, eventtime, snap):
+        """Persist RFID spool consumption, preferring the CFS encoder.
+
+        During BOX_STATE_PRINT the CFS exposes its own path encoder in mm.
+        That is a better source for physical spool draw than slicer/extruder
+        accounting, especially around buffer refills.  print_stats remains a
+        fallback when the CFS encoder is not available.
+        """
         stats = self.printer.lookup_object("print_stats", None)
         if stats is None:
             return
@@ -3870,38 +3933,61 @@ class Box:
             used = float(status.get("filament_used", 0.0))
         except (TypeError, ValueError):
             used = 0.0
+        try:
+            encoder = (
+                float(snap.encoder_mm)
+                if snap.encoder_mm is not None else None)
+        except (TypeError, ValueError):
+            encoder = None
 
         if state != "printing":
             if self.rfid_last_print_state == "printing":
                 self._persist_rfid_estimates(force=True)
             self.rfid_last_filament_used = None
+            self.rfid_last_encoder_mm = None
+            self.rfid_last_usage_source = None
             self.rfid_last_print_state = state
             self.rfid_last_usage_slot = None
             return
 
         slot = snap.loaded_slot
-        if self.rfid_last_print_state != "printing" or self.rfid_last_filament_used is None:
+        physical_slot = (
+            isinstance(slot, int) and slot >= 0
+            and bool(getattr(self, "drivers", {}))
+            and self.is_physical_slot(slot))
+        source = (
+            "cfs_encoder"
+            if (physical_slot and snap.tracking and encoder is not None)
+            else "print_stats")
+        value = encoder if source == "cfs_encoder" else used
+
+        first = (
+            self.rfid_last_print_state != "printing"
+            or slot != self.rfid_last_usage_slot
+            or source != self.rfid_last_usage_source)
+        if first:
             self.rfid_last_filament_used = used
+            self.rfid_last_encoder_mm = encoder
             self.rfid_last_print_state = state
             self.rfid_last_usage_slot = slot
+            self.rfid_last_usage_source = source
             return
 
-        # Tool changes briefly move loaded_slot through -1 and then onto the
-        # destination spool. Do not charge the extrusion accumulated across
-        # that transition to either spool; start a fresh usage baseline once
-        # the active source is stable. This slightly under-counts the handoff
-        # window instead of corrupting one spool's remaining estimate.
-        if slot != self.rfid_last_usage_slot:
+        if source == "cfs_encoder":
+            previous = self.rfid_last_encoder_mm
+            self.rfid_last_encoder_mm = encoder
             self.rfid_last_filament_used = used
-            self.rfid_last_usage_slot = slot
-            self.rfid_last_print_state = state
-            return
-
-        delta = used - self.rfid_last_filament_used
-        self.rfid_last_filament_used = used
+        else:
+            previous = self.rfid_last_filament_used
+            self.rfid_last_filament_used = used
+            self.rfid_last_encoder_mm = encoder
         self.rfid_last_print_state = state
-        # print_stats can move backwards briefly during retract/reset paths.
-        # Never let a negative delta increase the estimated spool remaining.
+        if previous is None:
+            return
+        delta = value - previous
+
+        # A negative CFS delta is reverse motion or a counter reset; neither
+        # consumes new spool. Large jumps are treated as counter resets.
         if delta <= 0.0 or delta > 5000.0:
             return
         spool = self.rfid_spools.get(slot)
@@ -3913,6 +3999,7 @@ class Box:
         remaining = max(
             0.0, min(float(spool["total_mm"]), float(remaining) - delta))
         spool["remaining_mm"] = remaining
+        spool["usage_source"] = source
         self.rfid_percent[slot] = 100.0 * remaining / spool["total_mm"]
         self.rfid_estimate_dirty = True
         if eventtime - self.last_rfid_estimate_save >= RFID_REFRESH:
@@ -4270,6 +4357,7 @@ class Box:
                 "max_temp": data.get("max_hotend_c"),
                 "pressure_advance": None,
                 "max_flow": None,
+                "nominal_length_m": None,
                 "rfid_codes": [],
                 "aliases": [],
                 "spoolman_id": None,
@@ -4301,6 +4389,7 @@ class Box:
             "target_temp": filament.get("target_temp"),
             "pressure_advance": filament.get("pressure_advance"),
             "max_flow": filament.get("max_flow"),
+            "nominal_length_m": filament.get("nominal_length_m"),
             "spoolman_id": filament.get("spoolman_id"),
             "filament_id": str(filament.get("id", "")).strip().upper(),
             "source": "rfid",
@@ -4324,12 +4413,17 @@ class Box:
                 or material).strip().upper(),
             "number": uid,
             "color": color,
-            "len": str(int(data.get("filament_length_m") or 0)),
+            "len": str(
+                data.get("filament_length_m")
+                or filament.get("nominal_length_m")
+                or 0),
             "reserve": "",
         }
         self._remember_rfid_spool(slot, fields)
         self.rfid_live_slots.add(slot)
-        self.rfid_percent.pop(slot, None) if not data.get("filament_length_m") else None
+        if not (data.get("filament_length_m")
+                or filament.get("nominal_length_m")):
+            self.rfid_percent.pop(slot, None)
         self._clear_rfid_watch(slot)
         self._info(
             self.gcode,
@@ -4420,6 +4514,7 @@ class Box:
                 "max_temp": data.get("max_hotend_c"),
                 "pressure_advance": None,
                 "max_flow": None,
+                "nominal_length_m": None,
                 "rfid_codes": [],
                 "aliases": [],
                 "spoolman_id": None,
@@ -4448,6 +4543,7 @@ class Box:
             "target_temp": filament.get("target_temp"),
             "pressure_advance": filament.get("pressure_advance"),
             "max_flow": filament.get("max_flow"),
+            "nominal_length_m": filament.get("nominal_length_m"),
             "spoolman_id": filament.get("spoolman_id"),
             "filament_id": str(filament.get("id", "")).strip().upper(),
             "source": "rfid",
@@ -4464,12 +4560,16 @@ class Box:
             "mat_id": detail.upper() or material,
             "number": uid,
             "color": color,
-            "len": str(int(data.get("filament_length_m") or 0)),
+            "len": str(
+                data.get("filament_length_m")
+                or filament.get("nominal_length_m")
+                or 0),
             "reserve": "",
         }
         self._remember_rfid_spool(slot, fields)
         self.rfid_live_slots.add(slot)
-        if not data.get("filament_length_m"):
+        if not (data.get("filament_length_m")
+                or filament.get("nominal_length_m")):
             self.rfid_percent.pop(slot, None)
         self._clear_rfid_watch(slot)
         self._info(

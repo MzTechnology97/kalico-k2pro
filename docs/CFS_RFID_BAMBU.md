@@ -117,6 +117,38 @@ I extracted these results from my K2 Pro `klippy.log` history. Every row below i
 
 These are hardware-validation results, not inferred library entries. The more detailed raw block captures are recorded in `k2-cfs-rfid-tools/docs/v3.3-stock-capture.md`.
 
+## Remaining-filament tracking for non-Creality RFID
+
+The stock CFS `CMD_RFID_REMAINING (0x03)` can return `0xFF` for Bambu and other third-party tags even after a successful API7 read. I therefore added a host-side estimator that is independent of tag writes.
+
+The estimator uses a stable RFID spool identity (UID where available) and a nominal spool filament length. During printing it prefers the **CFS path encoder** exposed by the normal box state because that measures physical filament draw from the spool/buffer path. `print_stats.filament_used` remains a fallback when the CFS encoder is unavailable.
+
+A library profile can optionally define:
+
+```json
+"nominal_length_m": 250.0
+```
+
+I do not guess this value from spool mass because filament density and diameter tolerances vary by material. When the nominal length is not present in the profile it can be set explicitly for the current spool:
+
+```text
+_BOX_RFID_SPOOL_NEW SLOT=<global-slot> TOTAL_M=<metres> REMAINING=<0..100>
+```
+
+`REMAINING` defaults to 100. The estimate is persisted by RFID spool identity and exposed as:
+
+```text
+rfid_percent
+rfid_estimated_percent
+rfid_total_m
+rfid_remaining_m
+rfid_usage_source
+```
+
+`rfid_usage_source` is `cfs_encoder` when the physical CFS encoder is available during tracking and `print_stats` otherwise. Reverse motion and encoder/counter resets are ignored rather than increasing or falsely consuming the estimate.
+
+This estimator is a fallback for third-party tags. I am separately reverse-engineering the CFS RAM structures used by the stock remaining algorithm so that a future firmware revision may be able to initialize the stock odometer without writing the RFID tag.
+
 ## Associating a tag with an existing library profile
 
 I also extended the existing RFID mapping mechanism so a decoded tag can be bound directly to an existing filament-library profile:
