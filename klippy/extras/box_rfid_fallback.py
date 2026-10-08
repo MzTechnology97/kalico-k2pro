@@ -249,10 +249,12 @@ class RfidFallback:
 
     # --- run --------------------------------------------------------------
 
-    def _apply(self, slot, kind, tag):
+    def _apply(self, slot, kind, tag, note=None):
+        # note says how the tag was identified when no stock "unknown"
+        # preceded it; Box prints it instead of the stock-fallback wording.
         if kind == "bambu":
-            return self.box._apply_bambu_rfid_tag(slot, tag)
-        return self.box._apply_third_party_rfid_tag(slot, tag)
+            return self.box._apply_bambu_rfid_tag(slot, tag, note=note)
+        return self.box._apply_third_party_rfid_tag(slot, tag, note=note)
 
     def run(self, slot, automatic):
         """Identify an unknown tag. Returns the decoder name or None.
@@ -279,7 +281,9 @@ class RfidFallback:
             names = {d.RFID_DECODER_NAME for d in decoders}
             if isinstance(hit, dict) and hit.get("decoder") in names:
                 tag = _cached_tag(hit.get("tag") or {})
-                if self._apply(slot, hit.get("kind"), tag):
+                note = "%s tag known from the RFID cache, no reread" % (
+                    hit["decoder"])
+                if self._apply(slot, hit.get("kind"), tag, note=note):
                     self.last_result = ("cache", hit["decoder"], uid, 0)
                     _klog("%s UID=%s applied from cache (%s), no reread",
                           label, uid, hit["decoder"])
@@ -407,7 +411,8 @@ class RfidFallback:
                   label, name, exc, level=logging.warning)
             return None
         kind = getattr(decoder, "RFID_DECODER_KIND", "generic")
-        if tag is None or not self._apply(slot, kind, tag):
+        note = "known %s tag read directly, Creality reread skipped" % name
+        if tag is None or not self._apply(slot, kind, tag, note=note):
             _klog("%s UID=%s no longer read by %s (%s); stock read follows",
                   label, identity.uid_hex, name, source)
             return None

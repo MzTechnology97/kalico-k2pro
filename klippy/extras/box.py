@@ -4362,7 +4362,7 @@ class Box:
                 return dict(filament)
         return None
 
-    def _apply_bambu_rfid_tag(self, slot, tagdata):
+    def _apply_bambu_rfid_tag(self, slot, tagdata, note=None):
         if tagdata is None:
             return False
         data = tagdata.as_dict() if hasattr(tagdata, "as_dict") else dict(tagdata)
@@ -4476,10 +4476,14 @@ class Box:
                 or filament.get("nominal_length_m")):
             self.rfid_percent.pop(slot, None)
         self._clear_rfid_watch(slot)
+        # note: how the tag was identified when the stock read did not run
+        # first (RFID cache, known-tag reread); None after a stock "unknown".
         self._info(
             self.gcode,
-            "%s: Creality RFID unknown; Bambu fallback applied %s / %s %s"
+            "%s: %s %s / %s %s"
             % (self.slot_label(self._runtime_slot(slot)),
+               ("%s; applied" % note) if note
+               else "Creality RFID unknown; Bambu fallback applied",
                profile["name"], color,
                ("[%s]" % profile["filament_id"]) if profile["filament_id"] else ""))
         return True
@@ -4520,7 +4524,7 @@ class Box:
                 return dict(filament)
         return None
 
-    def _apply_third_party_rfid_tag(self, slot, tagdata):
+    def _apply_third_party_rfid_tag(self, slot, tagdata, note=None):
         if tagdata is None:
             return False
         data = tagdata.as_dict() if hasattr(tagdata, "as_dict") else dict(tagdata)
@@ -4625,8 +4629,10 @@ class Box:
         self._clear_rfid_watch(slot)
         self._info(
             self.gcode,
-            "%s: Creality/Bambu RFID unknown; %s fallback applied %s / %s %s"
-            % (self.slot_label(self._runtime_slot(slot)), vendor,
+            "%s: %s %s / %s %s"
+            % (self.slot_label(self._runtime_slot(slot)),
+               ("%s; applied" % note) if note
+               else "Creality/Bambu RFID unknown; %s fallback applied" % vendor,
                profile["name"], color,
                ("[%s]" % profile["filament_id"])
                if profile["filament_id"] else ""))
