@@ -33,14 +33,12 @@ class FakeChangeEngine:
 
 def make_box(tmp_path):
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.store = BoxStore(str(tmp_path / "filament_box.json"))
     box.drivers = {1: object()}
     box.rfid_spools, box.rfid_percent, box.rfid_reported_percent = {}, {}, {}
     box.rfid_live_slots, box.unknown_rfid = set(), {}
     box.rfid_pending, box.rfid_snapshot, box.rfid_seen_invalid = set(), {}, set()
-    box.rfid_fallback_tried = set()
-    box.rfid_cleared_on_insert = set()
-    box.rfid_insert_time = {}
     box.rfid_presence, box.rfid_absent_confirm = {}, {}
     box.spoolman_tokens = {}
     box.rfid_estimate_dirty = False
@@ -433,6 +431,7 @@ def test_k2_macros_only_call_registered_box_commands():
 
 def test_box_unit_statuses_report_each_cfs():
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.drivers = {1: object(), 3: object()}
     reply = types.SimpleNamespace(status=0, box_state=2, temp_c=30.5, humidity_pct=34)
     box.box_replies = {1: reply}
@@ -446,6 +445,7 @@ def test_box_unit_statuses_report_each_cfs():
 
 def test_operation_status_reports_live_stage_and_sensor():
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.operation_depth = 0
     box.operation_progress = None
     box.snapshot = BoxSnapshot(loaded_slot=-1)
@@ -576,6 +576,7 @@ class FakeGcode:
 
 def make_discovery_box(results, state="standby"):
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.reactor = FakeReactor()
     box.printer = FakePrinter(state)
     box.gcode = FakeGcode()
