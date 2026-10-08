@@ -91,22 +91,56 @@ DEFAULT_SPOOL_LENGTH_M = {
 FALLBACK_SPOOL_LENGTH_M = 330.0
 
 
-def default_spool_length_m(material):
-    """Reference spool length (m) for a material name.
+def material_table_value(table, material):
+    """A per-material table entry for a material name, or None.
 
     The exact name, else its family: PA6-CF, PA12-CF and PAHT-CF are PA-CF,
-    PA6 is PA, PLA-SILK is PLA, ASA-CF is ASA (no ASA-CF entry).
+    PA6 is PA, PLA-SILK is PLA, ASA-CF is ASA when there is no ASA-CF entry.
     """
     name = str(material or "").strip().upper()
-    if name in DEFAULT_SPOOL_LENGTH_M:
-        return DEFAULT_SPOOL_LENGTH_M[name]
+    if name in table:
+        return table[name]
     base, _sep, suffix = name.partition("-")
-    if base.startswith("PA") and base not in DEFAULT_SPOOL_LENGTH_M:
+    if base.startswith("PA") and base not in table:
         base = "PA"
     for key in (("%s-%s" % (base, suffix)) if suffix else base, base):
-        if key in DEFAULT_SPOOL_LENGTH_M:
-            return DEFAULT_SPOOL_LENGTH_M[key]
-    return FALLBACK_SPOOL_LENGTH_M
+        if key in table:
+            return table[key]
+    return None
+
+
+def default_spool_length_m(material):
+    """Reference spool length (m) for a material name."""
+    length = material_table_value(DEFAULT_SPOOL_LENGTH_M, material)
+    return FALLBACK_SPOOL_LENGTH_M if length is None else length
+
+
+# K2-OpenHost: highest CFS relative humidity (%) for a material before a
+# print start warns that the spool may be wet (typical storage guidance).
+# humidity_limits in [box] overrides entries, e.g. "PA:15, PLA:45".
+DEFAULT_HUMIDITY_LIMIT_PCT = {
+    "ABS": 50, "ASA": 50, "BVOH": 20, "HIPS": 50, "PA": 25, "PA-CF": 25,
+    "PC": 35, "PCTG": 50, "PETG": 50, "PETG-CF": 45, "PLA": 55,
+    "PLA-CF": 50, "PP": 55, "PVA": 20, "TPU": 40,
+}
+
+
+def parse_humidity_limits(text):
+    """"PA:15, PLA:45" -> {"PA": 15, "PLA": 45}; ValueError when malformed."""
+    limits = {}
+    for item in str(text or "").replace(";", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        material, sep, value = item.partition(":")
+        material = material.strip().upper()
+        if not sep or not material:
+            raise ValueError("expected MATERIAL:PERCENT, got %r" % item)
+        limit = int(value)
+        if not 1 <= limit <= 100:
+            raise ValueError("humidity limit of %s must be 1..100" % material)
+        limits[material] = limit
+    return limits
 
 
 # set_material(): leave a field as it is
@@ -1240,6 +1274,15 @@ class Box:
         # unknown tag, low filament) go to this G-code macro, which forwards
         # them to Mobileraker, the Telegram bot, ... Empty turns it off.
         self.notify_macro = config.get("notify_macro", "_BOX_NOTIFY").strip()
+        # K2-OpenHost: warn at print start when a mapped spool sits in a CFS
+        # more humid than its material tolerates (DEFAULT_HUMIDITY_LIMIT_PCT).
+        self.humidity_warnings = config.getboolean("humidity_warnings", True)
+        try:
+            self.humidity_limits = dict(DEFAULT_HUMIDITY_LIMIT_PCT)
+            self.humidity_limits.update(
+                parse_humidity_limits(config.get("humidity_limits", "")))
+        except ValueError as exc:
+            raise config.error("[box] humidity_limits: %s" % exc)
         # Below one refill chunk, normal buffer draw would read as a clog.
         self.clog_extruder_length = config.getfloat(
             "clog_extruder_length", 80.0, minval=30.0)
@@ -1869,6 +1912,20 @@ class Box:
         payload = getattr(reply, "payload", None)
         return None if payload is None else len(payload)
 
+    def _slot_humidity(self, slot):
+        """Relative humidity (%) of the CFS holding a slot, or None."""
+        address, _local = self._address_slot(slot)
+        reply = getattr(self, "box_replies", {}).get(address)
+        return None if reply is None else reply.humidity_pct
+
+    def humidity_limit_pct(self, material):
+        """Humidity limit for a material, None without one or when off."""
+        if not getattr(self, "humidity_warnings", False) or not material:
+            return None
+        return material_table_value(
+            getattr(self, "humidity_limits", DEFAULT_HUMIDITY_LIMIT_PCT),
+            material)
+
     def _external_status(self, snap):
         return self._slot_status(self.external_slot, snap, external=True)
 
@@ -1920,6 +1977,9 @@ class Box:
             "nominal_length_m": profile.get("nominal_length_m"),
             "rfid_reserve": profile["rfid_reserve"],
             "runout_rank": None if external else self._runout_rank(slot),
+            "humidity_pct": None if external else self._slot_humidity(slot),
+            "humidity_limit_pct": None if external else self.humidity_limit_pct(
+                profile.get("material")),
             "external": external,
         }
 
