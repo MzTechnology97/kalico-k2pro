@@ -93,6 +93,8 @@ Validated since the 2026-10-02 milestone:
 - **clog detection** switch and Jacob10383's service moves with Z unhomed, also with a bed mesh loaded;
 - **bottom-switch Z drop** three times faster (`quick_speed: 30`, ~9.4 mm/s);
 - the printer configuration reorganised as `printer.cfg` + `macros/`, with the same configuration loaded.
+- **third-party RFID spools** (Bambu, QIDI) on a CFS with the API7 RFID firmware ([docs/CFS_RFID_BAMBU.md](docs/CFS_RFID_BAMBU.md)): recognised after the stock read, then from a UID cache with no reread; their remaining filament tracked and saved like on Creality spools, with a reference length per material editable per profile in Mainsail (2026-10-08);
+- **CFS slots right after a spool swap:** the previous spool is no longer shown during the CFS read, the result shows as soon as the CFS has it, and the CFS percentage is polled again after a Klipper restart (2026-10-08).
 
 ## Previous milestone — 2026-10-02
 
