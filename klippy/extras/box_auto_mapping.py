@@ -194,6 +194,15 @@ def evaluate_mapping(tools, slots, mapping, swap=False):
                 "needed_m": round(need, 2), "remaining_m": round(have, 2),
                 "includes_swap": bool(swap and have != _remaining_m(slot)),
             })
+        humidity = slot.get("humidity_pct")
+        limit = slot.get("humidity_limit_pct")
+        if (isinstance(humidity, (int, float)) and isinstance(limit, (int, float))
+                and humidity > limit):
+            warnings.append({
+                "kind": "humidity", "tool": tool_id, "slot": int(slot["index"]),
+                "humidity_pct": humidity, "limit_pct": limit,
+                "slot_material": slot.get("material", ""),
+            })
     return warnings
 
 
