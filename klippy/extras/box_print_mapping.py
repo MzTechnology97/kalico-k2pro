@@ -234,6 +234,12 @@ class BoxPrintMapping:
                     "The print continues and pauses at runout unless more filament is loaded." % (
                         tool, warning["needed_m"], where, warning["remaining_m"],
                         " including identical spools" if warning.get("includes_swap") else ""))
+        if warning["kind"] == "humidity":
+            return ("%s uses %s (%s) in a CFS at %s%% humidity, above %s%% for "
+                    "%s. Dry the spool or expect stringing and weaker parts." % (
+                        tool, where, warning["slot_material"] or "?",
+                        warning["humidity_pct"], warning["limit_pct"],
+                        warning["slot_material"] or "this material"))
         if warning["kind"] == "material_variant":
             return ("%s is %s but %s holds %s (different variant). Check that the "
                     "nozzle and temperatures suit it." % (
@@ -252,6 +258,11 @@ class BoxPrintMapping:
         if low and callable(notify):
             notify("low_filament", "CFS filament may run out",
                    " ".join(self._warning_text(warning) for warning in low))
+        humid = [warning for warning in warnings
+                 if warning.get("kind") == "humidity"]
+        if humid and callable(notify):
+            notify("humidity", "CFS humidity",
+                   " ".join(self._warning_text(warning) for warning in humid))
 
     def _recovery_in_progress(self):
         # PLR_RECOVER loads the file and then restores the saved map.
