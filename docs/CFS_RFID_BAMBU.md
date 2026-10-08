@@ -63,7 +63,12 @@ BOX_RFID_DIAG_RUNTIME
 BOX_RFID_DIAG_STATE
 BOX_RFID_DIAG_INTERNAL SLOT=<0..3>
 BOX_RFID_BAMBU_READ SLOT=<global-slot>
+BOX_RFID_DIAG_STOCK_CAPTURE SLOT=<0..3> KEY0=<12hex> KEY1=<12hex> KEY2=<12hex> CONFIRM=1
 ```
+
+The Bambu read now writes a structured diagnostic line with the values actually decoded from the tag: UID, ATQA/SAK, detailed filament type, normalized material, expected profile name, RGB/RGBA and the captured block 4 / block 5 bytes. This is intended to make library-profile corrections possible directly from `klippy.log`.
+
+The generic `BOX_RFID_DIAG_STOCK_CAPTURE` command uses the same API7 stock-task path with explicit Key-A values. It is read-only and is useful for researching other MIFARE Classic spool formats such as QIDI or Snapmaker without adding a vendor parser first.
 
 Expected API7 identity:
 
@@ -77,6 +82,25 @@ cache_size=16
 ```
 
 On my validated K2 Pro the runtime backend is legacy with blocks `4,5,6`.
+
+## Associating a tag with an existing library profile
+
+I also extended the existing RFID mapping mechanism so a decoded tag can be bound directly to an existing filament-library profile:
+
+```text
+_BOX_RFID_ASSOCIATE SLOT=<global-slot> FILAMENT_ID=<library-id>
+```
+
+The association stores the RFID identity separately from the filament profile. Future reads reuse the selected profile's temperature, pressure advance and max-flow settings while keeping the colour reported by the physical tag.
+
+For Bambu API7 tags the stable identity is based on the decoded material detail, for example:
+
+```text
+BAMBU:PETG BASIC
+BAMBU:PETG HF
+```
+
+The same command also works with the existing unknown Creality/custom RFID flow and is designed so future third-party decoders can expose their own stable identity codes.
 
 ## Safety
 
