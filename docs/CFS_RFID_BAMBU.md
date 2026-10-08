@@ -239,7 +239,7 @@ Every decoder attempt is a full stock CFS reread of the slot (about 45 s, with t
 - the firmware is asked once per Klipper start. On a CFS without API7 (stock firmware never answers opcode `0x57`) the automatic fallback turns off until the next start: at once on an unsupported answer, after three `INFO` timeouts in a row otherwise;
 - in Box `observation_mode` no fallback runs.
 
-A manual reread always reads the tag again and refreshes the cache. After rewriting a tag, reread its slot. `_BOX_RFID_FALLBACK_CACHE` shows the decoders, the budgets and the cache; `_BOX_RFID_FALLBACK_CACHE CLEAR=1 [UID=<hex>]` empties it.
+A manual reread always reads the tag again and refreshes the cache. After rewriting a tag, reread its slot. When the tag was identified before (UID in the cache, a saved MIFARE decoder hint, or a slot profile whose code starts with the decoder name, such as `BAMBU:`), `_BOX_RFID_READ_SLOT` and `BOX_INFO_REFRESH` go straight to that decoder and skip the stock Creality reread, which would only answer "unknown". If the decoder no longer recognises the tag, the normal stock-first path follows. The deferred read during a load never takes this shortcut: the CFS record may still describe the previous spool. `_BOX_RFID_FALLBACK_CACHE` shows the decoders, the budgets and the cache; `_BOX_RFID_FALLBACK_CACHE CLEAR=1 [UID=<hex>]` empties it.
 
 ```ini
 [box]
