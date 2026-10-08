@@ -191,7 +191,50 @@ To correct an estimate by hand, `_BOX_RFID_SPOOL_NEW SLOT=<n> [REMAINING=<percen
 
 A spool read with a saved estimate under 5% prints a reminder of both options.
 
-Keep these patches on upstream syncs of `box.py`: look for `RFID_LOW_ESTIMATE_HINT`, `_next_rfid_spool_serial` and `cmd_rfid_spool_new`.
+Keep these patches on upstream syncs of `box.py` (they are in `box_rfid_estimates.py`, see [Where the Box code lives](#where-the-box-code-lives)): look for `RFID_LOW_ESTIMATE_HINT`, `_next_rfid_spool_serial` and `cmd_rfid_spool_new`.
+
+### CFS notifications
+
+Box hands CFS events to the G-code macro named by `notify_macro` (default `_BOX_NOTIFY`, in `config/k2/macros/box.cfg`; empty = off) with `EVENT`, `TITLE` and `MESSAGE`. The macro runs from a reactor callback, after the command that raised the event, so a slow or failing macro never blocks the swap or the pause; a failure is only logged.
+
+| `EVENT` | When |
+|---|---|
+| `runout_swap` | A runout was handled by switching to the next spool of the group |
+| `runout` | A runout with no replacement: the print pauses |
+| `clog` | Clog detection paused the print |
+| `cfs_error` | The CFS reported an error during a change |
+| `rfid_unknown` | A tag that neither the CFS nor a vendor decoder recognised |
+| `low_filament` | At print start, a mapped spool may not hold enough filament for the job |
+| `humidity` | At print start, a mapped spool sits in a CFS more humid than its material tolerates |
+
+The shipped `_BOX_NOTIFY` keeps the events listed in `variable_events` and forwards each one to:
+- **Mobileraker** (`mobileraker_companion`): `MR_NOTIFY:title|message` in the console, shown as a phone notification;
+- **moonraker-telegram-bot**: `RESPOND PREFIX=tgnotify MSG="title: message"`.
+
+Turn either off with `variable_mobileraker: False` / `variable_telegram: False`, or replace the macro body with your own (apprise, a webhook through `[gcode_shell_command]`, ...). The companion must be installed and configured separately.
+
+### Humidity warnings per material
+
+Every CFS reports its relative humidity (`humidity_pct` of each unit in the Box status). Each CFS slot carries the `humidity_pct` of its unit. With `humidity_warnings: True` (default) it also carries the `humidity_limit_pct` of its material, and the print-start mapping (Mainsail start dialog, `BOX_PRINT_INFO`, automatic mapping) adds a `humidity` warning when a mapped spool exceeds its limit. The print is not blocked.
+
+Default limits (%), by material family: PVA/BVOH 20, PA/PA-CF 25, PC 35, TPU 40, PETG-CF 45, PETG/ABS/ASA/PCTG/HIPS/PLA-CF 50, PLA/PP 55. A material not in the table has no limit. Override single materials in `[box]`:
+
+```ini
+humidity_limits: PA:15, PLA:45
+```
+
+### Where the Box code lives
+
+`box.py` is the Box object. Parts that do not need the read cycle or the motion code are separate modules, imported by `box.py`:
+
+| Module | Content |
+|---|---|
+| `box_materials.py` | Per-material tables without Klipper dependencies: reference spool lengths (`DEFAULT_SPOOL_LENGTH_M`), humidity limits (`DEFAULT_HUMIDITY_LIMIT_PCT`), `parse_humidity_limits` |
+| `box_rfid_estimates.py` | `BoxRfidEstimates`, mixin of `Box`: spool identity keys, remaining estimates, persistence, `_BOX_RFID_SPOOL_NEW`, `_BOX_RFID_REMAINING_DIAG` |
+| `box_rfid_vendors.py` | `BoxRfidVendors`, mixin of `Box`: Bambu and third-party tag profiles, vendor decoder runs and the known-tag fast path, `_BOX_RFID_ASSOCIATE`, `_BOX_RFID_FALLBACK_CACHE` |
+| `box_rfid_fallback.py`, `box_rfid_bambu.py`, `box_rfid_mifare.py` | Vendor decoder registry and decoders |
+
+The mixin methods moved from `box.py` unchanged (`self` is the `Box`). `box.py` re-exports the moved names, so `from extras.box import DEFAULT_SPOOL_LENGTH_M` keeps working. `Box._init_rfid_state()` sets every RFID runtime field; test fixtures that build a `Box` without `__init__` call it.
 
 ### Pressure advance and maximum flow per filament
 
