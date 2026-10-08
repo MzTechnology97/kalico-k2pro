@@ -61,6 +61,10 @@ def make_box(state="standby", loaded_slot=-1, result=None):
     box.rfid_snapshot = {}
     box.rfid_seen_invalid = set()
     box.rfid_fallback_tried = set()
+    box.rfid_cleared_on_insert = set()
+    box.rfid_insert_time = {}
+    box.reactor = SimpleNamespace(monotonic=lambda: 100.0)
+    box.profile = lambda slot: {}
     box.rfid_live_slots = set()
     box.rfid_percent = {}
     box.snapshot = BoxSnapshot(data_ready=True, loaded_slot=loaded_slot)
