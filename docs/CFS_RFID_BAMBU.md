@@ -36,7 +36,15 @@ I publish the firmware, source handler and standalone porting documentation in:
 
 ## Configuration
 
-My K2 profile includes:
+The three extras need the API7 firmware above, so the generic `config/k2/printer.cfg` keeps their includes commented out. On a CFS with this firmware I enable them by uncommenting:
+
+```ini
+[include macros/box_rfid_diag.cfg]
+[include macros/box_rfid_bambu.cfg]
+[include macros/box_rfid_mifare.cfg]
+```
+
+My reference machine (`config/k2/reference/k2pro-cm5/`) runs with them enabled:
 
 ```ini
 [box]
@@ -190,3 +198,10 @@ The same command also works with the existing unknown Creality/custom RFID flow 
 ## Safety
 
 Automatic Bambu fallback is restricted to API7. The older API3 direct-auth diagnostic path is not used automatically. No tag-write primitive is exposed by the API7 firmware or by these extras.
+
+Every fallback attempt is a full stock CFS reread of the slot, so the automatic path is bounded:
+
+- it runs **once per insertion**. A tag that no decoder understands (an OpenTag, an unreadable Creality tag, another brand) stays unknown until the spool is removed and inserted again, or until a manual `_BOX_RFID_READ_SLOT`;
+- it waits while a print is running or paused, while a Box operation is running and while a filament is loaded toward the printhead (the CFS answers `BUSY` to RFID reads then), and runs once that is over;
+- stock rereads, automatic fallbacks and the manual RF commands of the extras (`BOX_RFID_BAMBU_READ`, `BOX_RFID_MIFARE_READ`, the active `BOX_RFID_DIAG_*` commands) share one read claim, so two CFS RFID reads never overlap. A command issued during another read fails with "another CFS RFID read is in progress";
+- on a CFS that does not expose API7 (stock firmware never answers opcode `0x57`), each helper turns its automatic fallback off until the next Klipper start: at once on an unsupported answer, after three `INFO` timeouts in a row otherwise. `auto_disabled` in the helper's status gives the reason; the manual commands still work.

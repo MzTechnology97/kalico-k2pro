@@ -271,6 +271,7 @@ def test_rfid_removal_clears_slot_assignment_but_keeps_spool_estimate(tmp_path):
     box.rfid_pending = set()
     box.rfid_snapshot = {}
     box.rfid_seen_invalid = set()
+    box.rfid_fallback_tried = set()
     box.rfid_estimate_dirty = False
     box._persist_rfid_estimates = lambda force=False: None
     box._invalidate_spoolman = lambda slot: None
@@ -346,6 +347,7 @@ def test_absent_startup_slot_requires_three_confirmations_before_cleanup(tmp_pat
     box.rfid_pending = set()
     box.rfid_snapshot = {}
     box.rfid_seen_invalid = set()
+    box.rfid_fallback_tried = set()
     box.rfid_estimate_dirty = False
 
     box._reconcile_presence(1, 0)

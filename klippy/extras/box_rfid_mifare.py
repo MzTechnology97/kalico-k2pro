@@ -115,6 +115,10 @@ class ThirdPartyRfidUnsupported(ThirdPartyRfidError):
     pass
 
 
+class ThirdPartyRfidInfoTimeout(ThirdPartyRfidError):
+    pass
+
+
 @dataclass(frozen=True)
 class StockCapture:
     slot: int
@@ -318,12 +322,18 @@ class BoxRfidMifare:
         self.last_tag = None
         self.last_decoder = None
         self.last_error = None
+        self.auto_gate = diag.AutoFallbackGate("Third-party MIFARE RFID")
 
         self.printer.register_event_handler(
             "serial_485:ready", self._serial_ready)
         self.gcode.register_command(
-            "BOX_RFID_MIFARE_READ", self.cmd_read,
+            "BOX_RFID_MIFARE_READ", self._claimed_read,
             desc="Read a supported third-party MIFARE Classic spool via CFS API7")
+
+    def _claimed_read(self, gcmd):
+        # A manual read drives the CFS RFID task: share Box's read claim.
+        with diag.box_rfid_read_guard(self.printer, gcmd, "BOX_RFID_MIFARE_READ"):
+            return self.cmd_read(gcmd)
 
     def _serial_ready(self, *args):
         self.serial = self.printer.lookup_object(
@@ -364,11 +374,21 @@ class BoxRfidMifare:
         return hints.get(bytes(uid).hex().upper())
 
     def is_known_candidate(self, global_slot):
+        if self.auto_gate.disabled:
+            return False
         try:
             auto_addr, _local = self._slot_address(global_slot)
             candidate = self._inspect_candidate(global_slot, auto_addr)
+        except ThirdPartyRfidUnsupported as exc:
+            self.last_error = str(exc)
+            self.auto_gate.disable(exc)
+            return False
+        except ThirdPartyRfidInfoTimeout:
+            self.auto_gate.info_timeout()
+            return False
         except Exception:
             return False
+        self.auto_gate.info_ok()
         if candidate is None:
             return False
         _atqa, uid, _sak = candidate
@@ -387,8 +407,9 @@ class BoxRfidMifare:
             | diag.CAP_INTERNAL_RECORD
             | diag.CAP_STOCK_TASK_KEYS3
             | diag.CAP_STOCK_CAPTURE)
-        if (info is None
-                or info.api_version != diag.API_STOCK_CAPTURE
+        if info is None:
+            raise ThirdPartyRfidInfoTimeout("CFS RFID INFO timed out")
+        if (info.api_version != diag.API_STOCK_CAPTURE
                 or info.readers != 2
                 or info.slots_per_reader != 2
                 or info.max_read_index != 3
@@ -558,6 +579,7 @@ class BoxRfidMifare:
             return self.read_tag(global_slot, prime=False)
         except ThirdPartyRfidUnsupported as exc:
             self.last_error = str(exc)
+            self.auto_gate.disable(exc)
             return None
 
     def cmd_read(self, gcmd):
@@ -595,6 +617,7 @@ class BoxRfidMifare:
             "decoders": [decoder.name for decoder in DECODERS],
             "last_decoder": self.last_decoder,
             "last_error": self.last_error,
+            "auto_disabled": self.auto_gate.disabled,
             "last_tag": None if self.last_tag is None
                         else self.last_tag.as_dict(),
         }
