@@ -16,7 +16,9 @@ The API7 path does not issue direct host RF reads. It:
 6. clears the override;
 7. applies or creates the matching Bambu filament profile.
 
-The CFS continues to provide remaining-filament percentage through the normal Box path. Bambu block 14 is not used by API7.
+The stock CFS remaining path is **not** authoritative for Bambu API7 tags. Hardware tests show `CMD_RFID_REMAINING (0x03)` returning `0xFF` for Bambu spools, including PLA Matte, PETG HF and PETG Basic. I therefore treat `0xFF` as unavailable rather than as a percentage.
+
+API7 v3.3 does not currently capture Bambu block 14. I am using the tag UID as the persistent spool identity and investigating a read-only path for nominal length plus CFS-encoder-based consumption without writing the tag.
 
 ## Required firmware
 
@@ -39,6 +41,7 @@ My K2 profile includes:
 ```ini
 [box]
 auto_bambu_rfid_fallback: true
+auto_mifare_rfid_fallback: true
 
 [box_rfid_diag]
 serial: serial485
@@ -47,6 +50,10 @@ allow_active_rf: false
 require_idle: true
 
 [box_rfid_bambu]
+serial: serial485
+address: 1
+
+[box_rfid_mifare]
 serial: serial485
 address: 1
 ```
@@ -68,7 +75,15 @@ BOX_RFID_DIAG_STOCK_CAPTURE SLOT=<0..3> KEY0=<12hex> KEY1=<12hex> KEY2=<12hex> C
 
 The Bambu read now writes a structured diagnostic line with the values actually decoded from the tag: UID, ATQA/SAK, detailed filament type, normalized material, expected profile name, RGB/RGBA and the captured block 4 / block 5 bytes. This is intended to make library-profile corrections possible directly from `klippy.log`.
 
-The generic `BOX_RFID_DIAG_STOCK_CAPTURE` command uses the same API7 stock-task path with explicit Key-A values. It is read-only and is useful for researching other MIFARE Classic spool formats such as QIDI or Snapmaker without adding a vendor parser first.
+The generic `BOX_RFID_DIAG_STOCK_CAPTURE` command uses the same API7 stock-task path with explicit Key-A values. It is read-only and is useful for researching other MIFARE Classic spool formats.
+
+I also added `box_rfid_mifare.py`, a generic decoder registry for third-party MIFARE Classic spool formats. QIDI is the first provider:
+
+```text
+BOX_RFID_MIFARE_READ SLOT=<global-slot>
+```
+
+I hardware-validated it with a QIDI PET-CF tag (UID `37101573`, block 4 `250201...`). The decoder resolves it as `QIDI:PET-CF`, colour Black `#060606`, and matches my existing `90003 / Qidi PET-CF` library profile. After the first successful identification the UID-to-decoder hint is persisted, so normal `_BOX_RFID_READ_SLOT` rereads go directly to QIDI instead of trying the Bambu KDF first.
 
 Expected API7 identity:
 
