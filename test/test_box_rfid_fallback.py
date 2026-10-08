@@ -1,13 +1,12 @@
 import pathlib
 import sys
-from contextlib import contextmanager
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "klippy"))
 
-from extras import box_rfid_bambu, box_rfid_diag, box_rfid_mifare
+from extras import box_rfid_diag
 from extras.box import Box, BoxError, BoxSnapshot
 
 
@@ -28,7 +27,24 @@ class InsertReadingBox(Box):
     rfid_insert_reading_enabled = True
 
 
-def make_box(state="standby", loaded_slot=-1):
+class FakeFallback:
+    """Stands in for box_rfid_fallback.RfidFallback."""
+
+    def __init__(self, box, result=None):
+        self.box = box
+        self.result = result
+        self.has_decoders = True
+        self.calls = []
+
+    def decoders(self):
+        return [object()] if self.has_decoders else []
+
+    def run(self, slot, automatic):
+        self.calls.append((slot, automatic, self.box.rfid_read_owner))
+        return self.result
+
+
+def make_box(state="standby", loaded_slot=-1, result=None):
     stats = FakePrintStats(state)
     box = InsertReadingBox.__new__(InsertReadingBox)
     box.printer = FakePrinter({"print_stats": stats})
@@ -41,23 +57,11 @@ def make_box(state="standby", loaded_slot=-1):
     box.rfid_fallback_tried = set()
     box.rfid_live_slots = set()
     box.rfid_percent = {}
-    box.auto_bambu_rfid_fallback = True
-    box.auto_mifare_rfid_fallback = True
     box.snapshot = BoxSnapshot(data_ready=True, loaded_slot=loaded_slot)
     box.slot_label = lambda slot: "T%d" % slot
+    box.is_physical_slot = lambda slot: True
     box._query_rfid_sample = lambda slot: ("unknown", None)
-    box.calls = []
-
-    def bambu(slot):
-        box.calls.append(("bambu", slot, box.rfid_read_owner))
-        return False
-
-    def mifare(slot):
-        box.calls.append(("mifare", slot, box.rfid_read_owner))
-        return False
-
-    box._try_bambu_rfid_fallback = bambu
-    box._try_mifare_rfid_fallback = mifare
+    box.rfid_fallback = FakeFallback(box, result)
     return box, stats
 
 
@@ -68,50 +72,39 @@ def test_unknown_pending_tag_gets_one_fallback_per_insertion():
     assert box._read_rfid_result(2) == "unknown"
     assert box._read_rfid_result(2) == "unknown"
 
-    # One Bambu try and one MIFARE try, not one stock reread per poll.
-    assert [call[0] for call in box.calls] == ["bambu", "mifare"]
+    # One automatic run, not one stock reread per poll.
+    assert box.rfid_fallback.calls == [
+        (2, True, "automatic T2 fallback")]
     # The slot stays pending for a later valid Creality record.
     assert 2 in box.rfid_pending
     assert box.rfid_read_owner is None
-
-
-def test_fallback_runs_under_the_read_claim():
-    box, _stats = make_box()
-
-    box._read_rfid_result(2)
-
-    assert {call[2] for call in box.calls} == {"automatic T2 fallback"}
 
 
 def test_fallback_waits_for_the_print_to_end():
     box, stats = make_box(state="printing")
 
     box._read_rfid_result(2)
-    assert box.calls == []
-    assert 2 not in box.rfid_fallback_tried
-
     stats.state = "paused"
     box._read_rfid_result(2)
-    assert box.calls == []
+    assert box.rfid_fallback.calls == []
+    assert 2 not in box.rfid_fallback_tried
 
     stats.state = "complete"
     box._read_rfid_result(2)
-    assert [call[0] for call in box.calls] == ["bambu", "mifare"]
+    assert len(box.rfid_fallback.calls) == 1
 
 
 def test_fallback_waits_while_filament_is_loaded():
     box, _stats = make_box(loaded_slot=0)
 
     box._read_rfid_result(2)
-    assert box.calls == []
-
     box.snapshot = BoxSnapshot(data_ready=True, loaded_slot=-1, loaded_mask=0x1)
     box._read_rfid_result(2)
-    assert box.calls == []
+    assert box.rfid_fallback.calls == []
 
     box.snapshot = BoxSnapshot(data_ready=True, loaded_slot=-1)
     box._read_rfid_result(2)
-    assert len(box.calls) == 2
+    assert len(box.rfid_fallback.calls) == 1
 
 
 def test_fallback_waits_for_box_operation_and_other_reads():
@@ -122,22 +115,22 @@ def test_fallback_waits_for_box_operation_and_other_reads():
     box.operation_depth = 0
     box.rfid_read_owner = "manual T1 reread"
     box._read_rfid_result(2)
-    assert box.calls == []
+    assert box.rfid_fallback.calls == []
     assert 2 not in box.rfid_fallback_tried
 
     box.rfid_read_owner = None
     box._read_rfid_result(2)
-    assert len(box.calls) == 2
+    assert len(box.rfid_fallback.calls) == 1
 
 
-def test_fallback_off_when_both_vendors_are_disabled():
+def test_no_registered_decoder_means_no_attempt():
     box, _stats = make_box()
-    box.auto_bambu_rfid_fallback = False
-    box.auto_mifare_rfid_fallback = False
+    box.rfid_fallback.has_decoders = False
 
     box._read_rfid_result(2)
 
-    assert box.calls == []
+    assert box.rfid_fallback.calls == []
+    assert 2 not in box.rfid_fallback_tried
 
 
 def test_reinsertion_allows_a_new_fallback():
@@ -153,15 +146,25 @@ def test_reinsertion_allows_a_new_fallback():
     box._rfid_inserted(2)
     box._read_rfid_result(2)
 
-    assert [call[0] for call in box.calls] == [
-        "bambu", "mifare", "bambu", "mifare"]
+    assert len(box.rfid_fallback.calls) == 2
 
 
 def test_successful_fallback_is_reported():
-    box, _stats = make_box()
-    box._try_bambu_rfid_fallback = lambda slot: True
+    box, _stats = make_box(result="BAMBU")
 
-    assert box._read_rfid_result(2) == "bambu"
+    assert box._read_rfid_result(2) == "BAMBU"
+
+
+def test_fallback_exception_is_contained():
+    box, _stats = make_box()
+
+    def broken(slot, automatic):
+        raise RuntimeError("bus lost")
+
+    box.rfid_fallback.run = broken
+
+    assert box._read_rfid_result(2) == "unknown"
+    assert box.rfid_read_owner is None
 
 
 def test_forced_read_refused_while_another_read_runs():
@@ -243,97 +246,3 @@ def test_auto_gate_keeps_the_first_reason():
     gate.disable("later")
 
     assert gate.disabled == "no API7"
-
-
-class FakeTransport:
-    @contextmanager
-    def request_session(self):
-        yield self
-
-
-def make_bambu(monkeypatch, info):
-    helper = box_rfid_bambu.BoxRfidBambu.__new__(box_rfid_bambu.BoxRfidBambu)
-    helper.serial = FakeTransport()
-    helper.last_error = None
-    helper.last_unsupported = None
-    helper.auto_gate = box_rfid_diag.AutoFallbackGate("Bambu RFID")
-    helper.info_calls = 0
-
-    class Driver:
-        def __init__(self, transport, address):
-            pass
-
-        def info(self, timeout=None):
-            helper.info_calls += 1
-            return info
-
-    monkeypatch.setattr(box_rfid_bambu, "RfidDiagDriver", Driver)
-    return helper
-
-
-def test_bambu_auto_read_stops_on_stock_firmware(monkeypatch):
-    helper = make_bambu(monkeypatch, info=None)
-
-    for _ in range(5):
-        assert helper.try_auto_read(2) is None
-
-    assert helper.info_calls == box_rfid_diag.AUTO_INFO_TIMEOUT_LIMIT
-    assert helper.auto_gate.disabled
-
-
-def test_bambu_auto_read_stops_on_unsupported_api(monkeypatch):
-    class Info:
-        api_version = box_rfid_diag.API_V21
-
-    helper = make_bambu(monkeypatch, info=Info())
-
-    assert helper.try_auto_read(2) is None
-    assert helper.try_auto_read(2) is None
-
-    assert helper.info_calls == 1
-    assert "API7" in helper.auto_gate.disabled
-
-
-def make_mifare(inspect):
-    helper = box_rfid_mifare.BoxRfidMifare.__new__(box_rfid_mifare.BoxRfidMifare)
-    helper.last_error = None
-    helper.auto_gate = box_rfid_diag.AutoFallbackGate("Third-party MIFARE RFID")
-    helper.inspect_calls = 0
-
-    def inspect_candidate(global_slot, address):
-        helper.inspect_calls += 1
-        return inspect()
-
-    helper._inspect_candidate = inspect_candidate
-    return helper
-
-
-def test_mifare_candidate_check_stops_on_unsupported_firmware():
-    def inspect():
-        raise box_rfid_mifare.ThirdPartyRfidUnsupported("no API7")
-
-    helper = make_mifare(inspect)
-
-    assert helper.is_known_candidate(2) is False
-    assert helper.is_known_candidate(2) is False
-    assert helper.inspect_calls == 1
-    assert helper.auto_gate.disabled == "no API7"
-
-
-def test_mifare_candidate_check_tolerates_a_single_info_timeout():
-    def inspect():
-        raise box_rfid_mifare.ThirdPartyRfidInfoTimeout("CFS RFID INFO timed out")
-
-    helper = make_mifare(inspect)
-
-    for _ in range(box_rfid_diag.AUTO_INFO_TIMEOUT_LIMIT - 1):
-        assert helper.is_known_candidate(2) is False
-    assert helper.auto_gate.disabled is None
-
-    assert helper.is_known_candidate(2) is False
-    assert helper.auto_gate.disabled
-
-
-def test_mifare_requires_api7_reports_info_timeout_separately():
-    with pytest.raises(box_rfid_mifare.ThirdPartyRfidInfoTimeout):
-        box_rfid_mifare.BoxRfidMifare._require_api7(None)

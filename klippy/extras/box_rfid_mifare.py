@@ -16,6 +16,7 @@ fallback flow or duplicating the API7 transport.
 from dataclasses import dataclass
 
 from extras import box_rfid_diag as diag
+from extras import box_rfid_fallback
 from extras.box_rfid_diag import MemoryReply, RfidDiagDriver
 
 
@@ -322,7 +323,7 @@ class BoxRfidMifare:
         self.last_tag = None
         self.last_decoder = None
         self.last_error = None
-        self.auto_gate = diag.AutoFallbackGate("Third-party MIFARE RFID")
+        self.last_reads = 0
 
         self.printer.register_event_handler(
             "serial_485:ready", self._serial_ready)
@@ -373,26 +374,38 @@ class BoxRfidMifare:
         _store, hints = self._hint_store()
         return hints.get(bytes(uid).hex().upper())
 
-    def is_known_candidate(self, global_slot):
-        if self.auto_gate.disabled:
+    def _key_plan(self, uid):
+        """(decoder, Key A) pairs to try, the hinted decoder only if known."""
+        hinted = self._hint_for_uid(uid)
+        return [
+            (decoder, key_a)
+            for decoder in DECODERS
+            if hinted is None or decoder.name == hinted
+            for key_a in decoder.key_candidates(uid)]
+
+    # --- Box RFID fallback decoder (see box_rfid_fallback.py) -------------
+    # Each Key A candidate is one stock reread. Automatic runs only try UIDs
+    # a manual read already identified (no vendor guessing on insertion).
+
+    RFID_DECODER_NAME = "MIFARE"
+    RFID_DECODER_PRIORITY = 20
+    RFID_DECODER_KIND = "generic"
+
+    def rfid_decoder_version(self):
+        # Adding a vendor decoder makes old "not recognised" UIDs retryable.
+        return "1:" + ",".join(decoder.name for decoder in DECODERS)
+
+    def rfid_decoder_candidate(self, identity, automatic):
+        if not identity.mifare_classic_1k:
             return False
-        try:
-            auto_addr, _local = self._slot_address(global_slot)
-            candidate = self._inspect_candidate(global_slot, auto_addr)
-        except ThirdPartyRfidUnsupported as exc:
-            self.last_error = str(exc)
-            self.auto_gate.disable(exc)
-            return False
-        except ThirdPartyRfidInfoTimeout:
-            self.auto_gate.info_timeout()
-            return False
-        except Exception:
-            return False
-        self.auto_gate.info_ok()
-        if candidate is None:
-            return False
-        _atqa, uid, _sak = candidate
-        return bool(self._hint_for_uid(uid))
+        return not automatic or bool(self._hint_for_uid(identity.uid))
+
+    def rfid_decoder_cost(self, identity, automatic):
+        return len(self._key_plan(identity.uid))
+
+    def rfid_decoder_read(self, slot, identity, max_reads, automatic):
+        tag = self.read_tag(slot, prime=False, max_reads=max_reads)
+        return tag, self.last_reads
 
     @staticmethod
     def _slot_address(global_slot):
@@ -518,7 +531,14 @@ class BoxRfidMifare:
                 "stock CFS record is not a MIFARE Classic 1K candidate")
         return candidate
 
-    def read_tag(self, global_slot, address=None, prime=False):
+    def read_tag(self, global_slot, address=None, prime=False, max_reads=None):
+        """Try the vendor decoders; each Key A candidate is a stock reread.
+
+        max_reads caps the rereads (None: no cap); self.last_reads counts
+        them. Returns None when no decoder recognised the tag; raises when an
+        attempt failed on a CFS or bus error, since that key was not tried.
+        """
+        self.last_reads = 0
         auto_addr, _local = self._slot_address(global_slot)
         address = auto_addr if address is None else address
         if prime:
@@ -529,58 +549,53 @@ class BoxRfidMifare:
                 return None
         _atqa, uid, _sak = candidate
 
-        hinted = self._hint_for_uid(uid)
-        decoders = [
-            decoder for decoder in DECODERS
-            if hinted is None or decoder.name == hinted]
-        if hinted and not decoders:
-            self.last_error = "saved decoder hint %s is unavailable" % hinted
+        plan = self._key_plan(uid)
+        if not plan:
+            self.last_error = (
+                "saved decoder hint %s is unavailable" % self._hint_for_uid(uid))
             return None
 
         errors = []
-        for decoder in decoders:
-            for key_a in decoder.key_candidates(uid):
-                try:
-                    capture = self._capture(global_slot, address, key_a)
-                except ThirdPartyRfidUnsupported:
-                    raise
-                except Exception as exc:
-                    errors.append("%s/%s: %s" % (
-                        decoder.name, key_a.hex().upper(), exc))
-                    continue
-                if not capture.complete:
-                    errors.append(
-                        "%s/%s: hit=%02X ok=%02X fail=%02X"
-                        % (decoder.name, key_a.hex().upper(),
-                           capture.hitmask, capture.okmask, capture.failmask))
-                    continue
-                tag = decoder.parse(capture)
-                if tag is None:
-                    errors.append(
-                        "%s/%s: capture did not match decoder"
-                        % (decoder.name, key_a.hex().upper()))
-                    continue
-                self.last_tag = tag
-                self.last_decoder = decoder.name
-                self.last_error = None
-                self._remember_hint(tag.uid, decoder.name)
-                self.gcode.respond_info(_tag_message(tag))
-                return tag
+        mismatches = []
+        for decoder, key_a in plan:
+            if max_reads is not None and self.last_reads >= max_reads:
+                break
+            self.last_reads += 1
+            try:
+                capture = self._capture(global_slot, address, key_a)
+            except ThirdPartyRfidUnsupported:
+                raise
+            except Exception as exc:
+                errors.append("%s/%s: %s" % (
+                    decoder.name, key_a.hex().upper(), exc))
+                continue
+            if not capture.complete:
+                mismatches.append(
+                    "%s/%s: hit=%02X ok=%02X fail=%02X"
+                    % (decoder.name, key_a.hex().upper(),
+                       capture.hitmask, capture.okmask, capture.failmask))
+                continue
+            tag = decoder.parse(capture)
+            if tag is None:
+                mismatches.append(
+                    "%s/%s: capture did not match decoder"
+                    % (decoder.name, key_a.hex().upper()))
+                continue
+            self.last_tag = tag
+            self.last_decoder = decoder.name
+            self.last_error = None
+            self._remember_hint(tag.uid, decoder.name)
+            self.gcode.respond_info(_tag_message(tag))
+            return tag
 
         self.last_tag = None
         self.last_decoder = None
-        self.last_error = "; ".join(errors[-6:]) if errors else "no decoder matched"
+        details = errors + mismatches
+        self.last_error = (
+            "; ".join(details[-6:]) if details else "no decoder matched")
+        if errors:
+            raise ThirdPartyRfidError(self.last_error)
         return None
-
-    def try_auto_read(self, global_slot):
-        if not self.is_known_candidate(global_slot):
-            return None
-        try:
-            return self.read_tag(global_slot, prime=False)
-        except ThirdPartyRfidUnsupported as exc:
-            self.last_error = str(exc)
-            self.auto_gate.disable(exc)
-            return None
 
     def cmd_read(self, gcmd):
         slot = gcmd.get_int("SLOT", minval=0, maxval=15)
@@ -593,6 +608,7 @@ class BoxRfidMifare:
         if tag is None:
             raise gcmd.error(
                 "MIFARE Classic tag was read but no registered third-party decoder matched")
+        box_rfid_fallback.remember_manual_read(self.printer, self, tag)
         d = tag.as_dict()
         applied = False
         if gcmd.get_int("APPLY", 1, minval=0, maxval=1):
@@ -617,7 +633,6 @@ class BoxRfidMifare:
             "decoders": [decoder.name for decoder in DECODERS],
             "last_decoder": self.last_decoder,
             "last_error": self.last_error,
-            "auto_disabled": self.auto_gate.disabled,
             "last_tag": None if self.last_tag is None
                         else self.last_tag.as_dict(),
         }

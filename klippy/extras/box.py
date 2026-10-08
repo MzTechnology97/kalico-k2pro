@@ -23,6 +23,7 @@ from extras.box_gcode import read_metadata
 from extras.box_catalog import resolve_material
 from extras.box_k2rfid_catalog import K2RfidMaterialCatalog
 from extras.box_lane_data import LaneDataPublisher
+from extras.box_rfid_fallback import RfidFallback
 from extras.motion_limits import restore_motion_limits, save_motion_limits
 
 
@@ -1128,6 +1129,20 @@ class Box:
         # normalized tag identity/profile metadata.
         self.auto_mifare_rfid_fallback = config.getboolean(
             "auto_mifare_rfid_fallback", True)
+        # Vendor decoders (box_rfid_bambu, box_rfid_mifare and later extras)
+        # register through box_rfid_fallback. Each try is a stock CFS reread
+        # (~45 s), so a run is capped: rfid_fallback_budget rereads on a
+        # spool insertion, rfid_fallback_manual_budget on a manual reread.
+        self.rfid_fallback = RfidFallback(
+            self,
+            auto_budget=config.getint(
+                "rfid_fallback_budget", 1, minval=0, maxval=10),
+            manual_budget=config.getint(
+                "rfid_fallback_manual_budget", 3, minval=0, maxval=10),
+            enabled={
+                "BAMBU": self.auto_bambu_rfid_fallback,
+                "MIFARE": self.auto_mifare_rfid_fallback,
+            })
         # K2-OpenHost: apply the pressure advance of the loaded slot's
         # filament profile (unless the print file sets it for that filament)
         # and learn the maximum flow from the slicer metadata.
@@ -1393,6 +1408,8 @@ class Box:
              "Associate the current RFID tag in a slot with an existing filament profile"),
             ("_BOX_RFID_REMAINING_DIAG", self.cmd_rfid_remaining_diag,
              "Read the raw CFS RFID remaining values"),
+            ("_BOX_RFID_FALLBACK_CACHE", self.cmd_rfid_fallback_cache,
+             "Show or clear the third-party RFID cache (CLEAR=1 [UID=...])"),
             ("_BOX_RFID_MAP_DELETE", self.cmd_rfid_map_delete,
              "Delete an RFID mapping"),
         )
@@ -3292,6 +3309,28 @@ class Box:
             filament.get("brand", ""), filament.get("name", ""),
             filament["material"])
 
+    def cmd_rfid_fallback_cache(self, gcmd):
+        if gcmd.get_int("CLEAR", 0, minval=0, maxval=1):
+            uid = str(gcmd.get("UID", "") or "").strip().upper()
+            if uid:
+                if not self.rfid_fallback.forget(uid):
+                    raise gcmd.error("[BOX]: UID %s is not cached" % uid)
+                self._info(gcmd, "Third-party RFID cache: UID %s cleared" % uid)
+            else:
+                self.rfid_fallback.clear_cache()
+                self._info(gcmd, "Third-party RFID cache cleared")
+            return
+        status = self.rfid_fallback.get_status()
+        decoders = self.rfid_fallback.decoders()
+        self._info(
+            gcmd,
+            "Third-party RFID: decoders=%s budget=%d (manual %d) cached "
+            "tags=%d unknown=%d auto_disabled=%s last=%s"
+            % (self.rfid_fallback.signature(decoders) or "none",
+               status["auto_budget"], status["manual_budget"],
+               status["cached_tags"], status["cached_unknown"],
+               status["auto_disabled"], status["last_result"]))
+
     def cmd_rfid_remaining_diag(self, gcmd):
         slot = gcmd.get_int(
             "SLOT", None, minval=0,
@@ -4591,54 +4630,21 @@ class Box:
                if profile["filament_id"] else ""))
         return True
 
-    def _try_mifare_rfid_fallback(self, slot):
-        if not self.auto_mifare_rfid_fallback or not self.is_physical_slot(slot):
-            return False
-        helper = self.printer.lookup_object("box_rfid_mifare", None)
-        if helper is None:
-            return False
-        try:
-            tagdata = helper.try_auto_read(slot)
-        except Exception as exc:
-            _klog("%s third-party MIFARE RFID fallback failed: %s",
-                  self.slot_label(slot), exc, level=logging.warning)
-            return False
-        return self._apply_third_party_rfid_tag(slot, tagdata) if tagdata else False
+    def _run_vendor_rfid_fallbacks(self, slot, automatic=False):
+        """Identify a tag the stock CFS left unknown; see box_rfid_fallback.
 
-    def _try_bambu_rfid_fallback(self, slot):
-        if not self.auto_bambu_rfid_fallback or not self.is_physical_slot(slot):
-            return False
-        helper = self.printer.lookup_object("box_rfid_bambu", None)
-        if helper is None:
-            return False
-        try:
-            tagdata = helper.try_auto_read(slot)
-        except Exception as exc:
-            _klog("%s Bambu RFID fallback failed: %s",
-                  self.slot_label(slot), exc, level=logging.warning)
-            return False
-        return self._apply_bambu_rfid_tag(slot, tagdata) if tagdata else False
-
-    def _run_vendor_rfid_fallbacks(self, slot):
-        """Try the third-party decoders on a tag the stock CFS left unknown.
-
-        Previously identified third-party UIDs bypass Bambu. New unknown tags
-        stay Bambu-first; the generic helper refuses automatic vendor guessing
-        until a UID has had one successful manual read. Each attempt is a
-        stock CFS reread of the slot. Returns "mifare", "bambu" or None.
+        Returns the name of the decoder that identified it, or None.
         """
-        mifare = self.printer.lookup_object("box_rfid_mifare", None)
-        known_third_party = bool(
-            self.auto_mifare_rfid_fallback
-            and mifare is not None
-            and getattr(mifare, "is_known_candidate", lambda _s: False)(slot))
-        if known_third_party and self._try_mifare_rfid_fallback(slot):
-            return "mifare"
-        if self._try_bambu_rfid_fallback(slot):
-            return "bambu"
-        if not known_third_party and self._try_mifare_rfid_fallback(slot):
-            return "mifare"
-        return None
+        # Observation mode keeps the CFS read-only: no key arming, no reread.
+        if (not self.is_physical_slot(slot)
+                or getattr(self, "observation_mode", False)):
+            return None
+        try:
+            return self.rfid_fallback.run(slot, automatic)
+        except Exception as exc:
+            _klog("%s third-party RFID fallback failed: %s",
+                  self.slot_label(slot), exc, level=logging.warning)
+            return None
 
     def _vendor_rfid_fallback_ready(self):
         """True when an automatic stock CFS reread cannot disturb anything.
@@ -4662,13 +4668,12 @@ class Box:
     def _try_pending_vendor_rfid_fallback(self, slot):
         """Automatic fallback for a pending insertion, once per insertion."""
         if (slot in self.rfid_fallback_tried
-                or not (self.auto_bambu_rfid_fallback
-                        or self.auto_mifare_rfid_fallback)
+                or not self.rfid_fallback.decoders()
                 or not self._vendor_rfid_fallback_ready()):
             return None
         self.rfid_fallback_tried.add(slot)
         with self._rfid_read_guard("automatic %s fallback" % self.slot_label(slot)):
-            return self._run_vendor_rfid_fallbacks(slot)
+            return self._run_vendor_rfid_fallbacks(slot, automatic=True)
 
     def acquire_rfid_read(self, owner):
         """Claim the forced CFS RFID read; BoxError while another one runs.
