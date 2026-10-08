@@ -47,3 +47,14 @@ on this machine.
 `macros/print.cfg`: `PRTOUCH_SCRUB` disabled.
 
 `macros/overrides.cfg`: `box_count: 1`.
+
+Third-party RFID: this machine's CFS runs the API7 RFID firmware, so
+`printer.cfg` includes `macros/box_rfid_diag.cfg`, `macros/box_rfid_bambu.cfg`
+and `macros/box_rfid_mifare.cfg` (commented out in the generic profile; see
+`docs/CFS_RFID_BAMBU.md`).
+
+## Filament libraries
+
+`cfs_filaments.json` (custom filament library, `library_path`) and
+`k2_rfid_custom_materials.json` (K2-RFID import, `material_database_path`) are
+this machine's libraries. On the printer both live in `~/printer_data/config/`.
