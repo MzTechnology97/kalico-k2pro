@@ -117,6 +117,25 @@ I extracted these results from my K2 Pro `klippy.log` history. Every row below i
 
 These are hardware-validation results, not inferred library entries. The more detailed raw block captures are recorded in `k2-cfs-rfid-tools/docs/v3.3-stock-capture.md`.
 
+## Experimental stock remaining-state diagnostics
+
+For the CFS 1.5.3 remaining-filament reverse engineering I added an optional
+read-only API7 capability used by the v3.4 diagnostic candidate:
+
+```text
+BOX_RFID_DIAG_REMAIN_STATE SLOT=<0..3>
+```
+
+The command exposes only the fixed stock fields needed to understand
+`CMD_RFID_REMAINING (0x03)`: stock state/current remaining byte, runtime
+type/flags, used and nominal-total counters, status, and the four ASCII bytes
+used as the nominal length field. It is deliberately **not** an arbitrary RAM
+reader and it performs no RFID/tag writes.
+
+The validated v3.3 firmware does not advertise this capability, so the host
+command fails closed on v3.3. The v3.4 diagnostic firmware remains a separate
+experimental candidate until hardware validation is completed.
+
 ## Remaining-filament tracking for non-Creality RFID
 
 The stock CFS `CMD_RFID_REMAINING (0x03)` can return `0xFF` for Bambu and other third-party tags even after a successful API7 read. I therefore added a host-side estimator that is independent of tag writes.
