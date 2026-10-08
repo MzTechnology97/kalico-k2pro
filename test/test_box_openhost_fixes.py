@@ -39,6 +39,8 @@ def make_box(tmp_path):
     box.rfid_live_slots, box.unknown_rfid = set(), {}
     box.rfid_pending, box.rfid_snapshot, box.rfid_seen_invalid = set(), {}, set()
     box.rfid_fallback_tried = set()
+    box.rfid_cleared_on_insert = set()
+    box.rfid_insert_time = {}
     box.rfid_presence, box.rfid_absent_confirm = {}, {}
     box.spoolman_tokens = {}
     box.rfid_estimate_dirty = False
