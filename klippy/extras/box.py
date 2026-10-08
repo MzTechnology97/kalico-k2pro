@@ -1236,6 +1236,10 @@ class Box:
         self.cut_check_min_x = config.getfloat("check_cut_pos_x_min", -9.5)
         # Default until _BOX_SET_CLOG_DETECTION saves a runtime value.
         self.clog_detection_default = config.getboolean("clog_detection", True)
+        # K2-OpenHost: CFS events (runout swap, runout pause, clog, CFS error,
+        # unknown tag, low filament) go to this G-code macro, which forwards
+        # them to Mobileraker, the Telegram bot, ... Empty turns it off.
+        self.notify_macro = config.get("notify_macro", "_BOX_NOTIFY").strip()
         # Below one refill chunk, normal buffer draw would read as a clog.
         self.clog_extruder_length = config.getfloat(
             "clog_extruder_length", 80.0, minval=30.0)
@@ -4246,6 +4250,10 @@ class Box:
         self._warn("Unknown RFID tag in %s: CODE=%s" % (
             self.slot_label(self._runtime_slot(slot_key)), code))
         self._warn("Map it with: %s" % self._rfid_map_command(code))
+        self.notify(
+            "rfid_unknown", "CFS unknown RFID tag",
+            "%s: tag code %s is not in the filament library" % (
+                self.slot_label(self._runtime_slot(slot_key)), code))
 
     def _ensure_material(self, material, target=None):
         material = str(material or "").strip().upper()
@@ -5198,6 +5206,34 @@ class Box:
     def _warn(self, message):
         self.gcode.respond_raw("!! " + self.CONSOLE_PREFIX + str(message))
 
+    def notify(self, event, title, message):
+        """Hand a CFS event to notify_macro, e.g. for a phone notification.
+
+        Runs from a reactor callback, after the caller's G-code command, and
+        never raises: without the macro nothing happens, a failing macro only
+        logs. The macro gets EVENT, TITLE and MESSAGE (quotes removed).
+        """
+        macro = getattr(self, "notify_macro", "")
+        handlers = getattr(self.gcode, "ready_gcode_handlers", {})
+        if not macro or macro.upper() not in handlers:
+            return False
+
+        def clean(text):
+            return " ".join(str(text).replace('"', "'").split())
+
+        script = '%s EVENT=%s TITLE="%s" MESSAGE="%s"' % (
+            macro, event, clean(title), clean(message))
+
+        def run(_eventtime):
+            try:
+                self.gcode.run_script(script)
+            except Exception as exc:
+                _klog("notification %s failed: %s", event, exc,
+                      level=logging.warning)
+
+        self.reactor.register_callback(run)
+        return True
+
     # ------------------------------------------------------------------
     # Box-owned cutter, cleaning, and wastebin motion
     # ------------------------------------------------------------------
@@ -5963,6 +5999,7 @@ class Box:
                 automatic=automatic)
             self._warn(self.change_engine.recovery_notice())
             self.pause_print()
+            self.notify("clog", "CFS clog", detail + "; print paused")
         else:
             self._warn(detail)
 
