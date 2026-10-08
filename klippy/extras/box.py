@@ -1236,36 +1236,7 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         self.fault_generation = 0
         self.last_fatal_reason = None
         self.fault_episodes = {}
-        self.rfid_percent = {}
-        self.rfid_reported_percent = {}
-        self.rfid_spools = {}
-        self.rfid_last_filament_used = None
-        self.rfid_last_encoder_mm = None
-        self.rfid_last_usage_source = None
-        self.rfid_last_print_state = None
-        self.rfid_last_usage_slot = None
-        self.rfid_estimate_dirty = False
-        self.last_rfid_estimate_save = 0.0
-        self.unknown_rfid = {}
-        self.rfid_presence = {}
-        self.rfid_absent_confirm = {}
-        self.rfid_pending = set()
-        self.rfid_snapshot = {}
-        self.rfid_seen_invalid = set()
-        self.rfid_live_slots = set()
-        # Slots whose automatic third-party fallback already ran for the
-        # current insertion. A failed fallback is a full stock CFS reread, so
-        # the pending-tag poll must not repeat it on every snapshot.
-        self.rfid_fallback_tried = set()
-        # Bays whose RFID profile was dropped at a spool insertion, so the
-        # next completed read applies even an unchanged record (same spool
-        # put back), and the time of the last insertion per bay.
-        self.rfid_cleared_on_insert = set()
-        self.rfid_insert_time = {}
-        # Label of the forced CFS RFID read in progress, or None. Manual
-        # rereads, the automatic fallback and the vendor helpers' commands
-        # share it so two stock reads never overlap.
-        self.rfid_read_owner = None
+        self._init_rfid_state()
         self.box_replies = {}
         self.last_rfid_refresh = 0.0
         self.last_topology_refresh = 0.0
@@ -4523,6 +4494,43 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         self.reactor.register_async_callback(
             lambda _eventtime: self.gcode.run_script("PAUSE"))
         return True
+
+    def _init_rfid_state(self):
+        """RFID runtime state: spools, estimates, pending reads, claims.
+
+        Called by __init__; tests that build a Box without __init__ call
+        it too, so a new field never needs to be added in every fixture.
+        """
+        self.rfid_percent = {}
+        self.rfid_reported_percent = {}
+        self.rfid_spools = {}
+        self.rfid_last_filament_used = None
+        self.rfid_last_encoder_mm = None
+        self.rfid_last_usage_source = None
+        self.rfid_last_print_state = None
+        self.rfid_last_usage_slot = None
+        self.rfid_estimate_dirty = False
+        self.last_rfid_estimate_save = 0.0
+        self.unknown_rfid = {}
+        self.rfid_presence = {}
+        self.rfid_absent_confirm = {}
+        self.rfid_pending = set()
+        self.rfid_snapshot = {}
+        self.rfid_seen_invalid = set()
+        self.rfid_live_slots = set()
+        # Slots whose automatic third-party fallback already ran for the
+        # current insertion. A failed fallback is a full stock CFS reread, so
+        # the pending-tag poll must not repeat it on every snapshot.
+        self.rfid_fallback_tried = set()
+        # Bays whose RFID profile was dropped at a spool insertion, so the
+        # next completed read applies even an unchanged record (same spool
+        # put back), and the time of the last insertion per bay.
+        self.rfid_cleared_on_insert = set()
+        self.rfid_insert_time = {}
+        # Label of the forced CFS RFID read in progress, or None. Manual
+        # rereads, the automatic fallback and the vendor helpers' commands
+        # share it so two stock reads never overlap.
+        self.rfid_read_owner = None
 
     def _clear_runout_state(self):
         self.runout_active = False
