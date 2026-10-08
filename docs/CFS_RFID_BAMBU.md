@@ -36,15 +36,7 @@ I publish the firmware, source handler and standalone porting documentation in:
 
 ## Configuration
 
-The three extras need the API7 firmware above, so the generic `config/k2/printer.cfg` keeps their includes commented out. On a CFS with this firmware I enable them by uncommenting:
-
-```ini
-[include macros/box_rfid_diag.cfg]
-[include macros/box_rfid_bambu.cfg]
-[include macros/box_rfid_mifare.cfg]
-```
-
-My reference machine (`config/k2/reference/k2pro-cm5/`) runs with them enabled:
+My K2 profile includes:
 
 ```ini
 [box]
@@ -176,6 +168,35 @@ rfid_usage_source
 
 This estimator is a fallback for third-party tags. I am separately reverse-engineering the CFS RAM structures used by the stock remaining algorithm so that a future firmware revision may be able to initialize the stock odometer without writing the RFID tag.
 
+## Experimental native CFS type-4 remaining mode
+
+Static reverse engineering of CFS firmware 153 identified a second, RAM-only
+remaining path (runtime_type = 4). Unlike the type-7 path, the type-4 branch
+updates the native remaining byte from the CFS physical path encoder and exits
+before the RFID write-back routine.
+
+The experimental v3.5 firmware candidate therefore adds only two constrained
+API7 operations:
+
+    BOX_RFID_DIAG_REMAIN_INIT4 SLOT=<0..3> TOTAL_M=<10..2000> REMAINING=<1..100> CONFIRM=1
+    BOX_RFID_DIAG_REMAIN_CLEAR4 SLOT=<0..3> CONFIRM=1
+
+INIT4 is fail-closed: the CFS stock worker must be idle, the slot must not
+have an active stock Creality database record, the cached tag must be a
+conservative MIFARE Classic candidate, and the UID supplied internally by the
+host must still match the current cached UID. The firmware exposes no arbitrary
+RAM-write primitive and does not call a physical RFID write function.
+
+The type-4 model reverse engineered from firmware 153 is:
+
+    consumed_percent = floor(used_mm * 100 / total_mm)
+    remaining = max(initial_percent - consumed_percent, 0)
+
+The normal CFS load/start transition captures the physical encoder baseline;
+the unload/stop transition closes the interval. Hardware validation of v3.5 is
+still pending. Until it is validated, the encoder-first host estimator remains
+the production-safe fallback.
+
 ## Associating a tag with an existing library profile
 
 I also extended the existing RFID mapping mechanism so a decoded tag can be bound directly to an existing filament-library profile:
@@ -198,38 +219,3 @@ The same command also works with the existing unknown Creality/custom RFID flow 
 ## Safety
 
 Automatic Bambu fallback is restricted to API7. The older API3 direct-auth diagnostic path is not used automatically. No tag-write primitive is exposed by the API7 firmware or by these extras.
-
-Every decoder attempt is a full stock CFS reread of the slot (about 45 s, with the RS-485 bus busy meanwhile), so the fallback keeps the rereads to a minimum. `klippy/extras/box_rfid_fallback.py` runs it:
-
-- **tag identity first, without RF.** The UID, ATQA and SAK come from the CFS internal record that the stock read already filled. A slot without a tag, or a tag that is not a MIFARE Classic 1K, costs no reread;
-- **UID cache.** A UID decoded once is applied from the cache on later insertions, with no reread. A UID that no decoder recognised is skipped until the set of decoders changes (a new extra, or a decoder version bump). The cache keeps 256 UIDs of each kind;
-- **reread budget.** A spool insertion spends at most `rfid_fallback_budget` rereads (default 1), a manual `_BOX_RFID_READ_SLOT` or `BOX_INFO_REFRESH` at most `rfid_fallback_manual_budget` per slot (default 3). Decoders run by priority (Bambu, then MIFARE). Those the budget did not reach are listed in the console and never remembered as "not recognised";
-- **errors are not "unknown".** A decoder that fails on a CFS or bus error spends one reread of the budget, but the UID is not remembered as unrecognised;
-- the automatic path runs **once per insertion**, and waits while a print is running or paused, while a Box operation is running and while a filament is loaded toward the printhead (the CFS answers `BUSY` to RFID reads then);
-- stock rereads, automatic fallbacks and the manual RF commands of the extras (`BOX_RFID_BAMBU_READ`, `BOX_RFID_MIFARE_READ`, the active `BOX_RFID_DIAG_*` commands) share one read claim, so two CFS RFID reads never overlap. A command issued during another read fails with "another CFS RFID read is in progress";
-- the firmware is asked once per Klipper start. On a CFS without API7 (stock firmware never answers opcode `0x57`) the automatic fallback turns off until the next start: at once on an unsupported answer, after three `INFO` timeouts in a row otherwise;
-- in Box `observation_mode` no fallback runs.
-
-A manual reread always reads the tag again and refreshes the cache. After rewriting a tag, reread its slot. `_BOX_RFID_FALLBACK_CACHE` shows the decoders, the budgets and the cache; `_BOX_RFID_FALLBACK_CACHE CLEAR=1 [UID=<hex>]` empties it.
-
-```ini
-[box]
-rfid_fallback_budget: 1          # rereads per spool insertion (0 = cache only)
-rfid_fallback_manual_budget: 3   # rereads per slot on a manual reread
-```
-
-### Adding a vendor decoder
-
-A new extra (for example `box_rfid_snapmaker`) does not change `box.py`. Any printer object with these members takes part in the fallback:
-
-| Member | Meaning |
-| --- | --- |
-| `RFID_DECODER_NAME` | short upper-case name, also used for the cache and the console |
-| `RFID_DECODER_PRIORITY` | lower runs first (Bambu 10, MIFARE 20) |
-| `RFID_DECODER_KIND` | `"bambu"` or `"generic"` (the `ThirdPartyTagData` fields of `box_rfid_mifare`) |
-| `rfid_decoder_version()` | bump it when the decoder can read tags it could not before: UIDs remembered as unrecognised become retryable |
-| `rfid_decoder_candidate(identity, automatic)` | passive check on UID/ATQA/SAK, no RF |
-| `rfid_decoder_cost(identity, automatic)` | stock rereads a full try takes |
-| `rfid_decoder_read(slot, identity, max_reads, automatic)` | returns `(tag, rereads used)`, never more than `max_reads`. `(None, used)` means not this vendor's tag; raise on a CFS or bus error |
-
-A new MIFARE vendor with a fixed key only needs a decoder class in `box_rfid_mifare.DECODERS`.

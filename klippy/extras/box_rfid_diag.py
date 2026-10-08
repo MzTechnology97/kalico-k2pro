@@ -1,6 +1,10 @@
 # Copyright (C) 2026 K2-OpenHost contributors
 # This file may be distributed under the terms of the GNU GPLv3 license.
-"""Optional read-only diagnostics for the patched K2 Pro CFS RFID firmware.
+"""Optional diagnostics for the patched K2 Pro CFS RFID firmware.
+
+The normal API7 diagnostics are read-only with respect to the CFS runtime.
+Experimental v3.5 adds only two constrained RAM operations for Creality's
+existing type-4 remaining odometer. They never write the physical RFID tag.
 
 This extra never opens the RS-485 serial device itself.  It uses the existing
 ``Serial_485_Wrapper`` request queue so Box/CFS and closed-loop traffic keep a
@@ -12,7 +16,6 @@ belongs on the host side and no tag-write primitive is exposed here.
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-import logging
 
 from extras import box_protocol
 from extras.serial_485 import build_485_body
@@ -31,6 +34,8 @@ SUB_ARM_STOCK_TASK_KEYS3 = 0x07
 SUB_CLEAR_STOCK_TASK_KEYS = 0x08
 SUB_RUNTIME_INFO = 0x09
 SUB_REMAIN_STATE = 0x0A
+SUB_REMAIN_INIT4 = 0x0B
+SUB_REMAIN_CLEAR4 = 0x0C
 
 STATUS_OK = 0
 STATUS_BAD_REQUEST = 1
@@ -61,6 +66,8 @@ CAP_POLL = 1 << 1
 CAP_READ = 1 << 2
 CAP_AUTH_A = 1 << 3
 CAP_CL2 = 1 << 4
+# API7 v3.5 uses bit2 for constrained type-4 RAM init/clear.
+CAP_REMAIN_INIT4 = 1 << 2
 # API7 v3.4 reuses bit4 for read-only stock remaining-state telemetry.
 CAP_REMAIN_STATE = 1 << 4
 CAP_STOCK_STATE = 1 << 5
@@ -73,78 +80,9 @@ CAP_STOCK_TASK_KEYS3 = 1 << 3
 
 ACTIVE_SUBCOMMANDS = frozenset((SUB_POLL, SUB_READ, SUB_READ_AUTH_A))
 
-# Commands that drive RF or change the stock RFID task keys. They take Box's
-# forced-RFID-read claim; the passive queries do not need it.
-RF_TASK_COMMANDS = frozenset((
-    "BOX_RFID_DIAG_POLL",
-    "BOX_RFID_DIAG_READ",
-    "BOX_RFID_DIAG_READ_AUTH_A",
-    "BOX_RFID_DIAG_ARM_KEY",
-    "BOX_RFID_DIAG_CLEAR_KEY",
-    "BOX_RFID_DIAG_ARM_KEYS",
-    "BOX_RFID_DIAG_CLEAR_KEYS",
-    "BOX_RFID_DIAG_STOCK_CAPTURE",
-))
-
 
 class RfidDiagError(RuntimeError):
     pass
-
-
-AUTO_INFO_TIMEOUT_LIMIT = 3
-
-
-class AutoFallbackGate:
-    """Turns a vendor helper's automatic fallback off on unsupported firmware.
-
-    An unsupported firmware answer turns it off at once; INFO timeouts only
-    after AUTO_INFO_TIMEOUT_LIMIT in a row, so one lost reply on a busy bus
-    does not. Stock CFS firmware never answers opcode 0x57, so without this
-    every inserted non-Creality tag would cost INFO timeouts. It stays off
-    until the next Klipper start; the manual commands still work.
-    """
-
-    def __init__(self, name):
-        self.name = name
-        self.disabled = None
-        self.info_timeouts = 0
-
-    def info_ok(self):
-        self.info_timeouts = 0
-
-    def info_timeout(self):
-        self.info_timeouts += 1
-        if self.info_timeouts >= AUTO_INFO_TIMEOUT_LIMIT:
-            self.disable("CFS RFID INFO timed out %d times in a row"
-                         % self.info_timeouts)
-
-    def disable(self, reason):
-        if self.disabled is None:
-            self.disabled = str(reason)
-            logging.info("%s automatic fallback off until restart: %s",
-                         self.name, self.disabled)
-
-
-@contextmanager
-def box_rfid_read_guard(printer, gcmd, owner):
-    """Hold Box's forced-RFID-read claim for a manual helper command.
-
-    Box serializes stock CFS rereads and vendor captures. A manual command
-    that drives the CFS RFID task takes the same claim, so it never overlaps
-    an automatic fallback or a reread. Without Box there is nothing to share.
-    """
-    box = printer.lookup_object("box", None)
-    if box is None or not hasattr(box, "acquire_rfid_read"):
-        yield
-        return
-    try:
-        box.acquire_rfid_read(owner)
-    except Exception as exc:
-        raise gcmd.error(str(exc))
-    try:
-        yield
-    finally:
-        box.release_rfid_read()
 
 
 @dataclass(frozen=True)
@@ -277,6 +215,33 @@ def _key_a(value):
     return value
 
 
+def _uid4(value):
+    if isinstance(value, str):
+        text = value.strip().replace(" ", "").replace(":", "")
+        if len(text) != 8:
+            raise ValueError("UID must be exactly 4 bytes / 8 hex digits")
+        try:
+            value = bytes.fromhex(text)
+        except ValueError as exc:
+            raise ValueError("UID must be hexadecimal") from exc
+    else:
+        try:
+            value = bytes(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("UID must be exactly 4 bytes") from exc
+    if len(value) != 4:
+        raise ValueError("UID must be exactly 4 bytes")
+    return value
+
+
+def _total_mm(value):
+    if type(value) is not int:
+        raise ValueError("total_mm must be an integer number of millimetres")
+    if not 10000 <= value <= 2000000:
+        raise ValueError("total_mm must be between 10000 and 2000000")
+    return value
+
+
 def _keys_a3(value):
     if isinstance(value, str):
         text = value.strip().replace(" ", "").replace(":", "")
@@ -296,7 +261,8 @@ def _keys_a3(value):
     return value
 
 
-def request_payload(subcommand, logical_slot=None, index=None, key_a=None):
+def request_payload(subcommand, logical_slot=None, index=None, key_a=None,
+                    uid=None, total_mm=None, initial_percent=None):
     subcommand = _byte(subcommand, "subcommand")
     if subcommand in (SUB_INFO, SUB_STOCK_STATE, SUB_RUNTIME_INFO):
         return bytes((subcommand,))
@@ -304,8 +270,21 @@ def request_payload(subcommand, logical_slot=None, index=None, key_a=None):
         raise ValueError("slot is required")
     reader, slot = _reader_slot(logical_slot)
     if subcommand in (
-            SUB_CACHE, SUB_POLL, SUB_INTERNAL_RECORD, SUB_REMAIN_STATE):
+            SUB_CACHE, SUB_POLL, SUB_INTERNAL_RECORD, SUB_REMAIN_STATE,
+            SUB_REMAIN_CLEAR4):
         return bytes((subcommand, reader, slot))
+    if subcommand == SUB_REMAIN_INIT4:
+        total_mm = _total_mm(total_mm)
+        initial_percent = _byte(initial_percent, "initial percent")
+        if not 1 <= initial_percent <= 100:
+            raise ValueError("initial percent must be 1..100")
+        return (
+            bytes((subcommand, reader, slot))
+            + _uid4(uid)
+            + b"\x00"
+            + total_mm.to_bytes(4, "little")
+            + bytes((initial_percent,))
+        )
     if subcommand == SUB_READ:
         return bytes((subcommand, reader, slot, _byte(index, "read index")))
     if subcommand == SUB_READ_AUTH_A:
@@ -322,10 +301,13 @@ def request_payload(subcommand, logical_slot=None, index=None, key_a=None):
     raise ValueError("unsupported RFID diagnostic subcommand 0x%02x" % subcommand)
 
 
-def request_body(address, subcommand, logical_slot=None, index=None, key_a=None):
+def request_body(address, subcommand, logical_slot=None, index=None, key_a=None,
+                 uid=None, total_mm=None, initial_percent=None):
     return build_485_body(
         _address(address), CMD_RFID_DIAG,
-        request_payload(subcommand, logical_slot, index, key_a),
+        request_payload(
+            subcommand, logical_slot, index, key_a,
+            uid=uid, total_mm=total_mm, initial_percent=initial_percent),
         header_byte=0xFF,
     )
 
@@ -445,6 +427,19 @@ def decode_arm_keys3(frame, address):
     return DiagReply(reply.status, reply.payload, reply.raw)
 
 
+def decode_empty_success(frame, address, what):
+    reply = _diag_reply(frame, address)
+    if reply.status == STATUS_OK:
+        if reply.payload:
+            raise box_protocol.ProtocolError(
+                "%s success response must be empty" % what)
+        return reply
+    if reply.payload:
+        raise box_protocol.ProtocolError(
+            "%s error response unexpectedly carries payload" % what)
+    return reply
+
+
 def decode_clear_keys(frame, address):
     reply = _diag_reply(frame, address)
     if reply.status == STATUS_OK:
@@ -466,10 +461,11 @@ class RfidDiagDriver:
         self.address = _address(address)
 
     def _exchange(self, subcommand, logical_slot=None, index=None, key_a=None,
-                  timeout=1.0):
+                  uid=None, total_mm=None, initial_percent=None, timeout=1.0):
         body = request_body(
             self.address, subcommand, logical_slot=logical_slot,
-            index=index, key_a=key_a)
+            index=index, key_a=key_a, uid=uid, total_mm=total_mm,
+            initial_percent=initial_percent)
         return self.serial.cmd_send_data_with_response(body, timeout)
 
     def info(self, timeout=1.0):
@@ -512,6 +508,21 @@ class RfidDiagDriver:
             SUB_REMAIN_STATE, logical_slot=slot, timeout=timeout)
         return None if not frame else decode_remaining_state(
             frame, self.address)
+
+    def init_remaining_type4(self, slot, uid, total_mm, initial_percent,
+                             timeout=1.0):
+        frame = self._exchange(
+            SUB_REMAIN_INIT4, logical_slot=slot, uid=uid,
+            total_mm=total_mm, initial_percent=initial_percent,
+            timeout=timeout)
+        return None if not frame else decode_empty_success(
+            frame, self.address, "RFID REMAIN_INIT4")
+
+    def clear_remaining_type4(self, slot, timeout=1.0):
+        frame = self._exchange(
+            SUB_REMAIN_CLEAR4, logical_slot=slot, timeout=timeout)
+        return None if not frame else decode_empty_success(
+            frame, self.address, "RFID REMAIN_CLEAR4")
 
     def arm_stock_task_key(self, slot, key_a, timeout=1.0):
         reader, local = _reader_slot(slot)
@@ -558,6 +569,8 @@ class BoxRfidDiag:
             ("BOX_RFID_DIAG_READ_AUTH_A", self.cmd_read_auth_a),
             ("BOX_RFID_DIAG_RUNTIME", self.cmd_runtime),
             ("BOX_RFID_DIAG_REMAIN_STATE", self.cmd_remaining_state),
+            ("BOX_RFID_DIAG_REMAIN_INIT4", self.cmd_remaining_init4),
+            ("BOX_RFID_DIAG_REMAIN_CLEAR4", self.cmd_remaining_clear4),
             ("BOX_RFID_DIAG_ARM_KEY", self.cmd_arm_key),
             ("BOX_RFID_DIAG_CLEAR_KEY", self.cmd_clear_key),
             ("BOX_RFID_DIAG_ARM_KEYS", self.cmd_arm_keys),
@@ -565,15 +578,7 @@ class BoxRfidDiag:
             ("BOX_RFID_DIAG_STOCK_CAPTURE", self.cmd_stock_capture),
         )
         for name, handler in commands:
-            if name in RF_TASK_COMMANDS:
-                handler = self._claim_rfid_read(name, handler)
             self.gcode.register_command(name, handler)
-
-    def _claim_rfid_read(self, name, handler):
-        def claimed(gcmd):
-            with box_rfid_read_guard(self.printer, gcmd, name):
-                return handler(gcmd)
-        return claimed
 
     def _serial_ready(self, *args):
         self.serial = self.printer.lookup_object(
@@ -920,6 +925,121 @@ class BoxRfidDiag:
                ascii4(result.runtime_length_ascii),
                ascii4(result.stock_length_ascii),
                result.payload.hex().upper()))
+
+    @staticmethod
+    def _require_type4_api(gcmd, info):
+        if info is None:
+            raise gcmd.error("CFS RFID INFO timed out")
+        required = (
+            CAP_REMAIN_INIT4 | CAP_REMAIN_STATE
+            | CAP_STOCK_STATE | CAP_INTERNAL_RECORD)
+        if (info.api_version != API_STOCK_CAPTURE
+                or info.readers != 2
+                or info.slots_per_reader != 2
+                or info.cache_record_size != 16
+                or info.max_read_index != 3
+                or info.capabilities & required != required):
+            raise gcmd.error(
+                "CFS type4 remaining requires API7/v3.5 with "
+                "INIT4+REMAIN_STATE+STATE+INTERNAL capabilities")
+
+    def _ensure_type4_write_allowed(self, gcmd):
+        if gcmd.get_int("CONFIRM", 0, minval=0, maxval=1) != 1:
+            raise gcmd.error("CFS type4 remaining RAM changes require CONFIRM=1")
+        if self.require_idle:
+            stats = self.printer.lookup_object("print_stats", None)
+            state = getattr(stats, "state", None)
+            if state not in ("standby", "complete", "cancelled"):
+                raise gcmd.error(
+                    "CFS type4 remaining RAM changes require an idle printer; "
+                    "print state is %s"
+                    % (state if state is not None else "unavailable"))
+
+    def cmd_remaining_init4(self, gcmd):
+        self._ensure_type4_write_allowed(gcmd)
+        address, slot = self._address_param(gcmd), self._slot_param(gcmd)
+        total_m = gcmd.get_float("TOTAL_M", minval=10.0, maxval=2000.0)
+        initial = gcmd.get_int("REMAINING", 100, minval=1, maxval=100)
+        total_mm = int(round(total_m * 1000.0))
+        try:
+            with self._transport().request_session() as transport:
+                driver = RfidDiagDriver(transport, address)
+                info = self._require_response(
+                    gcmd, driver.info(), "CFS RFID INFO")
+                self._require_type4_api(gcmd, info)
+                self.last_info = info
+                state = self._require_response(
+                    gcmd, driver.stock_state(), "CFS RFID STOCK_STATE")
+                if state.busy:
+                    raise gcmd.error(
+                        "CFS stock RFID manager is busy on logical slot %d"
+                        % state.active_slot)
+                record = self._require_response(
+                    gcmd, driver.internal_record(slot),
+                    "CFS RFID INTERNAL_RECORD")
+                candidate = self._stock_candidate_from_record(record)
+                if candidate is None:
+                    raise gcmd.error(
+                        "CFS slot does not contain a conservative "
+                        "MIFARE Classic 1K candidate")
+                _atqa, uid, _sak = candidate
+                result = self._require_response(
+                    gcmd, driver.init_remaining_type4(
+                        slot, uid, total_mm, initial),
+                    "CFS RFID REMAIN_INIT4")
+                if result.status != STATUS_OK:
+                    raise gcmd.error(
+                        "CFS RFID REMAIN_INIT4 returned %s"
+                        % result.status_name)
+                verify = self._require_response(
+                    gcmd, driver.remaining_state(slot),
+                    "CFS RFID REMAIN_STATE")
+            self._remember("remain_init4", verify)
+        except Exception as exc:
+            self._remember("remain_init4", error=exc)
+            raise
+        gcmd.respond_info(
+            "CFS RFID type4 initialized slot=%d UID=%s total_m=%.3f "
+            "initial=%d runtime_type=%d valid=%d mode=%d native_remaining=%d"
+            % (slot, uid.hex().upper(), total_m, initial,
+               verify.runtime_type, verify.valid23, verify.mode22,
+               verify.stock_remaining))
+
+    def cmd_remaining_clear4(self, gcmd):
+        self._ensure_type4_write_allowed(gcmd)
+        address, slot = self._address_param(gcmd), self._slot_param(gcmd)
+        try:
+            with self._transport().request_session() as transport:
+                driver = RfidDiagDriver(transport, address)
+                info = self._require_response(
+                    gcmd, driver.info(), "CFS RFID INFO")
+                self._require_type4_api(gcmd, info)
+                self.last_info = info
+                state = self._require_response(
+                    gcmd, driver.stock_state(), "CFS RFID STOCK_STATE")
+                if state.busy:
+                    raise gcmd.error(
+                        "CFS stock RFID manager is busy on logical slot %d"
+                        % state.active_slot)
+                result = self._require_response(
+                    gcmd, driver.clear_remaining_type4(slot),
+                    "CFS RFID REMAIN_CLEAR4")
+                if result.status != STATUS_OK:
+                    raise gcmd.error(
+                        "CFS RFID REMAIN_CLEAR4 returned %s"
+                        % result.status_name)
+                verify = self._require_response(
+                    gcmd, driver.remaining_state(slot),
+                    "CFS RFID REMAIN_STATE")
+            self._remember("remain_clear4", verify)
+        except Exception as exc:
+            self._remember("remain_clear4", error=exc)
+            raise
+        gcmd.respond_info(
+            "CFS RFID type4 cleared slot=%d runtime_type=%d valid=%d "
+            "mode=%d native_remaining=%d"
+            % (slot, verify.runtime_type, verify.valid23,
+               verify.mode22, verify.stock_remaining))
 
     def cmd_arm_key(self, gcmd):
         address, slot = self._address_param(gcmd), self._slot_param(gcmd)
