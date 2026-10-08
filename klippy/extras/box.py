@@ -3479,12 +3479,14 @@ class Box:
                 # remaining estimate until an insertion event or explicit
                 # reread supplies fresh tag data. Empty bays are only cleaned
                 # after repeated topology confirmation below, never from one
-                # potentially transient startup sample.
+                # potentially transient startup sample. Their CFS remaining
+                # percentage is polled again, as after a tag read.
                 for local in range(SLOTS_PER_BOX):
                     bit = 1 << local
                     slot = self._global_slot(address, local)
                     if local_mask & bit:
                         self._restore_cached_rfid_slot(slot)
+                        self._resume_rfid_polling(slot)
 
                 if self.rfid_startup_reading_enabled and local_mask:
                     cached = self._require_reply(
@@ -3781,6 +3783,22 @@ class Box:
         slot_key = str(self._runtime_slot_key(slot))
         if keys.pop(slot_key, None) is not None:
             self.store.set_setting("rfid_slot_keys", keys)
+
+    def _resume_rfid_polling(self, slot):
+        """Keep polling the CFS remaining percentage of a restored RFID bay.
+
+        Only rfid_live_slots are polled, and a restart empties it: without
+        this the CFS percentage came back only after a reread or a new
+        insertion. A bay with an RFID profile and a spool key is managed by
+        its tag, as Mainsail already shows it. The query is passive; 255
+        (no value) changes nothing.
+        """
+        if self.profile(slot).get("source") != "rfid":
+            return False
+        if not self._rfid_slot_keys().get(str(self._runtime_slot_key(slot))):
+            return False
+        self.rfid_live_slots.add(slot)
+        return True
 
     def _restore_cached_rfid_slot(self, slot):
         profile = self.profile(slot)
