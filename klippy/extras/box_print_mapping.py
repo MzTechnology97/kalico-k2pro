@@ -246,6 +246,12 @@ class BoxPrintMapping:
         self.mapping_warnings = list(warnings)
         for warning in warnings:
             self.gcode.respond_info("[BOX]: Warning: " + self._warning_text(warning))
+        low = [warning for warning in warnings
+               if warning.get("kind") in ("low_filament", "low_filament_live")]
+        notify = getattr(self.box, "notify", None)
+        if low and callable(notify):
+            notify("low_filament", "CFS filament may run out",
+                   " ".join(self._warning_text(warning) for warning in low))
 
     def _recovery_in_progress(self):
         # PLR_RECOVER loads the file and then restores the saved map.
