@@ -1226,6 +1226,14 @@ class Box:
         self.rfid_snapshot = {}
         self.rfid_seen_invalid = set()
         self.rfid_live_slots = set()
+        # Slots whose automatic third-party fallback already ran for the
+        # current insertion. A failed fallback is a full stock CFS reread, so
+        # the pending-tag poll must not repeat it on every snapshot.
+        self.rfid_fallback_tried = set()
+        # Label of the forced CFS RFID read in progress, or None. Manual
+        # rereads, the automatic fallback and the vendor helpers' commands
+        # share it so two stock reads never overlap.
+        self.rfid_read_owner = None
         self.box_replies = {}
         self.last_rfid_refresh = 0.0
         self.last_topology_refresh = 0.0
@@ -3453,6 +3461,7 @@ class Box:
         self.rfid_pending.discard(slot)
         self.rfid_snapshot.pop(slot, None)
         self.rfid_seen_invalid.discard(slot)
+        self.rfid_fallback_tried.discard(slot)
 
     def _snapshot_rfid_cache(self, slot):
         try:
@@ -3474,6 +3483,7 @@ class Box:
         self._invalidate_spoolman(slot)
         self.rfid_snapshot.pop(slot, None)
         self.rfid_seen_invalid.discard(slot)
+        self.rfid_fallback_tried.discard(slot)
         if self.rfid_insert_reading_enabled:
             self.rfid_pending.add(slot)
             self._snapshot_rfid_cache(slot)
@@ -4609,6 +4619,80 @@ class Box:
             return False
         return self._apply_bambu_rfid_tag(slot, tagdata) if tagdata else False
 
+    def _run_vendor_rfid_fallbacks(self, slot):
+        """Try the third-party decoders on a tag the stock CFS left unknown.
+
+        Previously identified third-party UIDs bypass Bambu. New unknown tags
+        stay Bambu-first; the generic helper refuses automatic vendor guessing
+        until a UID has had one successful manual read. Each attempt is a
+        stock CFS reread of the slot. Returns "mifare", "bambu" or None.
+        """
+        mifare = self.printer.lookup_object("box_rfid_mifare", None)
+        known_third_party = bool(
+            self.auto_mifare_rfid_fallback
+            and mifare is not None
+            and getattr(mifare, "is_known_candidate", lambda _s: False)(slot))
+        if known_third_party and self._try_mifare_rfid_fallback(slot):
+            return "mifare"
+        if self._try_bambu_rfid_fallback(slot):
+            return "bambu"
+        if not known_third_party and self._try_mifare_rfid_fallback(slot):
+            return "mifare"
+        return None
+
+    def _vendor_rfid_fallback_ready(self):
+        """True when an automatic stock CFS reread cannot disturb anything.
+
+        Not during a print or pause, not during a Box operation and not while
+        a filament is loaded toward the printhead (the CFS answers BUSY to RFID
+        reads then). The fallback stays pending and runs once that is over.
+        """
+        if self.operation_depth or self.rfid_read_owner is not None:
+            return False
+        stats = self.printer.lookup_object("print_stats", None)
+        if getattr(stats, "state", None) in ("printing", "paused"):
+            return False
+        snap = self.snapshot
+        loaded = snap.loaded_slot
+        if not snap.data_ready or snap.loaded_mask or (
+                isinstance(loaded, int) and loaded >= 0):
+            return False
+        return True
+
+    def _try_pending_vendor_rfid_fallback(self, slot):
+        """Automatic fallback for a pending insertion, once per insertion."""
+        if (slot in self.rfid_fallback_tried
+                or not (self.auto_bambu_rfid_fallback
+                        or self.auto_mifare_rfid_fallback)
+                or not self._vendor_rfid_fallback_ready()):
+            return None
+        self.rfid_fallback_tried.add(slot)
+        with self._rfid_read_guard("automatic %s fallback" % self.slot_label(slot)):
+            return self._run_vendor_rfid_fallbacks(slot)
+
+    def acquire_rfid_read(self, owner):
+        """Claim the forced CFS RFID read; BoxError while another one runs.
+
+        Stock rereads and vendor stock captures both drive the CFS RFID task,
+        so they must not overlap. Also used by the box_rfid_* helpers.
+        """
+        if self.rfid_read_owner is not None:
+            raise BoxError(
+                "another CFS RFID read is in progress (%s); retry when it ends"
+                % self.rfid_read_owner)
+        self.rfid_read_owner = owner
+
+    def release_rfid_read(self):
+        self.rfid_read_owner = None
+
+    @contextmanager
+    def _rfid_read_guard(self, owner):
+        self.acquire_rfid_read(owner)
+        try:
+            yield
+        finally:
+            self.release_rfid_read()
+
     def _read_rfid_result(self, slot):
         sample = self._query_rfid_sample(slot)
         if sample is None:
@@ -4623,17 +4707,9 @@ class Box:
         if not self._rfid_record_ready(sample):
             self.rfid_seen_invalid.add(slot)
             if record.lower() in ("", "unknown"):
-                mifare = self.printer.lookup_object("box_rfid_mifare", None)
-                known_third_party = bool(
-                    mifare is not None
-                    and getattr(mifare, "is_known_candidate", lambda _s: False)(slot))
-                if known_third_party and self._try_mifare_rfid_fallback(slot):
-                    return "mifare"
-                if self._try_bambu_rfid_fallback(slot):
-                    return "bambu"
-                if (not known_third_party
-                        and self._try_mifare_rfid_fallback(slot)):
-                    return "mifare"
+                vendor = self._try_pending_vendor_rfid_fallback(slot)
+                if vendor:
+                    return vendor
             self.rfid_live_slots.discard(slot)
             self.rfid_percent.pop(slot, None)
             return record.lower() or "unknown"
@@ -4649,6 +4725,11 @@ class Box:
         return "record"
 
     def _force_rfid_results(self, address, driver, mask, reason):
+        with self._rfid_read_guard(reason):
+            return self._force_rfid_results_locked(
+                address, driver, mask, reason)
+
+    def _force_rfid_results_locked(self, address, driver, mask, reason):
         selected = tuple(
             local for local in range(SLOTS_PER_BOX) if mask & (1 << local))
         tools = tuple(self._global_slot(address, local) for local in selected)
@@ -4685,22 +4766,8 @@ class Box:
                 break
             if attempt < 2:
                 self.reactor.pause(self.reactor.monotonic() + 0.35)
-        # Previously identified third-party UIDs bypass Bambu. New unknown
-        # tags remain Bambu-first; the generic helper intentionally refuses
-        # automatic vendor guessing until a UID has one successful manual read.
         for slot in sorted(tuple(pending)):
-            helper = self.printer.lookup_object("box_rfid_mifare", None)
-            if (helper is not None
-                    and getattr(helper, "is_known_candidate", lambda _s: False)(slot)
-                    and self._try_mifare_rfid_fallback(slot)):
-                applied.add(slot)
-                pending.discard(slot)
-        for slot in sorted(tuple(pending)):
-            if self._try_bambu_rfid_fallback(slot):
-                applied.add(slot)
-                pending.discard(slot)
-        for slot in sorted(tuple(pending)):
-            if self._try_mifare_rfid_fallback(slot):
+            if self._run_vendor_rfid_fallbacks(slot):
                 applied.add(slot)
                 pending.discard(slot)
         for slot in sorted(pending):
