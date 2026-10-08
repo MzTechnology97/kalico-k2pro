@@ -71,6 +71,10 @@ class FakeBox:
         self.gcode = None
         self.applied = []
         self.infos = []
+        self.profiles = {}
+
+    def profile(self, slot):
+        return self.profiles.get(slot, {})
 
     def _address_slot(self, slot):
         return slot // 4 + 1, slot % 4
@@ -519,3 +523,73 @@ def test_mifare_read_raises_when_a_key_hit_a_bus_error(monkeypatch):
 def test_mifare_requires_api7_reports_info_timeout_separately():
     with pytest.raises(box_rfid_mifare.ThirdPartyRfidInfoTimeout):
         box_rfid_mifare.BoxRfidMifare._require_api7(None)
+
+
+# --- known-tag fast path (manual rereads) -----------------------------------
+
+def test_known_cached_uid_is_read_directly():
+    decoder = FakeDecoder("QIDI", tag={"vendor": "QIDI", "material": "PLA"})
+    box, fallback = make([decoder])
+    fallback.run(1, automatic=True)
+
+    assert fallback.run_known(1) == "QIDI"
+
+    assert decoder.reads == [1, 1]
+    assert fallback.last_result == ("direct", "QIDI", "233A111D", 1)
+
+
+def test_hinted_uid_is_read_directly():
+    decoder = FakeDecoder("MIFARE", tag={"vendor": "QIDI"})
+    decoder.rfid_decoder_known = lambda identity: identity.uid == UID
+    box, fallback = make([decoder])
+
+    assert fallback.run_known(0) == "MIFARE"
+    assert "233A111D" in fallback._cache()["tags"]
+
+
+def test_slot_profile_code_marks_a_bambu_tag_known():
+    bambu = FakeDecoder("BAMBU", tag={"material": "PETG"})
+    bambu.RFID_DECODER_KIND = "bambu"
+    box, fallback = make([bambu])
+    box.profiles[2] = {"rfid_code": "BAMBU:PETG HF"}
+
+    assert fallback.run_known(2) == "BAMBU"
+    assert box.applied[-1][0] == "bambu"
+
+
+def test_unknown_tag_takes_the_stock_path():
+    decoder = FakeDecoder("BAMBU", tag={"material": "PETG"})
+    box, fallback = make([decoder])
+    box.profiles[0] = {"rfid_code": "105628"}
+
+    assert fallback.run_known(0) is None
+    assert decoder.reads == []
+
+
+def test_known_tag_no_longer_read_falls_back_without_forgetting():
+    decoder = FakeDecoder("QIDI", tag={"vendor": "QIDI"})
+    box, fallback = make([decoder])
+    fallback.run(1, automatic=True)
+    decoder.tag = None
+
+    assert fallback.run_known(1) is None
+    # The stock-first manual run decides; it rewrites the cache if needed.
+    assert "233A111D" in fallback._cache()["tags"]
+
+
+def test_known_read_error_falls_back():
+    decoder = FakeDecoder("QIDI", tag={"vendor": "QIDI"})
+    box, fallback = make([decoder])
+    fallback.run(1, automatic=True)
+    decoder.error = RuntimeError("busy")
+
+    assert fallback.run_known(1) is None
+
+
+def test_known_path_respects_a_zero_manual_budget():
+    decoder = FakeDecoder("QIDI", tag={"vendor": "QIDI"})
+    box, fallback = make([decoder], manual_budget=0)
+    fallback.remember_tag(TagIdentity(UID, b"\x04\x00", 8), decoder, {"v": 1})
+
+    assert fallback.run_known(1) is None
+    assert decoder.reads == []

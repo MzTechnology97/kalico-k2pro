@@ -3046,7 +3046,8 @@ class Box:
                 "[BOX]: T%d is loaded toward the printhead; unload it first "
                 "(BOX_UNLOAD), then reread its tag" % slot)
         applied = self._force_rfid_results(
-            address, driver, 1 << local, "manual T%d reread" % slot)
+            address, driver, 1 << local, "manual T%d reread" % slot,
+            known_fastpath=True)
         if slot not in applied:
             raise gcmd.error(
                 "[BOX]: RFID reread for T%d did not return a valid tag record; retry the slot read" % slot)
@@ -3096,7 +3097,8 @@ class Box:
             if not selected:
                 continue
             applied = self._force_rfid_results(
-                current, driver, selected, "BOX_INFO_REFRESH")
+                current, driver, selected, "BOX_INFO_REFRESH",
+                known_fastpath=True)
             total_applied += len(applied)
             total_selected += bin(selected).count("1")
         self._info(
@@ -4729,23 +4731,52 @@ class Box:
         self._read_rfid_remaining(slot)
         return "record"
 
-    def _force_rfid_results(self, address, driver, mask, reason):
+    def _force_rfid_results(self, address, driver, mask, reason,
+                            known_fastpath=False):
         with self._rfid_read_guard(reason):
             return self._force_rfid_results_locked(
-                address, driver, mask, reason)
+                address, driver, mask, reason, known_fastpath)
 
-    def _force_rfid_results_locked(self, address, driver, mask, reason):
+    def _run_known_vendor_fastpath(self, slot):
+        """Read a tag identified before by its decoder, without a stock read."""
+        if (not self.is_physical_slot(slot)
+                or getattr(self, "observation_mode", False)):
+            return None
+        try:
+            return self.rfid_fallback.run_known(slot)
+        except Exception as exc:
+            _klog("%s known third-party RFID read failed: %s",
+                  self.slot_label(slot), exc, level=logging.warning)
+            return None
+
+    def _force_rfid_results_locked(self, address, driver, mask, reason,
+                                   known_fastpath=False):
         selected = tuple(
             local for local in range(SLOTS_PER_BOX) if mask & (1 << local))
         tools = tuple(self._global_slot(address, local) for local in selected)
         self._info(
             self.gcode, "Reading RFID for Box %d slot %s (%s)" % (
                 address, ", ".join(str(local + 1) for local in selected), reason))
+        applied = set()
+        pending = set(tools)
+        # Manual rereads only: a tag a vendor decoder identified before goes
+        # straight to that decoder; the stock read would only answer
+        # "unknown" after a full CFS cycle. Not for the deferred insertion
+        # read, where the CFS record may still describe the previous spool.
+        if known_fastpath:
+            for slot in tools:
+                if self._run_known_vendor_fastpath(slot):
+                    applied.add(slot)
+                    pending.discard(slot)
+            if not pending:
+                return applied
+            mask = 0
+            for local, slot in zip(selected, tools):
+                if slot in pending:
+                    mask |= 1 << local
         self._require_reply(
             driver.force_rfid_read(mask),
             "box %d forced RFID read" % address)
-        applied = set()
-        pending = set(tools)
         # Self-programmed tags can need a short settling interval after the
         # force-read command. Poll the record cache a few times before
         # reporting failure; this is still one physical RFID read operation.
