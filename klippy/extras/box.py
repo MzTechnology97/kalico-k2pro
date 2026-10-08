@@ -52,6 +52,7 @@ SAFE_WIDGET_COMMANDS = frozenset((
     "BOX_INFO_REFRESH",
     "_BOX_SET_RUNOUT_SWAP",
     "_BOX_SET_CLOG_DETECTION",
+    "_BOX_SET_THIRD_PARTY_LENGTH",
     "_BOX_SET_RUNOUT_ORDER",
     "BOX_ENABLE_AUTO_REFILL",
     "_BOX_SET_UNLOAD_AFTER_PRINT",
@@ -1129,6 +1130,14 @@ class Box:
         # normalized tag identity/profile metadata.
         self.auto_mifare_rfid_fallback = config.getboolean(
             "auto_mifare_rfid_fallback", True)
+        # Nominal length (m) of third-party RFID spools whose tag gives none
+        # (Bambu/QIDI read through API7): with a length Kalico tracks and
+        # saves them like Creality spools. Default until
+        # _BOX_SET_THIRD_PARTY_LENGTH (Mainsail CFS settings) saves a runtime
+        # value; a filament profile's nominal_length_m overrides both per
+        # brand/material. 0 turns it off.
+        self.third_party_rfid_length_default = config.getfloat(
+            "third_party_rfid_length_m", 330.0, minval=0.0, maxval=10000.0)
         # Vendor decoders (box_rfid_bambu, box_rfid_mifare and later extras)
         # register through box_rfid_fallback. Each try is a stock CFS reread
         # (~45 s), so a run is capped: rfid_fallback_budget rereads on a
@@ -1391,6 +1400,8 @@ class Box:
              "HelixScreen/Creality-compatible slot metadata update"),
             ("_BOX_SET_RUNOUT_SWAP", self.cmd_runout_swap,
              "Set automatic runout swapping"),
+            ("_BOX_SET_THIRD_PARTY_LENGTH", self.cmd_third_party_length,
+             "Set the nominal length of third-party RFID spools (saved)"),
             ("_BOX_SET_CLOG_DETECTION", self.cmd_clog_detection,
              "Turn clog detection on or off (saved)"),
             ("_BOX_SET_RUNOUT_ORDER", self.cmd_runout_order,
@@ -1666,6 +1677,7 @@ class Box:
             "runout_groups": self._runout_groups(physical),
             "runout_swap_enabled": self.runout_swap_enabled,
             "clog_detection_enabled": self.clog_detection,
+            "third_party_rfid_length_m": self.third_party_rfid_length_m,
             "runout_order": self.runout_order,
             "unload_after_print_enabled": self.unload_after_print_enabled,
             "rfid_insert_reading_enabled": self.rfid_insert_reading_enabled,
@@ -2089,6 +2101,17 @@ class Box:
     def clog_detection(self):
         return bool(self.store.setting(
             "clog_detection_enabled", self.clog_detection_default))
+
+    @property
+    def third_party_rfid_length_m(self):
+        value = self.store.setting("third_party_rfid_length_m", None)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return self.third_party_rfid_length_default
+        if value == 0.0 or 1.0 <= value <= 10000.0:
+            return value
+        return self.third_party_rfid_length_default
 
     @property
     def runout_order(self):
@@ -3160,6 +3183,44 @@ class Box:
         self._info(gcmd, "Clog detection %s" % (
             "enabled" if enabled else "disabled"))
 
+    def cmd_third_party_length(self, gcmd):
+        if gcmd.get_int("RESET", 0, minval=0, maxval=1):
+            self.store.set_setting("third_party_rfid_length_m", None)
+        else:
+            length = gcmd.get_float("LENGTH_M", minval=0.0, maxval=10000.0)
+            if 0.0 < length < 1.0:
+                raise gcmd.error(
+                    "[BOX]: LENGTH_M must be 0 (off) or 1..10000 metres")
+            self.store.set_setting("third_party_rfid_length_m", length)
+        length = self.third_party_rfid_length_m
+        changed = self._rescale_default_length_spools(length)
+        self._info(
+            gcmd, "Third-party RFID spool length: %s%s" % (
+                "%g m" % length if length else "off",
+                "; %d spool(s) updated" % changed if changed else ""))
+
+    def _rescale_default_length_spools(self, length_m):
+        """Give spools on the default length the new one, same percentage."""
+        if not length_m:
+            return 0
+        new_total = float(length_m) * 1000.0
+        changed = 0
+        for slot, spool in self.rfid_spools.items():
+            if spool.get("length_source") != "default":
+                continue
+            total = spool.get("total_mm")
+            remaining = spool.get("remaining_mm")
+            if total and remaining is not None:
+                spool["remaining_mm"] = new_total * float(remaining) / total
+                self.rfid_percent[slot] = (
+                    100.0 * spool["remaining_mm"] / new_total)
+            spool["total_mm"] = new_total
+            changed += 1
+        if changed:
+            self.rfid_estimate_dirty = True
+            self._persist_rfid_estimates(force=True)
+        return changed
+
     def cmd_runout_order(self, gcmd):
         raw = str(gcmd.get("ORDER", "") or "").strip()
         if not raw or raw.upper() == "AUTO":
@@ -3770,6 +3831,7 @@ class Box:
             "fingerprint": None,
             "total_mm": total_mm,
             "remaining_mm": remaining_mm,
+            "length_source": saved.get("length_source"),
         }
         self.rfid_percent[slot] = 100.0 * remaining_mm / total_mm
         return True
@@ -3895,6 +3957,8 @@ class Box:
                 "total_mm": round(float(spool["total_mm"]), 3),
                 "remaining_mm": round(float(remaining), 3),
             }
+            if spool.get("length_source"):
+                persisted[key]["length_source"] = spool["length_source"]
         # Per-insertion estimates (generic tags) end with their bay
         # occupancy: drop those no slot or live spool refers to any more.
         live = set(self._rfid_slot_keys().values())
@@ -4362,6 +4426,44 @@ class Box:
                 return dict(filament)
         return None
 
+    def _third_party_length_m(self, data, filament):
+        """(nominal spool length in metres or 0, source) of a third-party tag.
+
+        The tag's own length when the decoder has it, else the filament
+        profile's nominal_length_m (set per brand/material), else the
+        third-party default (Mainsail CFS settings, else box.cfg). 0 leaves
+        the spool on the CFS percentage only: no tracking, nothing saved.
+        """
+        for source, value in (("tag", data.get("filament_length_m")),
+                              ("profile", filament.get("nominal_length_m"))):
+            length = BoxStore._clean_nominal_length(value)
+            if length:
+                return length, source
+        length = self.third_party_rfid_length_m
+        return (length, "default") if length else (0, None)
+
+    def _start_third_party_estimate(self, slot, length_source=None):
+        """Seed a third-party spool's estimate like a Creality one.
+
+        A saved estimate for this tag (by UID) is kept. The CFS percentage
+        is read now, not at the next 30 s refresh, and caps the estimate. A
+        spool with neither starts full, as a new generic Creality spool does.
+        Without a length the slot shows the CFS percentage only.
+        """
+        spool = self.rfid_spools.get(slot)
+        if not spool or not spool.get("total_mm"):
+            self.rfid_percent.pop(slot, None)
+            self._read_rfid_remaining(slot)
+            return
+        # "default" spools follow later changes of the third-party length.
+        spool["length_source"] = length_source
+        self._read_rfid_remaining(slot)
+        if spool.get("remaining_mm") is None:
+            spool["remaining_mm"] = float(spool["total_mm"])
+            self.rfid_percent[slot] = 100.0
+            self.rfid_estimate_dirty = True
+            self._persist_rfid_estimates(force=True)
+
     def _apply_bambu_rfid_tag(self, slot, tagdata, note=None):
         if tagdata is None:
             return False
@@ -4456,6 +4558,7 @@ class Box:
 
         # Feed the existing spool-usage estimator with a stable Bambu identity.
         uid = str(data.get("uid") or "").strip().upper()
+        length_m, length_source = self._third_party_length_m(data, filament)
         fields = {
             "supplier": "BAMBU",
             "mat_id": str(
@@ -4464,18 +4567,13 @@ class Box:
                 or material).strip().upper(),
             "number": uid,
             "color": color,
-            "len": str(
-                data.get("filament_length_m")
-                or filament.get("nominal_length_m")
-                or 0),
+            "len": str(length_m),
             "reserve": "",
         }
         self._remember_rfid_spool(slot, fields)
         self.rfid_live_slots.add(slot)
-        if not (data.get("filament_length_m")
-                or filament.get("nominal_length_m")):
-            self.rfid_percent.pop(slot, None)
         self._clear_rfid_watch(slot)
+        self._start_third_party_estimate(slot, length_source)
         # note: how the tag was identified when the stock read did not run
         # first (RFID cache, known-tag reread); None after a stock "unknown".
         self._info(
@@ -4610,23 +4708,19 @@ class Box:
         self.unknown_rfid.pop(self._runtime_slot_key(slot), None)
 
         uid = str(data.get("uid") or "").strip().upper()
+        length_m, length_source = self._third_party_length_m(data, filament)
         fields = {
             "supplier": vendor,
             "mat_id": detail.upper() or material,
             "number": uid,
             "color": color,
-            "len": str(
-                data.get("filament_length_m")
-                or filament.get("nominal_length_m")
-                or 0),
+            "len": str(length_m),
             "reserve": "",
         }
         self._remember_rfid_spool(slot, fields)
         self.rfid_live_slots.add(slot)
-        if not (data.get("filament_length_m")
-                or filament.get("nominal_length_m")):
-            self.rfid_percent.pop(slot, None)
         self._clear_rfid_watch(slot)
+        self._start_third_party_estimate(slot, length_source)
         self._info(
             self.gcode,
             "%s: %s %s / %s %s"

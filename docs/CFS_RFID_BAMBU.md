@@ -150,13 +150,20 @@ The stock CFS `CMD_RFID_REMAINING (0x03)` can return `0xFF` for Bambu and other 
 
 The estimator uses a stable RFID spool identity (UID where available) and a nominal spool filament length. During printing it prefers the **CFS path encoder** exposed by the normal box state because that measures physical filament draw from the spool/buffer path. `print_stats.filament_used` remains a fallback when the CFS encoder is unavailable.
 
-A library profile can optionally define:
+API7 does not capture the length block of Bambu tags, so the nominal length comes, in this order, from:
 
-```json
-"nominal_length_m": 250.0
-```
+1. the tag itself, when a decoder reads it;
+2. the filament profile, per brand or material (the **Nominal length** field of the Mainsail filament editor):
 
-I do not guess this value from spool mass because filament density and diameter tolerances vary by material. When the nominal length is not present in the profile it can be set explicitly for the current spool:
+   ```json
+   "nominal_length_m": 400.0
+   ```
+
+3. the general third-party length, 330 m by default: `third_party_rfid_length_m` in `[box]`, changed at runtime from the Mainsail CFS settings or with `_BOX_SET_THIRD_PARTY_LENGTH LENGTH_M=<metres>` (`RESET=1` goes back to `box.cfg`, `0` turns it off). Spools that use it follow a change at once, at the same percentage.
+
+With a length a third-party spool is tracked like a Creality one: the estimate is seeded from the CFS percentage (read right after the tag), or 100 % when the CFS has none and nothing was saved. It is decreased during printing, capped by the CFS percentage every 30 s, and saved by tag UID, so it follows the spool across slots and reinsertions. Without a length the slot shows the CFS percentage only.
+
+I do not guess the length from spool mass because filament density and diameter tolerances vary by material; 330 m is roughly 1 kg of 1.75 mm PLA or PETG, ABS/ASA spools are longer. When neither fits, it can be set explicitly for the current spool:
 
 ```text
 _BOX_RFID_SPOOL_NEW SLOT=<global-slot> TOTAL_M=<metres> REMAINING=<0..100>
