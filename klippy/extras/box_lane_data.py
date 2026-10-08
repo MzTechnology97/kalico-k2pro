@@ -88,7 +88,13 @@ class MoonrakerDatabase:
         self._request("POST", {}, {"namespace": NAMESPACE, "key": key, "value": value})
 
     def delete(self, key):
-        self._request("DELETE", {"namespace": NAMESPACE, "key": key})
+        try:
+            self._request("DELETE", {"namespace": NAMESPACE, "key": key})
+        except urllib.error.HTTPError as exc:
+            # Already gone: another client (HelixScreen keeps its slot
+            # overrides in lane_data too) removed it. Nothing to undo.
+            if exc.code != 404:
+                raise
 
 
 class LaneDataPublisher:

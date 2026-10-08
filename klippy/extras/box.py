@@ -115,6 +115,9 @@ _KEEP = object()
 POLL_START_DELAY = 5.0
 ACTIVE_POLL = 1.0
 IDLE_POLL = 5.0
+# K2-OpenHost: after a spool insertion the bay is polled at ACTIVE_POLL for
+# this long, so the tag result reaches the UIs as soon as the CFS has it.
+INSERT_FAST_POLL = 120.0
 TOPOLOGY_POLL = 15.0
 # K2-OpenHost: when no CFS answered the startup enumeration (RS-485 down
 # behind the T113 bridge at boot), discovery is retried while idle, backing
@@ -1277,6 +1280,11 @@ class Box:
         # current insertion. A failed fallback is a full stock CFS reread, so
         # the pending-tag poll must not repeat it on every snapshot.
         self.rfid_fallback_tried = set()
+        # Bays whose RFID profile was dropped at a spool insertion, so the
+        # next completed read applies even an unchanged record (same spool
+        # put back), and the time of the last insertion per bay.
+        self.rfid_cleared_on_insert = set()
+        self.rfid_insert_time = {}
         # Label of the forced CFS RFID read in progress, or None. Manual
         # rereads, the automatic fallback and the vendor helpers' commands
         # share it so two stock reads never overlap.
@@ -3539,6 +3547,8 @@ class Box:
         self.rfid_snapshot.pop(slot, None)
         self.rfid_seen_invalid.discard(slot)
         self.rfid_fallback_tried.discard(slot)
+        self.rfid_cleared_on_insert.discard(slot)
+        self.rfid_insert_time.pop(slot, None)
 
     def _snapshot_rfid_cache(self, slot):
         try:
@@ -3563,7 +3573,18 @@ class Box:
         self.rfid_fallback_tried.discard(slot)
         if self.rfid_insert_reading_enabled:
             self.rfid_pending.add(slot)
+            self.rfid_insert_time[slot] = self.reactor.monotonic()
             self._snapshot_rfid_cache(slot)
+            # A new spool is in the bay. Without this, a swap faster than the
+            # 5 s idle poll never shows the bay empty and the UIs (Mainsail,
+            # HelixScreen) keep the previous spool for the whole CFS read
+            # (~50 s, plus a vendor reread for a new third-party tag). Only
+            # RFID profiles: the read puts them back; a manual profile has
+            # nothing to restore it. The print/runout source is kept.
+            if (self.profile(slot).get("source") == "rfid"
+                    and not self._defer_active_slot_clear(slot)):
+                self.clear_profile(slot)
+                self.rfid_cleared_on_insert.add(slot)
 
     def _defer_active_slot_clear(self, slot):
         """Return True while ``slot`` is the active print or runout source.
@@ -3655,7 +3676,7 @@ class Box:
             elif event == 2:
                 self._rfid_removed(slot)
             elif event == 3 and self.rfid_insert_reading_enabled:
-                self._read_rfid_result(slot)
+                self._read_rfid_result(slot, read_complete=True)
 
     def _pending_rfid_slots(self, address):
         first = (address - 1) * SLOTS_PER_BOX
@@ -4844,7 +4865,7 @@ class Box:
         finally:
             self.release_rfid_read()
 
-    def _read_rfid_result(self, slot):
+    def _read_rfid_result(self, slot, read_complete=False):
         sample = self._query_rfid_sample(slot)
         if sample is None:
             return "error"
@@ -4864,7 +4885,11 @@ class Box:
             self.rfid_live_slots.discard(slot)
             self.rfid_percent.pop(slot, None)
             return record.lower() or "unknown"
-        if not self._rfid_should_apply(slot, sample):
+        # An unchanged record is stale, unless the CFS has just finished
+        # reading a bay whose profile was dropped at insertion: the same
+        # spool was put back and must get its profile again.
+        if not self._rfid_should_apply(slot, sample) and not (
+                read_complete and slot in self.rfid_cleared_on_insert):
             return "stale"
         self._clear_rfid_watch(slot)
         if not self._apply_rfid_record(slot, record, fields):
@@ -5799,7 +5824,18 @@ class Box:
         except Exception:
             _klog("status poll failed", level=logging.exception)
             return eventtime + ERROR_BACKOFF
-        return eventtime + (ACTIVE_POLL if self.snapshot.tracking else IDLE_POLL)
+        return eventtime + (
+            ACTIVE_POLL if (self.snapshot.tracking
+                            or self._insertion_being_read(eventtime))
+            else IDLE_POLL)
+
+    def _insertion_being_read(self, eventtime):
+        """A bay inserted less than INSERT_FAST_POLL ago still awaits its tag."""
+        inserted = getattr(self, "rfid_insert_time", {})
+        return any(
+            slot in self.rfid_pending
+            and eventtime - inserted[slot] < INSERT_FAST_POLL
+            for slot in inserted)
 
     def _observe_fault(self, address, reply):
         status = reply.status
