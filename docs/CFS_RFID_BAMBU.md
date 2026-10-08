@@ -98,6 +98,25 @@ cache_size=16
 
 On my validated K2 Pro the runtime backend is legacy with blocks `4,5,6`.
 
+## Hardware-validated Bambu spool matrix
+
+I extracted these results from my K2 Pro `klippy.log` history. Every row below is a genuine Bambu Lab tag that completed the API7 stock-task capture/fallback path on hardware.
+
+| Material detail | UID | Normalized material | Tag colour |
+| --- | --- | --- | --- |
+| PLA Matte | `233A111D` | PLA | `#FFFFFF` |
+| PETG HF | `666F9EC6` | PETG | `#BC0900` |
+| PETG Basic | `AE2CE2A0` | PETG | `#FCE300` |
+| ABS | `54CFACD5` | ABS | `#87909A` |
+| ASA | `5A8AD5A6` | ASA | `#00A6A0` |
+| ASA-CF | `8B81F7FC` | ASA-CF | `#000000` |
+| PAHT-CF | `8AD2B5B4` | PAHT-CF | `#000000` |
+| ABS-GF | `8A8CADFD` | ABS-GF | `#000000` |
+| PETG-CF | `E7DC557A` | PETG-CF | `#000000` |
+| PC | `8BD9CFFC` | PC | `#000000` |
+
+These are hardware-validation results, not inferred library entries. The more detailed raw block captures are recorded in `k2-cfs-rfid-tools/docs/v3.3-stock-capture.md`.
+
 ## Associating a tag with an existing library profile
 
 I also extended the existing RFID mapping mechanism so a decoded tag can be bound directly to an existing filament-library profile:
