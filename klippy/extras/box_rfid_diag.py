@@ -29,6 +29,7 @@ SUB_INTERNAL_RECORD = 0x06
 SUB_ARM_STOCK_TASK_KEYS3 = 0x07
 SUB_CLEAR_STOCK_TASK_KEYS = 0x08
 SUB_RUNTIME_INFO = 0x09
+SUB_REMAIN_STATE = 0x0A
 
 STATUS_OK = 0
 STATUS_BAD_REQUEST = 1
@@ -59,6 +60,8 @@ CAP_POLL = 1 << 1
 CAP_READ = 1 << 2
 CAP_AUTH_A = 1 << 3
 CAP_CL2 = 1 << 4
+# API7 v3.4 reuses bit4 for read-only stock remaining-state telemetry.
+CAP_REMAIN_STATE = 1 << 4
 CAP_STOCK_STATE = 1 << 5
 CAP_STOCK_GUARD = 1 << 6
 # API7 reuses bit6 to advertise passive stock-task capture telemetry.
@@ -125,6 +128,28 @@ class RuntimeInfoReply(DiagReply):
     @property
     def legacy_blocks(self):
         return (self.legacy_block0, self.legacy_block1, self.legacy_block2)
+
+
+@dataclass(frozen=True)
+class RemainingStateReply(DiagReply):
+    stock_state: int
+    stock_remaining: int
+    internal_type: int
+    runtime_type: int
+    initial_percent: int
+    flag21: int
+    mode22: int
+    valid23: int
+    secondary_percent: int
+    stock_record_first: int
+    runtime_record_first: int
+    used_mm: int
+    total_mm: int
+    alternate_total: int
+    usage_mm: int
+    status_word: int
+    runtime_length_ascii: bytes
+    stock_length_ascii: bytes
 
 
 @dataclass(frozen=True)
@@ -208,7 +233,8 @@ def request_payload(subcommand, logical_slot=None, index=None, key_a=None):
     if logical_slot is None:
         raise ValueError("slot is required")
     reader, slot = _reader_slot(logical_slot)
-    if subcommand in (SUB_CACHE, SUB_POLL, SUB_INTERNAL_RECORD):
+    if subcommand in (
+            SUB_CACHE, SUB_POLL, SUB_INTERNAL_RECORD, SUB_REMAIN_STATE):
         return bytes((subcommand, reader, slot))
     if subcommand == SUB_READ:
         return bytes((subcommand, reader, slot, _byte(index, "read index")))
@@ -281,6 +307,22 @@ def decode_runtime_info(frame, address):
             "RFID RUNTIME_INFO returned %s" % STATUS_NAMES[reply.status])
     p = reply.payload
     return RuntimeInfoReply(reply.status, p, reply.raw, *p)
+
+
+def decode_remaining_state(frame, address):
+    reply = _diag_reply(frame, address)
+    if not _require_ok_payload(reply, 40, "RFID REMAIN_STATE"):
+        raise RfidDiagError(
+            "RFID REMAIN_STATE returned %s" % STATUS_NAMES[reply.status])
+    p = reply.payload
+    u32 = lambda off: int.from_bytes(p[off:off + 4], "little")
+    return RemainingStateReply(
+        reply.status, p, reply.raw,
+        p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8],
+        p[9], p[10],
+        u32(12), u32(16), u32(20), u32(24), u32(28),
+        bytes(p[32:36]), bytes(p[36:40]),
+    )
 
 
 def _uid_from_cache(cl1, cl2):
@@ -395,6 +437,12 @@ class RfidDiagDriver:
         frame = self._exchange(SUB_RUNTIME_INFO, timeout=timeout)
         return None if not frame else decode_runtime_info(frame, self.address)
 
+    def remaining_state(self, slot, timeout=1.0):
+        frame = self._exchange(
+            SUB_REMAIN_STATE, logical_slot=slot, timeout=timeout)
+        return None if not frame else decode_remaining_state(
+            frame, self.address)
+
     def arm_stock_task_key(self, slot, key_a, timeout=1.0):
         reader, local = _reader_slot(slot)
         payload = bytes((SUB_ARM_STOCK_TASK_KEYS3, reader, local)) + _key_a(key_a)
@@ -439,6 +487,7 @@ class BoxRfidDiag:
             ("BOX_RFID_DIAG_READ", self.cmd_read),
             ("BOX_RFID_DIAG_READ_AUTH_A", self.cmd_read_auth_a),
             ("BOX_RFID_DIAG_RUNTIME", self.cmd_runtime),
+            ("BOX_RFID_DIAG_REMAIN_STATE", self.cmd_remaining_state),
             ("BOX_RFID_DIAG_ARM_KEY", self.cmd_arm_key),
             ("BOX_RFID_DIAG_CLEAR_KEY", self.cmd_clear_key),
             ("BOX_RFID_DIAG_ARM_KEYS", self.cmd_arm_keys),
@@ -748,6 +797,50 @@ class BoxRfidDiag:
             "CFS RFID runtime secure_backend=%s hw_flag=%d legacy_blocks=%d,%d,%d raw=%s"
             % (result.secure_backend, result.hardware_flag,
                result.legacy_block0, result.legacy_block1, result.legacy_block2,
+               result.payload.hex().upper()))
+
+    def cmd_remaining_state(self, gcmd):
+        address, slot = self._address_param(gcmd), self._slot_param(gcmd)
+        try:
+            with self._transport().request_session() as transport:
+                driver = RfidDiagDriver(transport, address)
+                info = self._require_response(
+                    gcmd, driver.info(), "CFS RFID INFO")
+                self.last_info = info
+                if (info.api_version != API_STOCK_CAPTURE
+                        or not (info.capabilities & CAP_REMAIN_STATE)):
+                    raise gcmd.error(
+                        "CFS RFID REMAIN_STATE requires API7 with "
+                        "REMAIN_STATE capability")
+                result = self._require_response(
+                    gcmd, driver.remaining_state(slot),
+                    "CFS RFID REMAIN_STATE")
+            self._remember("remain_state", result)
+        except Exception as exc:
+            self._remember("remain_state", error=exc)
+            raise
+
+        def ascii4(value):
+            try:
+                return value.decode("ascii")
+            except UnicodeDecodeError:
+                return value.hex().upper()
+
+        gcmd.respond_info(
+            "CFS RFID remain_state slot=%d state=%d remaining=%d "
+            "internal_type=%d runtime_type=%d initial=%d "
+            "flags=%d,%d,%d secondary=%d stock0=0x%02X runtime0=0x%02X "
+            "used_mm=%d total_mm=%d alternate_total=%d usage_mm=%d "
+            "status=0x%08X runtime_len=%r stock_len=%r raw=%s"
+            % (slot, result.stock_state, result.stock_remaining,
+               result.internal_type, result.runtime_type,
+               result.initial_percent, result.flag21, result.mode22,
+               result.valid23, result.secondary_percent,
+               result.stock_record_first, result.runtime_record_first,
+               result.used_mm, result.total_mm, result.alternate_total,
+               result.usage_mm, result.status_word,
+               ascii4(result.runtime_length_ascii),
+               ascii4(result.stock_length_ascii),
                result.payload.hex().upper()))
 
     def cmd_arm_key(self, gcmd):
