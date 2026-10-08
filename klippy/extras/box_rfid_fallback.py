@@ -354,6 +354,11 @@ class RfidFallback:
             self.remember_unknown(identity, signature)
             _klog("%s UID=%s not recognised by %s after %d reread(s)",
                   label, uid, signature, used_total)
+            notify = getattr(self.box, "notify", None)
+            if callable(notify):
+                notify("rfid_unknown", "CFS unknown RFID tag",
+                       "%s: tag %s not recognised; assign the filament "
+                       "in the slot editor" % (label, uid))
         return None
 
     def known_decoder(self, slot, identity, decoders):
