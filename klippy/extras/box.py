@@ -4195,14 +4195,15 @@ class Box:
         data = tagdata.as_dict() if hasattr(tagdata, "as_dict") else dict(tagdata)
         material = str(data.get("material") or "").strip().upper()
         blocks = data.get("blocks") if isinstance(data.get("blocks"), dict) else {}
-        _klog(
-            "Bambu RFID decoded slot=%s uid=%s atqa=%s sak=%02X detail=%r "
-            "material=%s expected_profile=%r color=%s rgba=%s block4=%s block5=%s",
-            self.slot_label(self._runtime_slot(slot)),
-            data.get("uid", ""), data.get("atqa", ""), int(data.get("sak") or 0),
-            data.get("detailed_filament_type", ""), material,
-            data.get("profile_name", ""), data.get("color", ""),
-            data.get("color_rgba", ""), blocks.get(4, ""), blocks.get(5, ""))
+        self._info(
+            self.gcode,
+            "Bambu RFID decoded %s: UID=%s ATQA=%s SAK=%02X detail=%r "
+            "material=%s expected_profile=%r color=%s RGBA=%s block4=%s block5=%s"
+            % (self.slot_label(self._runtime_slot(slot)),
+               data.get("uid", ""), data.get("atqa", ""), int(data.get("sak") or 0),
+               data.get("detailed_filament_type", ""), material,
+               data.get("profile_name", ""), data.get("color", ""),
+               data.get("color_rgba", ""), blocks.get(4, ""), blocks.get(5, "")))
         color = self._normal_color(data.get("color")) or ""
         name = str(data.get("profile_name") or "").strip()
         brand = str(data.get("brand") or "Bambulab").strip() or "Bambulab"
@@ -4211,11 +4212,12 @@ class Box:
 
         filament = self._bambu_library_match(data)
         if filament is not None:
-            _klog(
-                "Bambu RFID library match slot=%s filament_id=%s brand=%r name=%r",
-                self.slot_label(self._runtime_slot(slot)),
-                filament.get("id", ""), filament.get("brand", ""),
-                filament.get("name", ""))
+            self._info(
+                self.gcode,
+                "Bambu RFID library match %s: FILAMENT_ID=%s brand=%r name=%r"
+                % (self.slot_label(self._runtime_slot(slot)),
+                   filament.get("id", ""), filament.get("brand", ""),
+                   filament.get("name", "")))
         if filament is None:
             # Persist an identity profile so future spools of the same Bambu
             # material/variant can reuse it. Do not invent PA/max-flow. The tag
@@ -4238,16 +4240,17 @@ class Box:
                 "spoolman_id": None,
                 "source": "rfid",
             }
-            _klog(
-                "Bambu RFID no library match slot=%s code=%s; creating fallback "
+            self._info(
+                self.gcode,
+                "Bambu RFID no library match %s: CODE=%s; creating fallback "
                 "profile %s. To bind it to an existing library profile use "
-                "_BOX_RFID_ASSOCIATE SLOT=%d FILAMENT_ID=<id>",
-                self.slot_label(self._runtime_slot(slot)),
-                "BAMBU:%s" % str(
-                    data.get("material_id")
-                    or data.get("detailed_filament_type")
-                    or material).strip().upper(),
-                filament_id, slot)
+                "_BOX_RFID_ASSOCIATE SLOT=%d FILAMENT_ID=<id>"
+                % (self.slot_label(self._runtime_slot(slot)),
+                   "BAMBU:%s" % str(
+                       data.get("material_id")
+                       or data.get("detailed_filament_type")
+                       or material).strip().upper(),
+                   filament_id, slot))
             try:
                 filament = self.store.set_filament(filament_id, value)
             except Exception as exc:
