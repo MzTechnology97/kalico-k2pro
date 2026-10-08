@@ -17,6 +17,7 @@ import hmac
 import struct
 
 from extras import box_rfid_diag as diag
+from extras import box_rfid_fallback
 from extras import box_protocol
 from extras.box_rfid_diag import RfidDiagDriver, TagInfoReply, MemoryReply
 
@@ -37,6 +38,10 @@ class BambuRfidError(RuntimeError):
 
 class BambuRfidUnsupported(BambuRfidError):
     pass
+
+
+class BambuTagNotRecognised(BambuRfidError):
+    """The stock read ran, but the tag is not a Bambu tag."""
 
 
 def _decoded_tag_message(tag, source):
@@ -284,7 +289,7 @@ def parse_bambu_stock_capture(slot, target_reply, cap1_reply, cap2_reply):
     hitmask, okmask, failmask = target[9], target[10], target[11]
     if (hitmask, okmask, failmask) != (
             BAMBU_STOCK_MASK, BAMBU_STOCK_MASK, 0):
-        raise BambuRfidError(
+        raise BambuTagNotRecognised(
             "stock capture incomplete: hit=0x%02X ok=0x%02X fail=0x%02X"
             % (hitmask, okmask, failmask))
     if cap1[4:8] != BAMBU_CAPTURE1_MAGIC:
@@ -305,7 +310,7 @@ def parse_bambu_stock_capture(slot, target_reply, cap1_reply, cap2_reply):
     detail = _ascii(block4)
     material = normalize_material("", detail)
     if not detail or not material:
-        raise BambuRfidError("captured Bambu material detail is empty")
+        raise BambuTagNotRecognised("captured Bambu material detail is empty")
 
     return BambuStockTagData(
         slot=slot, uid=uid, atqa=atqa, sak=sak,
@@ -329,7 +334,6 @@ class BoxRfidBambu:
         self.last_tag = None
         self.last_error = None
         self.last_unsupported = None
-        self.auto_gate = diag.AutoFallbackGate("Bambu RFID")
 
         self.printer.register_event_handler("serial_485:ready", self._serial_ready)
         self.gcode.register_command(
@@ -531,29 +535,36 @@ class BoxRfidBambu:
             self.gcode.respond_info(_decoded_tag_message(tagdata, "api3-direct"))
             return tagdata
 
-    def try_auto_read(self, global_slot):
-        """Automatic fallback is intentionally API7 stock-task capture only."""
-        if self.auto_gate.disabled:
-            return None
+    # --- Box RFID fallback decoder (see box_rfid_fallback.py) -------------
+    # Box checks the API7 firmware once and passes the tag identity read from
+    # the stock record. A Bambu try is one stock reread with the derived keys.
+
+    RFID_DECODER_NAME = "BAMBU"
+    RFID_DECODER_PRIORITY = 10
+    RFID_DECODER_KIND = "bambu"
+
+    def rfid_decoder_version(self):
+        # Bump when a change can decode tags an older version could not.
+        return "1"
+
+    def rfid_decoder_candidate(self, identity, automatic):
+        return identity.mifare_classic_1k
+
+    def rfid_decoder_cost(self, identity, automatic):
+        return 1
+
+    def rfid_decoder_read(self, slot, identity, max_reads, automatic):
+        if max_reads < 1:
+            return None, 0
         try:
-            address, _local = self._slot_address(global_slot)
-            with self._transport().request_session() as transport:
-                info = RfidDiagDriver(transport, address).info(timeout=1.0)
-            if info is None:
-                self.auto_gate.info_timeout()
-                raise BambuRfidError("CFS RFID INFO timed out")
-            self.auto_gate.info_ok()
-            if info.api_version != diag.API_STOCK_CAPTURE:
-                raise BambuRfidUnsupported(
-                    "automatic Bambu fallback requires API7 stock capture")
-            return self._read_tag_stock_capture(global_slot, address=address)
-        except BambuRfidUnsupported as exc:
-            self.last_unsupported = str(exc)
-            self.auto_gate.disable(exc)
-            return None
-        except Exception as exc:
+            tag = self._read_tag_stock_capture(slot)
+        except BambuTagNotRecognised as exc:
             self.last_error = str(exc)
-            return None
+            return None, 1
+        except BambuRfidError as exc:
+            self.last_error = str(exc)
+            raise
+        return tag, 1
 
     def cmd_derive(self, gcmd):
         slot, address, _local = self._manual_slot(gcmd)
@@ -627,6 +638,7 @@ class BoxRfidBambu:
             raise gcmd.error(str(exc))
         except BambuRfidError as exc:
             raise gcmd.error(str(exc))
+        box_rfid_fallback.remember_manual_read(self.printer, self, tag)
         data = tag.as_dict()
         detail = [
             "Bambu RFID slot=%d" % slot,
@@ -660,7 +672,6 @@ class BoxRfidBambu:
             "transport_ready": self.serial is not None,
             "last_error": self.last_error,
             "last_unsupported": self.last_unsupported,
-            "auto_disabled": self.auto_gate.disabled,
             "last_candidate": None if c is None else {
                 "slot": c.slot, "uid": c.uid.hex().upper(),
                 "atqa": c.atqa.hex().upper(), "sak": c.sak,
