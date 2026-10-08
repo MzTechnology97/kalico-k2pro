@@ -52,6 +52,8 @@ def lanes_from_slots(slots):
             "name": str(slot.get("name") or ""),
             "vendor": str(slot.get("brand") or ""),
             "filament_id": str(slot.get("filament_id") or ""),
+            # OrcaSlicer preset ID (box_orca), for a sync that matches by it.
+            "orca_filament_id": str(slot.get("orca_filament_id") or ""),
             "scan_time": "",
         }
         lanes[lane_key(index)] = entry
