@@ -23,6 +23,7 @@ from extras.box_gcode import read_metadata
 from extras.box_catalog import resolve_material
 from extras.box_k2rfid_catalog import K2RfidMaterialCatalog
 from extras.box_lane_data import LaneDataPublisher
+from extras.box_orca import OrcaPresetTable, clean_orca_id
 # Material tables and the estimate constants are re-exported for the
 # modules and tests that import them from here.
 from extras.box_materials import (  # noqa: F401
@@ -55,6 +56,7 @@ SAFE_WIDGET_COMMANDS = frozenset((
     "_BOX_SLOT_PA_SET",
     "_BOX_FILAMENT_SET",
     "_BOX_FILAMENT_DELETE",
+    "_BOX_FILAMENT_ORCA_ID",
     "_BOX_SLOT_ASSIGN",
     "_BOX_RFID_READ_SLOT",
     "BOX_RFID_SCAN",
@@ -352,10 +354,11 @@ class BoxStore:
         self.path = path
         self.library_path = library_path or None
         self.system = {}
-        self.library_meta = {"imports": {}}
+        self.library_meta = {"imports": {}, "orca_filament_ids": {}}
         self.library_error = ""
         self._library_mtime = None
         self._merged = None
+        self.orca = OrcaPresetTable()
         self.data = self._load()
         if self.library_path:
             self._open_library()
@@ -370,6 +373,7 @@ class BoxStore:
                 "rfid_mappings": {},
                 "runtime": {},
                 "addresses": {},
+                "orca_filament_ids": {},
             }
         try:
             with open(self.path, "r") as stream:
@@ -391,8 +395,28 @@ class BoxStore:
         sections["rfid_mappings"] = self._rfid_mappings(
             sections["rfid_mappings"])
         sections["addresses"] = self._addresses(sections["addresses"])
+        sections["orca_filament_ids"] = self._orca_ids(
+            data.get("orca_filament_ids"))
         sections["schema_version"] = FILAMENT_INVENTORY_VERSION
         return sections
+
+    @staticmethod
+    def _orca_ids(values):
+        """Valid {filament ID: OrcaSlicer filament_id} overrides."""
+        result = {}
+        if not isinstance(values, dict):
+            return result
+        for key, value in values.items():
+            key = str(key or "").strip().upper()
+            try:
+                value = clean_orca_id(value)
+            except ValueError:
+                logging.warning("box: ignoring OrcaSlicer filament_id %r of %s",
+                                value, key)
+                continue
+            if key and value:
+                result[key] = value
+        return result
 
     @staticmethod
     def _materials(values):
@@ -638,7 +662,7 @@ class BoxStore:
         except OSError as exc:
             raise BoxError("Unable to read %s: %s" % (self.library_path, exc))
         if not text.strip():
-            return {}, {"imports": {}}
+            return {}, {"imports": {}, "orca_filament_ids": {}}
         try:
             payload = json.loads(text)
         except ValueError as exc:
@@ -659,7 +683,9 @@ class BoxStore:
                 values[str(item["id"]).strip().upper()] = dict(
                     item, system=False)
         imports = payload.get("imports")
-        meta = {"imports": dict(imports) if isinstance(imports, dict) else {}}
+        meta = {"imports": dict(imports) if isinstance(imports, dict) else {},
+                "orca_filament_ids": self._orca_ids(
+                    payload.get("orca_filament_ids"))}
         return self._filaments(values, strict=False), meta
 
     def _open_library(self):
@@ -668,7 +694,7 @@ class BoxStore:
             key: value for key, value in self.data["filaments"].items()
             if not value.get("system")}
         exists = os.path.exists(self.library_path)
-        entries, meta = {}, {"imports": {}}
+        entries, meta = {}, {"imports": {}, "orca_filament_ids": {}}
         if exists:
             try:
                 entries, meta = self._read_library()
@@ -727,6 +753,8 @@ class BoxStore:
                 "Edit from Mainsail or replace this file, then run "
                 "_BOX_FILAMENT_RELOAD."),
             "imports": dict(self.library_meta.get("imports") or {}),
+            "orca_filament_ids": dict(sorted(
+                (self.library_meta.get("orca_filament_ids") or {}).items())),
             "materials": materials,
         })
         self._library_mtime = self._library_stat()
@@ -800,8 +828,62 @@ class BoxStore:
                     # The editor refuses system IDs; keep the catalog entry.
                     continue
                 merged[key] = value
-            self._merged = merged
+            # Decorated copies: the OrcaSlicer fields are never saved into
+            # the profiles themselves.
+            self._merged = {
+                key: dict(value, **self._orca_fields(key, value))
+                for key, value in merged.items()}
         return self._merged
+
+    # --- OrcaSlicer preset IDs (box_orca) --------------------------------------
+    def set_orca_table(self, table):
+        self.orca = table
+        self._merged = None
+
+    @property
+    def orca_overrides(self):
+        if self.library_path:
+            return self.library_meta.setdefault("orca_filament_ids", {})
+        return self.data.setdefault("orca_filament_ids", {})
+
+    def _orca_fields(self, key, value):
+        default = self.orca.default_for(value)
+        override = self.orca_overrides.get(key, "")
+        effective = override or default
+        return {
+            "orca_filament_id": effective,
+            "orca_filament_id_default": default,
+            "orca_filament_id_custom": bool(override),
+            "orca_preset": self.orca.preset_name(effective),
+        }
+
+    def orca_filament_id(self, filament_id, material=""):
+        """OrcaSlicer filament_id for a slot: its profile's, else the
+        generic preset of its material."""
+        key = str(filament_id or "").strip().upper()
+        value = self._merged_view().get(key) if key else None
+        if value is not None and value.get("orca_filament_id"):
+            return value["orca_filament_id"]
+        return self.orca.material_default(material)
+
+    def set_orca_override(self, filament_id, orca_id):
+        """Set (or with "" clear) a filament's OrcaSlicer filament_id."""
+        key = str(filament_id or "").strip().upper()
+        if key not in self._merged_view():
+            raise BoxError("Unknown filament %s" % key)
+        orca_id = clean_orca_id(orca_id)
+        self.refresh_library()
+        overrides = self.orca_overrides
+        if orca_id and orca_id != self.orca.default_for(self.filament(key)):
+            overrides[key] = orca_id
+        else:
+            overrides.pop(key, None)
+        self._merged = None
+        if self.library_path:
+            self.save_library()
+        else:
+            self.save()
+        return dict(self._merged_view()[key])
 
     def _ordered_filaments(self):
         """Custom profiles first, so a user profile wins an RFID/identity match."""
@@ -897,6 +979,7 @@ class BoxStore:
         if current is None or current.get("system"):
             return False
         self.data["filaments"].pop(key, None)
+        self.orca_overrides.pop(key, None)
         self._merged = None
         slots_changed = self._detach_slots(key)
         self.save_library()
@@ -1116,6 +1199,11 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
                 default_system_catalog))
         self.material_database_path = os.path.expanduser(
             config.get("material_database_path", ""))
+        # OrcaSlicer filament_id per filament (box_orca): defaults generated
+        # from OrcaSlicer's K2 Pro presets, overrides in the library file.
+        self.store.set_orca_table(OrcaPresetTable(os.path.expanduser(
+            config.get("orca_filament_ids_path", os.path.join(
+                repo_root, "config", "k2", "orca_k2pro_filament_ids.json")))))
         self.auto_register_rfid_filaments = config.getboolean(
             "auto_register_rfid_filaments", True)
         # Keep Creality RFID as the primary path. Only after the stock CFS
@@ -1363,6 +1451,8 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
              "Save a pressure advance in the slot's filament profile"),
             ("_BOX_FILAMENT_SET", self.cmd_filament_set, "Save a reusable filament profile"),
             ("_BOX_FILAMENT_DELETE", self.cmd_filament_delete, "Delete a reusable filament profile"),
+            ("_BOX_FILAMENT_ORCA_ID", self.cmd_filament_orca_id,
+             "Show or set the OrcaSlicer preset ID of a filament profile"),
             ("_BOX_FILAMENT_RELOAD", self.cmd_filament_reload,
              "Reload the filament library file and the K2-RFID import"),
             ("_BOX_SLOT_ASSIGN", self.cmd_slot_assign, "Assign a saved filament profile to a slot"),
@@ -1655,6 +1745,8 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             "runout_swap_enabled": self.runout_swap_enabled,
             "clog_detection_enabled": self.clog_detection,
             "spool_length_defaults": self.spool_length_defaults(),
+            "orca_presets": self.store.orca.presets_status,
+            "orca_presets_source": self.store.orca.source,
             "runout_order": self.runout_order,
             "unload_after_print_enabled": self.unload_after_print_enabled,
             "rfid_insert_reading_enabled": self.rfid_insert_reading_enabled,
@@ -1876,6 +1968,8 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             "rfid_remaining_m": None if remaining_mm is None else round(remaining_mm / 1000.0, 3),
             "rfid_usage_source": None if external else spool.get("usage_source"),
             "nominal_length_m": profile.get("nominal_length_m"),
+            "orca_filament_id": self.store.orca_filament_id(
+                profile.get("filament_id"), profile.get("material")),
             "rfid_reserve": profile["rfid_reserve"],
             "runout_rank": None if external else self._runout_rank(slot),
             "humidity_pct": None if external else self._slot_humidity(slot),
@@ -2960,6 +3054,32 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         if not deleted:
             raise gcmd.error("[BOX]: Filament %s does not exist" % filament_id)
         self._info(gcmd, "Deleted filament %s" % str(filament_id).strip().upper())
+
+    def cmd_filament_orca_id(self, gcmd):
+        """_BOX_FILAMENT_ORCA_ID ID=<filament> [ORCA_ID=<id>] [RESET=1]
+
+        Without ORCA_ID or RESET it reports the current value. Allowed on
+        system profiles too: the ID is kept apart from the read-only profile.
+        """
+        filament_id = str(self._param(gcmd, "ID") or "").strip().upper()
+        if not filament_id:
+            raise gcmd.error("[BOX]: ID is required")
+        params = gcmd.get_command_parameters()
+        reset = gcmd.get_int("RESET", 0, minval=0, maxval=1)
+        if "ORCA_ID" in params or reset:
+            orca_id = "" if reset else self._param(gcmd, "ORCA_ID")
+            try:
+                saved = self.store.set_orca_override(filament_id, orca_id)
+            except (BoxError, ValueError) as exc:
+                raise gcmd.error("[BOX]: %s" % exc)
+        else:
+            saved = self.store.filaments_status.get(filament_id)
+            if saved is None:
+                raise gcmd.error("[BOX]: Filament %s does not exist" % filament_id)
+        self._info(gcmd, "Filament %s: OrcaSlicer filament_id %s%s (default %s)" % (
+            filament_id, saved.get("orca_filament_id") or "none",
+            " [%s]" % saved["orca_preset"] if saved.get("orca_preset") else "",
+            saved.get("orca_filament_id_default") or "none"))
 
     def cmd_slot_assign(self, gcmd):
         slot = gcmd.get_int(
