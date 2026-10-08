@@ -516,6 +516,10 @@ class BoxChangeEngine:
         self.clear_resume_recovery()
         self._info(gcmd, "Auto runout swap complete: %s active"
                    % self._slot_label(target))
+        self.box.notify(
+            "runout_swap", "CFS runout swap",
+            "%s ran out, printing continues from %s" % (
+                self._slot_label(source), self._slot_label(target)))
         return True
 
     def parse_flush_volumes(self, gcmd):
@@ -1516,6 +1520,8 @@ class BoxChangeEngine:
             self.block_resume(message)
             if not self._is_print_paused():
                 self.box.pause_print()
+            self.box.notify(
+                "cfs_error", "CFS error", "%s; print paused" % message)
             if raise_error:
                 raise gcmd.error("[BOX]: " + self.recovery_instruction())
             self._warn(self.recovery_notice())
@@ -1560,6 +1566,8 @@ class BoxChangeEngine:
             target=target if automatic else None,
             automatic=automatic)
         self._warn(self.recovery_notice())
+        self.box.notify(
+            "runout", "CFS runout", "Print paused: %s" % reason)
         if not self.box.pause_print(
                 synchronous=True, skip_retract_wipe=skip_retract_wipe):
             raise RuntimeError("PAUSE did not settle before runout recovery")
