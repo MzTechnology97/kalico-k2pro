@@ -121,6 +121,7 @@ def rfid_fields(color="#6C4E43", serial="000001"):
 
 def test_k2rfid_generic_serial_uses_portable_fingerprint():
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.rfid_spools = {}
     fields = rfid_fields()
 
@@ -133,6 +134,7 @@ def test_k2rfid_generic_serial_uses_portable_fingerprint():
 
 def test_identical_active_k2rfid_tags_are_split_by_slot():
     box = Box.__new__(Box)
+    box._init_rfid_state()
     fields = rfid_fields()
     fingerprint = box._rfid_spool_fingerprint(fields)
     box.rfid_spools = {
@@ -151,6 +153,7 @@ def test_identical_active_k2rfid_tags_are_split_by_slot():
 
 def test_unique_k2rfid_serial_is_stable_across_slots():
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.rfid_spools = {}
     fields = rfid_fields(serial="483921")
 
@@ -203,6 +206,8 @@ def test_mark_slot_depleted_zeroes_estimate_and_clears_assignment(tmp_path):
     })
 
     box = Box.__new__(Box)
+
+    box._init_rfid_state()
     box.store = store
     box.drivers = {1: object()}
     box.rfid_spools = {
@@ -231,6 +236,7 @@ def test_mark_slot_depleted_zeroes_estimate_and_clears_assignment(tmp_path):
 def test_rfid_startup_scanning_defaults_off_and_is_opt_in(tmp_path):
     store = BoxStore(str(tmp_path / "filament_box.json"))
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.store = store
 
     assert box.rfid_startup_reading_enabled is False
@@ -259,6 +265,8 @@ def test_rfid_removal_clears_slot_assignment_but_keeps_spool_estimate(tmp_path):
     })
 
     box = Box.__new__(Box)
+
+    box._init_rfid_state()
     box.store = store
     box.drivers = {1: object()}
     box.rfid_live_slots = {1}
@@ -271,9 +279,6 @@ def test_rfid_removal_clears_slot_assignment_but_keeps_spool_estimate(tmp_path):
     box.rfid_pending = set()
     box.rfid_snapshot = {}
     box.rfid_seen_invalid = set()
-    box.rfid_fallback_tried = set()
-    box.rfid_cleared_on_insert = set()
-    box.rfid_insert_time = {}
     box.rfid_estimate_dirty = False
     box._persist_rfid_estimates = lambda force=False: None
     box._invalidate_spoolman = lambda slot: None
@@ -308,6 +313,8 @@ def test_restore_cached_rfid_slot_restores_remaining_without_tag_scan(tmp_path):
     })
 
     box = Box.__new__(Box)
+
+    box._init_rfid_state()
     box.store = store
     box.drivers = {1: object()}
     box.rfid_spools = {}
@@ -335,6 +342,8 @@ def test_absent_startup_slot_requires_three_confirmations_before_cleanup(tmp_pat
     })
 
     box = Box.__new__(Box)
+
+    box._init_rfid_state()
     box.store = store
     box.drivers = {1: object()}
     box.rfid_presence = {1: 0}
@@ -349,9 +358,6 @@ def test_absent_startup_slot_requires_three_confirmations_before_cleanup(tmp_pat
     box.rfid_pending = set()
     box.rfid_snapshot = {}
     box.rfid_seen_invalid = set()
-    box.rfid_fallback_tried = set()
-    box.rfid_cleared_on_insert = set()
-    box.rfid_insert_time = {}
     box.rfid_estimate_dirty = False
 
     box._reconcile_presence(1, 0)
@@ -364,6 +370,7 @@ def test_absent_startup_slot_requires_three_confirmations_before_cleanup(tmp_pat
 def test_external_rfid_slot_assignment_is_explicitly_clearable(tmp_path):
     store = BoxStore(str(tmp_path / "filament_box.json"))
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.store = store
     box.drivers = {1: object()}
     box.rfid_live_slots = set()
@@ -400,6 +407,7 @@ def test_external_rfid_slot_assignment_is_explicitly_clearable(tmp_path):
 def test_slot_status_marks_only_external_rfid_profile_clearable(tmp_path):
     store = BoxStore(str(tmp_path / "filament_box.json"))
     box = Box.__new__(Box)
+    box._init_rfid_state()
     box.store = store
     box.drivers = {1: object()}
     box.rfid_live_slots = {1}
