@@ -22,6 +22,7 @@ class InsertReadingBox(Box):
 
 def make_box(profiles, active=()):
     box = InsertReadingBox.__new__(InsertReadingBox)
+    box._init_rfid_state()
     box.rfid_live_slots = set()
     box.rfid_percent = {}
     box.rfid_reported_percent = {}
@@ -30,9 +31,6 @@ def make_box(profiles, active=()):
     box.rfid_pending = set()
     box.rfid_snapshot = {}
     box.rfid_seen_invalid = set()
-    box.rfid_fallback_tried = set()
-    box.rfid_cleared_on_insert = set()
-    box.rfid_insert_time = {}
     box.reactor = SimpleNamespace(monotonic=lambda: 1000.0)
     box.profiles = dict(profiles)
     box.profile = lambda slot: box.profiles.get(slot, {})

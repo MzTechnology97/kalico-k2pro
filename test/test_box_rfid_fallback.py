@@ -53,6 +53,7 @@ class FakeFallback:
 def make_box(state="standby", loaded_slot=-1, result=None):
     stats = FakePrintStats(state)
     box = InsertReadingBox.__new__(InsertReadingBox)
+    box._init_rfid_state()
     box.printer = FakePrinter({"print_stats": stats})
     box.gcode = None
     box.operation_depth = 0
@@ -60,9 +61,6 @@ def make_box(state="standby", loaded_slot=-1, result=None):
     box.rfid_pending = {2}
     box.rfid_snapshot = {}
     box.rfid_seen_invalid = set()
-    box.rfid_fallback_tried = set()
-    box.rfid_cleared_on_insert = set()
-    box.rfid_insert_time = {}
     box.reactor = SimpleNamespace(monotonic=lambda: 100.0)
     box.profile = lambda slot: {}
     box.rfid_live_slots = set()
