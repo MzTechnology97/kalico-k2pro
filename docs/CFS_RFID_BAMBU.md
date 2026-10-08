@@ -150,13 +150,27 @@ The stock CFS `CMD_RFID_REMAINING (0x03)` can return `0xFF` for Bambu and other 
 
 The estimator uses a stable RFID spool identity (UID where available) and a nominal spool filament length. During printing it prefers the **CFS path encoder** exposed by the normal box state because that measures physical filament draw from the spool/buffer path. `print_stats.filament_used` remains a fallback when the CFS encoder is unavailable.
 
-A library profile can optionally define:
+API7 does not capture the length block of Bambu tags, so the nominal length comes, in this order, from:
 
-```json
-"nominal_length_m": 250.0
-```
+1. the tag itself, when a decoder reads it;
+2. the filament profile's own value, the **Nominal length** field of the Mainsail filament editor (`"nominal_length_m": 400.0`), for a brand or spool size that differs;
+3. the reference length of the profile's material: a 1 kg, 1.75 mm spool, from typical densities (`DEFAULT_SPOOL_LENGTH_M` in `box.py`).
 
-I do not guess this value from spool mass because filament density and diameter tolerances vary by material. When the nominal length is not present in the profile it can be set explicitly for the current spool:
+| Material | m / kg | Material | m / kg |
+| --- | --- | --- | --- |
+| PLA | 335 | PC | 345 |
+| PLA-CF | 320 | TPU | 345 |
+| PETG | 327 | PA (PA6, PA12…) | 365 |
+| PETG-CF | 320 | PA-CF (PA6-CF, PAHT-CF…) | 355 |
+| PCTG | 340 | PVA | 340 |
+| ABS | 400 | PP | 460 |
+| ASA | 390 | HIPS | 400 |
+
+A material not listed uses its family (PLA-SILK → PLA, ASA-CF → ASA), else 330 m. The Mainsail editor shows the reference length of every profile, system ones included, as the placeholder of the field. A profile with its own value keeps it; emptying the field goes back to the reference. Saving a profile updates its loaded spools at the same percentage. Real densities vary by a few percent between brands, more for composites.
+
+With a length a third-party spool is tracked like a Creality one: the estimate is seeded from the CFS percentage (read right after the tag), or 100 % when the CFS has none and nothing was saved. It is decreased during printing, capped by the CFS percentage every 30 s, and saved by tag UID, so it follows the spool across slots and reinsertions.
+
+For a single spool that differs (a part-used spool, a 3 kg spool) the length can also be set directly:
 
 ```text
 _BOX_RFID_SPOOL_NEW SLOT=<global-slot> TOTAL_M=<metres> REMAINING=<0..100>
