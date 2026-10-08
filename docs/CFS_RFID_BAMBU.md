@@ -153,17 +153,24 @@ The estimator uses a stable RFID spool identity (UID where available) and a nomi
 API7 does not capture the length block of Bambu tags, so the nominal length comes, in this order, from:
 
 1. the tag itself, when a decoder reads it;
-2. the filament profile, per brand or material (the **Nominal length** field of the Mainsail filament editor):
+2. the filament profile's own value, the **Nominal length** field of the Mainsail filament editor (`"nominal_length_m": 400.0`), for a brand or spool size that differs;
+3. the reference length of the profile's material: a 1 kg, 1.75 mm spool, from typical densities (`DEFAULT_SPOOL_LENGTH_M` in `box.py`).
 
-   ```json
-   "nominal_length_m": 400.0
-   ```
+| Material | m / kg | Material | m / kg |
+| --- | --- | --- | --- |
+| PLA | 335 | PC | 345 |
+| PLA-CF | 320 | TPU | 345 |
+| PETG | 327 | PA (PA6, PA12…) | 365 |
+| PETG-CF | 320 | PA-CF (PA6-CF, PAHT-CF…) | 355 |
+| PCTG | 340 | PVA | 340 |
+| ABS | 400 | PP | 460 |
+| ASA | 390 | HIPS | 400 |
 
-3. the general third-party length, 330 m by default: `third_party_rfid_length_m` in `[box]`, changed at runtime from the Mainsail CFS settings or with `_BOX_SET_THIRD_PARTY_LENGTH LENGTH_M=<metres>` (`RESET=1` goes back to `box.cfg`, `0` turns it off). Spools that use it follow a change at once, at the same percentage.
+A material not listed uses its family (PLA-SILK → PLA, ASA-CF → ASA), else 330 m. The Mainsail editor shows the reference length of every profile, system ones included, as the placeholder of the field. A profile with its own value keeps it; emptying the field goes back to the reference. Saving a profile updates its loaded spools at the same percentage. Real densities vary by a few percent between brands, more for composites.
 
-With a length a third-party spool is tracked like a Creality one: the estimate is seeded from the CFS percentage (read right after the tag), or 100 % when the CFS has none and nothing was saved. It is decreased during printing, capped by the CFS percentage every 30 s, and saved by tag UID, so it follows the spool across slots and reinsertions. Without a length the slot shows the CFS percentage only.
+With a length a third-party spool is tracked like a Creality one: the estimate is seeded from the CFS percentage (read right after the tag), or 100 % when the CFS has none and nothing was saved. It is decreased during printing, capped by the CFS percentage every 30 s, and saved by tag UID, so it follows the spool across slots and reinsertions.
 
-I do not guess the length from spool mass because filament density and diameter tolerances vary by material; 330 m is roughly 1 kg of 1.75 mm PLA or PETG, ABS/ASA spools are longer. When neither fits, it can be set explicitly for the current spool:
+For a single spool that differs (a part-used spool, a 3 kg spool) the length can also be set directly:
 
 ```text
 _BOX_RFID_SPOOL_NEW SLOT=<global-slot> TOTAL_M=<metres> REMAINING=<0..100>
