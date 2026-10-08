@@ -33,9 +33,16 @@ jobs:
               - 'scripts/buildcommands.py'
               - 'scripts/check-gcc.sh'
 
-      # Always pull the latest image to take advantage of layer caching
+      # The upstream image carries MCU data dictionaries built from upstream
+      # Kalico; :latest moves with upstream firmware commands (2026-10-08:
+      # indx_set_control_params gained i_window/i_limit) and then fails the
+      # Klippy tests of this fork. Pin the last image built from sources
+      # compatible with this branch, tagged :latest for the steps below.
+      # Move the digest when the fork syncs with upstream.
       - name: Pull docker image
-        run: docker pull dangerklippers/klipper-build:latest
+        run: |
+          docker pull dangerklippers/klipper-build@sha256:c173e078c18eafb15a154c96a9178446953e6646056d0163833e303fe8f7adfb
+          docker tag dangerklippers/klipper-build@sha256:c173e078c18eafb15a154c96a9178446953e6646056d0163833e303fe8f7adfb dangerklippers/klipper-build:latest
 
       - name: Test Klipper build (changes to the firmware)
         if: steps.changes.outputs.klipper == 'true'
