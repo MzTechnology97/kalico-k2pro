@@ -71,6 +71,7 @@ class FakeBox:
         self.gcode = None
         self.applied = []
         self.infos = []
+        self.notes = []
         self.profiles = {}
 
     def profile(self, slot):
@@ -82,12 +83,14 @@ class FakeBox:
     def slot_label(self, slot):
         return "T%d" % slot
 
-    def _apply_bambu_rfid_tag(self, slot, tag):
+    def _apply_bambu_rfid_tag(self, slot, tag, note=None):
         self.applied.append(("bambu", slot, tag))
+        self.notes.append(note)
         return True
 
-    def _apply_third_party_rfid_tag(self, slot, tag):
+    def _apply_third_party_rfid_tag(self, slot, tag, note=None):
         self.applied.append(("generic", slot, tag))
+        self.notes.append(note)
         return True
 
     def _info(self, _gcode, msg):
@@ -593,3 +596,18 @@ def test_known_path_respects_a_zero_manual_budget():
 
     assert fallback.run_known(1) is None
     assert decoder.reads == []
+
+
+def test_apply_notes_tell_how_the_tag_was_identified():
+    decoder = FakeDecoder("QIDI", tag={"vendor": "QIDI"})
+    box, fallback = make([decoder])
+
+    fallback.run(1, automatic=True)
+    fallback.run(1, automatic=True)
+    fallback.run_known(1)
+
+    read, cached, direct = box.notes
+    # After a stock "unknown": Box keeps its stock-fallback wording.
+    assert read is None
+    assert cached == "QIDI tag known from the RFID cache, no reread"
+    assert direct == "known QIDI tag read directly, Creality reread skipped"

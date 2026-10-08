@@ -621,7 +621,8 @@ class BoxRfidMifare:
             if apply_tag is None:
                 raise gcmd.error(
                     "Third-party tag decoded but Box integration is unavailable")
-            applied = bool(apply_tag(slot, tag))
+            applied = bool(apply_tag(
+                slot, tag, note="read by BOX_RFID_MIFARE_READ"))
         gcmd.respond_info(
             "%s RFID slot=%d UID=%s material=%s detail=%s color=%s (%s) "
             "identity=%s applied=%s"
