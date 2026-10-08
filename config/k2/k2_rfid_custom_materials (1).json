@@ -1,0 +1,260 @@
+{
+  "materials": [
+    {
+      "id": "83161",
+      "brand": "SUNLU",
+      "name": "Sunlu PLA Plus HS 2.0",
+      "material": "PLA",
+      "target_temp": 220,
+      "rfid_codes": [
+        "83161",
+        "183161"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "42175",
+      "brand": "Bambulab",
+      "name": "Bambulab ABS",
+      "material": "ABS",
+      "target_temp": 260,
+      "rfid_codes": [
+        "42175",
+        "142175",
+        "24934",
+        "124934"
+      ],
+      "aliases": [
+        "24934"
+      ]
+    },
+    {
+      "id": "63005",
+      "brand": "Bambulab",
+      "name": "Bambulab PA6-CF",
+      "material": "PA6-CF",
+      "target_temp": 300,
+      "rfid_codes": [
+        "63005",
+        "163005"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "06691",
+      "brand": "SUNLU",
+      "name": "Sunlu PA6-CF",
+      "material": "PA6-CF",
+      "target_temp": 300,
+      "rfid_codes": [
+        "06691",
+        "106691"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "53809",
+      "brand": "Bambulab",
+      "name": "Bambulab PETG-CF",
+      "material": "PETG-CF",
+      "target_temp": 250,
+      "rfid_codes": [
+        "53809",
+        "153809"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "68055",
+      "brand": "SUNLU",
+      "name": "Sunlu ABS",
+      "material": "ABS",
+      "target_temp": 260,
+      "rfid_codes": [
+        "68055",
+        "168055"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "60983",
+      "brand": "SUNLU",
+      "name": "Sunlu ASA",
+      "material": "ASA",
+      "target_temp": 260,
+      "rfid_codes": [
+        "60983",
+        "160983"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "47982",
+      "brand": "SUNLU",
+      "name": "Sunlu PLA Plus HS",
+      "material": "PLA",
+      "target_temp": 220,
+      "rfid_codes": [
+        "47982",
+        "147982"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "38292",
+      "brand": "CC3D",
+      "name": "CC3D PBT Pro",
+      "material": "PP",
+      "target_temp": 240,
+      "rfid_codes": [
+        "38292",
+        "138292"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "24036",
+      "brand": "Bambulab",
+      "name": "Bambulab ASA-CF",
+      "material": "ASA-CF",
+      "target_temp": 270,
+      "rfid_codes": [
+        "24036",
+        "124036"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "54219",
+      "brand": "Bambulab",
+      "name": "Bambulab PA6-CF",
+      "material": "PA6-CF",
+      "target_temp": 290,
+      "rfid_codes": [
+        "54219",
+        "154219"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "91896",
+      "brand": "Bambulab",
+      "name": "Bambulab Support for PLA",
+      "material": "PLA",
+      "target_temp": 220,
+      "rfid_codes": [
+        "91896",
+        "191896"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "75805",
+      "brand": "SUNLU",
+      "name": "Sunlu PLA Plus",
+      "material": "PLA",
+      "target_temp": 220,
+      "rfid_codes": [
+        "75805",
+        "175805"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "58747",
+      "brand": "Bambulab",
+      "name": "Bambulab ABS-GF",
+      "material": "ABS",
+      "target_temp": 260,
+      "rfid_codes": [
+        "58747",
+        "158747"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "97142",
+      "brand": "CC3D",
+      "name": "PETG",
+      "material": "PETG",
+      "target_temp": 245,
+      "rfid_codes": [
+        "97142",
+        "197142"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "05628",
+      "brand": "Bambulab",
+      "name": "Bambulab PLA Basic",
+      "material": "PLA",
+      "target_temp": 215,
+      "rfid_codes": [
+        "05628",
+        "105628"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "35512",
+      "brand": "Bambulab",
+      "name": "Bambulab PC",
+      "material": "PC",
+      "target_temp": 260,
+      "rfid_codes": [
+        "35512",
+        "135512"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "33444",
+      "brand": "eSUN",
+      "name": "ABS-CF",
+      "material": "ABS",
+      "target_temp": 260,
+      "rfid_codes": [
+        "33444",
+        "133444"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "16829",
+      "brand": "Bambulab",
+      "name": "Bambulab PETG-HS",
+      "material": "PETG",
+      "target_temp": 245,
+      "rfid_codes": [
+        "16829",
+        "116829"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "83470",
+      "brand": "CC3D",
+      "name": "CC3D ASA",
+      "material": "ASA",
+      "target_temp": 260,
+      "rfid_codes": [
+        "83470",
+        "183470"
+      ],
+      "aliases": []
+    },
+    {
+      "id": "58964",
+      "brand": "SUNLU",
+      "name": "Sunlu Matte HS PETG",
+      "material": "PETG",
+      "target_temp": 245,
+      "rfid_codes": [
+        "58964",
+        "158964"
+      ],
+      "aliases": []
+    }
+  ]
+}
