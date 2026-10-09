@@ -236,6 +236,17 @@ humidity_limits: PA:15, PLA:45
 
 The mixin methods moved from `box.py` unchanged (`self` is the `Box`). `box.py` re-exports the moved names, so `from extras.box import DEFAULT_SPOOL_LENGTH_M` keeps working. `Box._init_rfid_state()` sets every RFID runtime field; test fixtures that build a `Box` without `__init__` call it.
 
+### CFS runtime configuration (`box_cfs_runtime`)
+
+`klippy/extras/box_cfs_runtime.py` changes CFS motion parameters at run time, on a CFS firmware with the runtime-config API: v3.13 (API v1, the six feeder/hub speeds) or v3.14 and later (API v2, also the advanced load/unload timings and the RFID motion parameters). It is separate from `box.py` and talks to the CFS through the `serial_485` queue (command `0x57`). With the stock CFS firmware it reports `supported: false` and does nothing.
+
+- Values live in the CFS RAM only: nothing is written to the CFS EEPROM or to RFID tags. The firmware range-checks them and refuses a change while its stock RFID task is busy.
+- `[box_cfs_runtime]` in `macros/box.cfg` lists the parameters with their stock values. Only the uncommented ones are configured; with `auto_apply: true` they are sent again whenever the RS-485 link comes up (after a CFS or MCU power cycle), retrying for a few seconds while the CFS does not answer yet. The generic profile ships the section commented out.
+- Commands: `BOX_CFS_CONFIG_INFO` (values, changed ones marked), `BOX_CFS_CONFIG_SET PARAM=<name> VALUE=<n>`, `BOX_CFS_CONFIG_RESET [PARAM=ALL]`, `BOX_CFS_CONFIG_APPLY` (send the configured values again).
+- Status `box_cfs_runtime`: `supported`, `protocol_version`, `parameter_count`, `override_mask`, `configured_overrides`, `values`, `last_error`.
+
+On the reference printer (CFS firmware v3.13, 2026-10-09) it applies the six stock speeds at start.
+
 ### OrcaSlicer preset ID per filament
 
 OrcaSlicer selects a filament preset by its `filament_id`. Every CFS filament gets one in `box_orca.py`, without renaming anything: the filament's own ID, name, brand and RFID codes remain the keys of RFID matching and remaining-filament tracking.
@@ -717,7 +728,9 @@ Integrated homing through `[z_align]` is hardware-validated (three consecutive `
 
 Moonraker/Mainsail update management expects this repository to remain clean. Files tracked by this fork should not be overwritten by external installers. Locally installed extras such as ShakeTune can remain outside Git tracking so they do not mark the Kalico repository dirty.
 
-Fixes tested directly on the CM5 must be committed to this branch. A modified tracked file blocks Moonraker updates, and a hard recovery from the update manager discards it.
+Fixes tested directly on the CM5 must be committed to this branch.
+
+CI: the Build test workflow uses the upstream `dangerklippers/klipper-build` image, whose MCU data dictionaries follow upstream Kalico. It is pinned to a digest (`.github/workflows/ci-build_test.yaml`) since upstream changed `indx_set_control_params` on 2026-10-08; move the digest when this branch syncs with upstream. A modified tracked file blocks Moonraker updates, and a hard recovery from the update manager discards it.
 
 The K2 extras, CFS stack included, are maintained here. They used to be mirrored to `MzTechnology97/k2-pro-custom-firmware:k2-openhost`, checked by a drift workflow. That repository is archived since 2026-10-04 as read-only history, and the mirror and its workflow are gone.
 
