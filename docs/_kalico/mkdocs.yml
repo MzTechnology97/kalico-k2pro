@@ -99,6 +99,7 @@ nav:
   - K2 Pro CFS third-party RFID: CFS_RFID_BAMBU.md
   - K2 Pro CFS v3.19 RAM bench: CFS_RUNTIME_V319.md
   - K2 Pro CFS v3.21 safe idle guard: CFS_RUNTIME_V321.md
+  - K2 Pro CFS v3.22 read-only probes: CFS_RUNTIME_V322.md
   - Configuration:
     - Config_Reference.md
     - Kalico_Additions.md

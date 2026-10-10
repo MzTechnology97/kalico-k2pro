@@ -350,6 +350,8 @@ class BoxCfsRuntime:
             "serial_485:ready", self._serial_ready)
         self.gcode.register_command("BOX_CFS_CONFIG_INFO", self.cmd_info)
         self.gcode.register_command("BOX_CFS_CONFIG_DIAG", self.cmd_diag)
+        self.gcode.register_command(
+            "BOX_CFS_CONFIG_SNAPSHOT", self.cmd_snapshot)
         self.gcode.register_command("BOX_CFS_CONFIG_APPLY", self.cmd_apply)
         self.gcode.register_command("BOX_CFS_CONFIG_SET", self.cmd_set)
         self.gcode.register_command("BOX_CFS_CONFIG_RESET", self.cmd_reset)
@@ -428,7 +430,7 @@ class BoxCfsRuntime:
 
         # v3.19/v3.20/v3.21 features 0xF7/0xB7 are manual bench ONLY; skip all configured auto-apply,
         # including the six stock speeds from box.cfg.
-        if meta.get("features", 0) in (0xF7, 0xB7, 0x97):
+        if meta.get("features", 0) in (0xF7, 0xB7, 0x97, 0xD7):
             raise CfsRuntimeUnsupported(
                 "Experimental CFS v3.19/v3.20/v3.21: automatic SET disabled; manual bench only")
 
@@ -598,12 +600,45 @@ class BoxCfsRuntime:
             raise gcmd.error(str(exc))
         gcmd.respond_info("\n".join(lines))
 
+    def cmd_snapshot(self, gcmd):
+        """Read-only, fixed-address MCU diagnostic snapshot for v3.22.
+
+        Firmware GET 28..31 samples two opaque internal state structures
+        (0x2000057E and 0x20003904). The bytes do NOT attest motor idle.
+        No generic RAM fetch, SET/RESET, or user-controlled address exists.
+        """
+        try:
+            driver = self._driver()
+            meta = self._probe(driver)
+            if (meta.get("version") != 2 or meta.get("count") != 28
+                    or meta.get("features") != 0xD7):
+                raise CfsRuntimeUnsupported(
+                    "CFS diagnostic snapshot requires experimental "
+                    "firmware signature 0xD7")
+            box = self.printer.lookup_object("box", None)
+            if box is None:
+                raise CfsRuntimeBusy("CFS box unavailable for snapshot")
+            box.acquire_rfid_read("BOX_CFS_DIAG_SNAPSHOT")
+            try:
+                # Only the four hard-coded IDs are ever transmitted. The
+                # firmware restricts these IDs to read-only GET requests.
+                words = [driver.get_v2(idx, timeout=1.5)
+                         for idx in range(28, 32)]
+            finally:
+                box.release_rfid_read()
+            gcmd.respond_info(
+                "CFS V3.22 DIAG ONLY (not proof of idle): "
+                "motor_candidate=%04X:%04X task_candidate=%04X:%04X"
+                % tuple(words))
+        except Exception as exc:
+            raise gcmd.error(str(exc))
+
     def cmd_apply(self, gcmd):
         try:
             # v3.19/v3.20/v3.21 never accept bulk APPLY; use only explicit manual SET.
             driver = self._driver()
             metadata = self._probe(driver)
-            if metadata.get("features", 0) in (0xF7, 0xB7, 0x97):
+            if metadata.get("features", 0) in (0xF7, 0xB7, 0x97, 0xD7):
                 raise CfsRuntimeUnsupported(
                     "v3.19/v3.20/v3.21: BOX_CFS_CONFIG_APPLY disabled; manual SET only")
             meta, _values = self._apply_configured()
@@ -629,9 +664,9 @@ class BoxCfsRuntime:
     def _v321_check_host_idle(self, expected_owner=None):
         """Fail-closed secondary host preflight for v3.21 manual writes.
 
-        The MCU checks Creality's CMD_BOX_STATE mode byte, which can remain
-        IDLE during early physical feeding. The host's operation mutex is
-        mandatory; a separate true MCU motor-active flag remains unverified.
+        The MCU independently checks the LIVE Creality CMD_BOX_STATE source
+        (0x200037D2 == IDLE) on each SET/RESET, avoiding any serial-cache race.
+        This host guard is defense in depth, NOT a substitute for the MCU.
         """
         box = self.printer.lookup_object("box", None)
         sensor = self.printer.lookup_object(
@@ -658,24 +693,24 @@ class BoxCfsRuntime:
     def _v321_claim_write(self, meta):
         """Return a context manager serializing runtime writes vs RFID reads."""
         from contextlib import contextmanager, nullcontext
-        if meta.get("features") != 0x97:
+        if meta.get("features") not in (0x97, 0xD7):
             return nullcontext()
         @contextmanager
         def claim():
             box = self._v321_check_host_idle()
             box.acquire_rfid_read("BOX_CFS_RUNTIME_WRITE")
-            acquired_motion_lock = False
+            acquired_op_lock = False
             try:
-                # Exclude physical load/unload at the source, not merely by a
-                # potentially stale BOX_STATE snapshot. The lock is held
-                # across the on-wire SET/RESET and released in finally.
+                # Atomically reject a physical operation already in flight,
+                # before starting SET/RESET. _operation() rejects a new
+                # load/unload while this exclusive write claim is held.
                 box.acquire_cfs_runtime_write("BOX_CFS_RUNTIME_WRITE")
-                acquired_motion_lock = True
+                acquired_op_lock = True
                 self._v321_check_host_idle(expected_owner="BOX_CFS_RUNTIME_WRITE")
                 yield
             finally:
                 try:
-                    if acquired_motion_lock:
+                    if acquired_op_lock:
                         box.release_cfs_runtime_write("BOX_CFS_RUNTIME_WRITE")
                 finally:
                     box.release_rfid_read()
@@ -699,7 +734,7 @@ class BoxCfsRuntime:
                 current = driver.info_v1()[spec.param_id]
                 self.override_mask = 0
             else:
-                if meta.get("features", 0) in (0xF7, 0xB7, 0x97):
+                if meta.get("features", 0) in (0xF7, 0xB7, 0x97, 0xD7):
                     if spec.param_id < 7:
                         raise CfsRuntimeUnsupported(
                             "v3.19/v3.20/v3.21 protect stock IDs 0..6; only advanced 7..27 are writable")
@@ -752,7 +787,7 @@ class BoxCfsRuntime:
                 }
                 self.override_mask = 0
             else:
-                if meta.get("features", 0) in (0xF7, 0xB7, 0x97):
+                if meta.get("features", 0) in (0xF7, 0xB7, 0x97, 0xD7):
                     if spec is not None and spec.param_id < 7:
                         raise CfsRuntimeUnsupported(
                             "v3.19/v3.20/v3.21 reset only support advanced IDs 7..27")
