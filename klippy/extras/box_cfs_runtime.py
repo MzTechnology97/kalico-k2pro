@@ -47,7 +47,7 @@ SUB_CONFIG_V2_SET = 0x12
 SUB_CONFIG_V2_RESET = 0x13
 SUB_CONFIG_V2_DESCRIBE = 0x14
 CONFIG_V2_VERSION = 2
-CONFIG_V2_DESCRIPTOR_SIZE = 16
+CONFIG_V2_DESCRIPTOR_SIZE = 1  # firmware INFO advertises catalog revision 1
 
 STATUS_OK = 0
 STATUS_BAD_REQUEST = 1
@@ -80,81 +80,62 @@ def _p(name, param_id, default, minval, maxval, value_type, flags, description):
 
 
 PARAMETERS = (
-    _p("feeder_forward_speed", 0, 255, 1, 255, "int", 0,
-       "Feeder motor forward speed while pushing filament from the spool toward the CFS hub."),
-    _p("hub_forward_speed", 1, 100, 1, 255, "int", 0,
-       "Main hub motor forward speed during normal filament advance."),
-    _p("hub_transition_speed", 2, 200, 1, 255, "int", 0,
-       "Hub speed used by the stock state machine during load/unload transition phases."),
-    _p("hub_insert_speed", 3, 155, 1, 255, "int", 0,
-       "Hub forward speed during the initial filament insert/feed phase."),
-    _p("feeder_reverse_speed", 4, 255, 1, 255, "int", 0,
-       "Feeder motor reverse speed while pulling filament back toward the spool."),
-    _p("hub_reverse_speed", 5, 80, 1, 255, "int", 0,
-       "Main hub reverse speed during normal unload/retraction."),
-
-    _p("reverse_detooth_enable", 6, None, 0, 1, "bool",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Enable or disable the stock reverse-detooth procedure; stock state is captured at runtime."),
-    _p("hub_transition_wait_ms", 7, 3200, 10, 10000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Maximum/settling wait used by the stock hub transition routine."),
-    _p("hub_pullback_timeout_ms", 8, 5000, 100, 30000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Timeout for the stock hub pull-back operation."),
-    _p("buffer_fill_timeout_ms", 9, 30000, 1000, 120000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Timeout while waiting for the stock CFS buffer-fill operation."),
-
-    _p("rfid_seek_speed", 10, 160, 1, 255, "int",
-       FLAG_ADVANCED | FLAG_RFID_SENSITIVE,
-       "Hub speed used while seeking/positioning a spool near the RFID reader."),
-    _p("rfid_measure_speed", 11, 120, 1, 255, "int",
-       FLAG_ADVANCED | FLAG_RFID_SENSITIVE,
-       "Hub speed used during the RFID/geometry measurement phase."),
-    _p("rfid_reposition_speed", 12, 100, 1, 255, "int",
-       FLAG_ADVANCED | FLAG_RFID_SENSITIVE,
-       "Hub speed used while repositioning the spool during RFID handling."),
-    _p("rfid_seek_move_ms", 13, 800, 50, 5000, "int",
-       FLAG_ADVANCED | FLAG_RFID_SENSITIVE,
-       "Duration of the stock RFID seek movement."),
-    _p("rfid_seek_settle_ms", 14, 200, 10, 2000, "int",
-       FLAG_ADVANCED | FLAG_RFID_SENSITIVE,
-       "Settling delay after an RFID seek movement."),
-    _p("rfid_validation_settle_ms", 15, 500, 10, 5000, "int",
-       FLAG_ADVANCED | FLAG_RFID_SENSITIVE,
-       "Settling delay before/around stock RFID validation."),
-    _p("rfid_reposition_initial_wait_ms", 16, 1000, 10, 5000, "int",
-       FLAG_ADVANCED | FLAG_RFID_SENSITIVE,
-       "Initial wait before the stock RFID reposition loop."),
-    _p("rfid_retry_count", 17, 5, 1, 20, "int",
-       FLAG_ADVANCED | FLAG_RFID_SENSITIVE,
-       "Number of stock RFID validation/reposition retries."),
-
-    _p("load_retry_count", 18, 3, 1, 10, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Number of stock load/transition retry attempts."),
-    _p("sensor_detect_timeout_ms", 19, 700, 50, 5000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Sensor-detection timeout used in both load and unload paths."),
-    _p("sensor_transition_window_ms", 20, 300, 50, 2000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Sensor transition window used in both load and unload paths."),
-    _p("odometer_stall_timeout_ms", 21, 500, 20, 5000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Maximum time with no odometer movement while feeding; effective resolution is 20 ms."),
-    _p("feeding_timeout_ms", 22, 25000, 1000, 120000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Maximum total stock feeding time; effective resolution is 20 ms."),
-    _p("pretension_insert_timeout_ms", 23, 10000, 1000, 60000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Timeout while pretensioning/inserting filament toward the hub."),
-    _p("pretension_pullout_timeout_ms", 24, 10000, 1000, 60000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Timeout while pretensioning/pulling filament out from the hub."),
-    _p("feeding_buffer_timeout_ms", 25, 3000, 100, 30000, "int",
-       FLAG_ADVANCED | FLAG_SAFETY,
-       "Timeout for the stock feeding stage while waiting for the buffer to become full."),
+    _p('feeder_forward_speed', 0, 255, 1, 255, 'int',
+       0, 'Feeder forward speed; stock 255.'),
+    _p('hub_forward_speed', 1, 100, 1, 255, 'int',
+       0, 'Hub forward speed; stock 100.'),
+    _p('hub_transition_speed', 2, 200, 1, 255, 'int',
+       0, 'Hub transition speed; stock 200.'),
+    _p('hub_insert_speed', 3, 155, 1, 255, 'int',
+       0, 'Hub insert speed; stock 155.'),
+    _p('feeder_reverse_speed', 4, 255, 1, 255, 'int',
+       0, 'Feeder reverse speed; stock 255.'),
+    _p('hub_reverse_speed', 5, 80, 1, 255, 'int',
+       0, 'Hub reverse speed; stock 80.'),
+    _p('reverse_detooth_enable', 6, None, 0, 1, 'bool',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Reverse detooth enable; stock runtime-captured.'),
+    _p('hub_transition_wait_ms', 7, 3200, 100, 10000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Hub transition wait ms; stock 3200.'),
+    _p('insert_sensor_timeout_ms', 8, 700, 100, 5000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Insert sensor timeout ms; stock 700.'),
+    _p('hub_pullback_timeout_ms', 9, 5000, 500, 15000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Hub pullback timeout ms; stock 5000.'),
+    _p('unload_sensor_timeout_ms', 10, 1000, 100, 5000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Unload sensor timeout ms; stock 1000.'),
+    _p('rfid_seek_speed', 11, 160, 1, 255, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid seek speed; stock 160.'),
+    _p('rfid_measure_speed', 12, 120, 1, 255, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid measure speed; stock 120.'),
+    _p('rfid_reposition_speed', 13, 100, 1, 255, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid reposition speed; stock 100.'),
+    _p('rfid_seek_move_ms', 14, 800, 100, 5000, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid seek move ms; stock 800.'),
+    _p('rfid_seek_settle_ms', 15, 200, 10, 2000, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid seek settle ms; stock 200.'),
+    _p('rfid_post_auth_wait_ms', 16, 1000, 100, 5000, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid post auth wait ms; stock 1000.'),
+    _p('rfid_pre_measure_settle_ms', 17, 10, 1, 1000, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid pre measure settle ms; stock 10.'),
+    _p('rfid_neighbor_detect_delay_ms', 18, 400, 50, 2000, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid neighbor detect delay ms; stock 400.'),
+    _p('rfid_neighbor_settle_ms', 19, 100, 10, 1000, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid neighbor settle ms; stock 100.'),
+    _p('feed_total_timeout_20ms_ticks', 20, 1250, 250, 3000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Feed total timeout 20ms ticks; stock 1250.'),
+    _p('feed_recovery_timeout_ms', 21, 3000, 500, 10000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Feed recovery timeout ms; stock 3000.'),
+    _p('odometer_stall_20ms_ticks', 22, 25, 5, 100, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Odometer stall 20ms ticks; stock 25.'),
+    _p('rfid_neighbor_retry_count', 23, 3, 1, 10, 'int',
+       FLAG_ADVANCED | FLAG_RFID_SENSITIVE, 'Rfid neighbor retry count; stock 3.'),
+    _p('reverse_detooth_timeout_ms', 24, 1000, 100, 10000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Reverse detooth timeout ms; stock 1000.'),
+    _p('buffer_fill_timeout_ms', 25, 30000, 1000, 60000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Buffer fill timeout ms; stock 30000.'),
+    _p('transition_detect_timeout_ms', 26, 300, 50, 5000, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Transition detect timeout ms; stock 300.'),
+    _p('load_retry_count', 27, 3, 1, 10, 'int',
+       FLAG_ADVANCED | FLAG_SAFETY, 'Load retry count; stock 3.'),
 )
 
 PARAM_BY_NAME = {p.name: p for p in PARAMETERS}
@@ -249,17 +230,17 @@ class CfsRuntimeDriver:
     def info_v2(self, timeout=1.0):
         reply = self._exchange((SUB_CONFIG_V2_INFO,), timeout)
         self._check_status(reply, "CONFIG_V2_INFO", unsupported=True)
-        if len(reply.payload) != 8:
+        if len(reply.payload) != 4:
             raise box_protocol.ProtocolError(
-                "CONFIG_V2_INFO response must carry 8 bytes")
-        version, count, desc_size, features = reply.payload[:4]
-        override_mask = struct.unpack_from("<I", reply.payload, 4)[0]
+                "CONFIG_V2_INFO response must carry 4 bytes")
+        version, count, desc_size, features = reply.payload
+        override_mask = 0  # v3.14 firmware does not expose an override mask
         if version != CONFIG_V2_VERSION:
             raise CfsRuntimeConfigError(
                 "unsupported CONFIG v2 version %d" % version)
         if desc_size != CONFIG_V2_DESCRIPTOR_SIZE:
             raise CfsRuntimeConfigError(
-                "unsupported CONFIG v2 descriptor size %d" % desc_size)
+                "unsupported CONFIG v2 catalog revision %d" % desc_size)
         return {
             "version": version,
             "count": count,
@@ -271,19 +252,19 @@ class CfsRuntimeDriver:
     def get_v2(self, param_id, timeout=1.0):
         reply = self._exchange((SUB_CONFIG_V2_GET, param_id), timeout)
         self._check_status(reply, "CONFIG_V2_GET")
-        if len(reply.payload) != 8 or reply.payload[0] != param_id:
+        if len(reply.payload) != 3 or reply.payload[0] != param_id:
             raise box_protocol.ProtocolError(
                 "CONFIG_V2_GET response must carry matching id,value")
-        return struct.unpack_from("<I", reply.payload, 4)[0]
+        return struct.unpack_from("<H", reply.payload, 1)[0]
 
     def set_v2(self, param_id, value, timeout=1.0):
-        payload = bytes((SUB_CONFIG_V2_SET, param_id)) + struct.pack("<I", value)
+        payload = bytes((SUB_CONFIG_V2_SET, param_id)) + struct.pack("<H", value)
         reply = self._exchange(payload, timeout)
         self._check_status(reply, "CONFIG_V2_SET")
-        if len(reply.payload) != 8 or reply.payload[0] != param_id:
+        if len(reply.payload) != 3 or reply.payload[0] != param_id:
             raise box_protocol.ProtocolError(
                 "CONFIG_V2_SET response must carry matching id,value")
-        applied = struct.unpack_from("<I", reply.payload, 4)[0]
+        applied = struct.unpack_from("<H", reply.payload, 1)[0]
         if applied != value:
             raise box_protocol.ProtocolError(
                 "CONFIG_V2_SET acknowledgement value does not match request")
@@ -292,23 +273,23 @@ class CfsRuntimeDriver:
     def reset_v2(self, param_id=0xFF, timeout=1.0):
         reply = self._exchange((SUB_CONFIG_V2_RESET, param_id), timeout)
         self._check_status(reply, "CONFIG_V2_RESET")
-        if len(reply.payload) != 8 or reply.payload[0] != param_id:
+        if reply.payload:
             raise box_protocol.ProtocolError(
-                "CONFIG_V2_RESET response must carry matching id,value")
-        return struct.unpack_from("<I", reply.payload, 4)[0]
+                "CONFIG_V2_RESET success response must be empty")
+        return None
 
     def describe_v2(self, param_id, timeout=1.0):
         reply = self._exchange((SUB_CONFIG_V2_DESCRIBE, param_id), timeout)
         self._check_status(reply, "CONFIG_V2_DESCRIBE")
-        if len(reply.payload) != 16 or reply.payload[0] != param_id:
+        if len(reply.payload) != 8:
             raise box_protocol.ProtocolError(
-                "CONFIG_V2_DESCRIBE response must carry 16 matching bytes")
-        default, minval, maxval = struct.unpack_from("<III", reply.payload, 4)
+                "CONFIG_V2_DESCRIBE response must carry 8 bytes")
+        default, minval, maxval = struct.unpack_from("<HHH", reply.payload, 2)
         return {
             "id": param_id,
-            "type": reply.payload[1],
-            "flags": reply.payload[2],
-            "kind": reply.payload[3],
+            "type": reply.payload[0],
+            "flags": reply.payload[1],
+            "kind": None,
             "default": default,
             "min": minval,
             "max": maxval,
@@ -360,6 +341,7 @@ class BoxCfsRuntime:
         self.protocol_version = None
         self.param_count = None
         self.override_mask = 0
+        self.firmware_features = 0
         self.last_values = {}
         self.last_error = None
         self._auto_attempt = 0
@@ -367,6 +349,7 @@ class BoxCfsRuntime:
         self.printer.register_event_handler(
             "serial_485:ready", self._serial_ready)
         self.gcode.register_command("BOX_CFS_CONFIG_INFO", self.cmd_info)
+        self.gcode.register_command("BOX_CFS_CONFIG_DIAG", self.cmd_diag)
         self.gcode.register_command("BOX_CFS_CONFIG_APPLY", self.cmd_apply)
         self.gcode.register_command("BOX_CFS_CONFIG_SET", self.cmd_set)
         self.gcode.register_command("BOX_CFS_CONFIG_RESET", self.cmd_reset)
@@ -396,6 +379,7 @@ class BoxCfsRuntime:
         self.protocol_version = meta["version"]
         self.param_count = meta["count"]
         self.override_mask = meta.get("override_mask", 0)
+        self.firmware_features = meta.get("features", 0)
         self.last_error = None
 
     def _probe(self, driver):
@@ -405,10 +389,11 @@ class BoxCfsRuntime:
 
     @staticmethod
     def _validate_descriptor(spec, desc):
-        if not (desc["flags"] & FLAG_WRITABLE):
-            raise CfsRuntimeConfigError(
-                "%s is not writable in CFS firmware" % spec.name)
-        if not desc["min"] <= spec.minval <= spec.maxval <= desc["max"]:
+        # The v3.14 firmware uses flags 0x01 (normal), 0x02
+        # (stock-captured), 0x06 (RFID), 0x0A (safety).
+        # These are not a writable-bit mask; firmware enforces idle
+        # and value bounds when SET is requested.
+        if not (desc["min"] <= spec.minval <= spec.maxval <= desc["max"]):
             raise CfsRuntimeConfigError(
                 "%s host range does not fit firmware descriptor" % spec.name)
 
@@ -440,6 +425,18 @@ class BoxCfsRuntime:
             raise CfsRuntimeConfigError(
                 "CFS CONFIG v2 exposes %d parameters, host expects at least %d"
                 % (meta["count"], len(PARAMETERS)))
+
+        # v3.19 0xF7 is manual bench ONLY; skip all configured auto-apply,
+        # including the six stock speeds from box.cfg.
+        if meta.get("features", 0) == 0xF7:
+            raise CfsRuntimeUnsupported(
+                "Experimental CFS v3.19: automatic SET disabled; manual bench only")
+
+        # Firmware API v2 advertises SET as bit 1. A read-only diagnostic
+        # firmware must never receive automatic runtime write attempts.
+        if self.overrides and not (meta.get("features", 0) & 0x02):
+            raise CfsRuntimeUnsupported(
+                "CFS firmware advertises READ-ONLY v2: skipping automatic SET")
 
         observed = {}
         for param_id, value in sorted(self.overrides.items()):
@@ -484,6 +481,17 @@ class BoxCfsRuntime:
                 "box_cfs_runtime: applied volatile CFS config address=%d "
                 "api=v%d values=%s",
                 self.address, meta["version"], values)
+        except CfsRuntimeUnsupported as exc:
+            if "Experimental CFS v3.19" in str(exc):
+                # The v3.19 bench image deliberately refuses auto-apply.
+                # It can still answer diagnostic GET and controlled manual SET.
+                self.supported = True
+                self.last_error = None
+                logging.info("box_cfs_runtime: v3.19 manual bench; auto-apply skipped")
+                return
+            self.last_error = str(exc)
+            self.supported = False
+            logging.warning("box_cfs_runtime: %s", exc)
         except CfsRuntimeBusy as exc:
             self.last_error = str(exc)
             if self._auto_attempt < self.AUTO_RETRY_LIMIT:
@@ -527,8 +535,8 @@ class BoxCfsRuntime:
         ]
         groups = (
             ("Motion", range(0, 6)),
-            ("Advanced motion", (6, 7, 8, 9, 18, 19, 20, 21, 22, 23, 24, 25)),
-            ("RFID-sensitive", range(10, 18)),
+            ("Advanced motion and safety", (6, 7, 8, 9, 10, 20, 21, 22, 24, 25, 26, 27)),
+            ("RFID-sensitive", (11, 12, 13, 14, 15, 16, 17, 18, 19, 23)),
         )
         for title, ids in groups:
             parts = []
@@ -551,8 +559,53 @@ class BoxCfsRuntime:
             raise gcmd.error(str(exc))
         gcmd.respond_info(self._format_groups(meta, values))
 
+    def cmd_diag(self, gcmd):
+        """Firmware identification, read-only GET and optional DESCRIBE.
+
+        GET-only diagnostic firmware advertises no descriptor feature bit;
+        in that case local host catalogue values are explicitly labelled.
+        No SET, RESET, APPLY or motion commands are executed here.
+        """
+        try:
+            drv = self._driver()
+            meta = drv.probe()
+            features = meta.get("features", 0)
+            has_desc = bool(features & 0x08)
+            lines = ["CFS_DIAG api=%d count=%d features=0x%02X source=%s"
+                     % (meta["version"], meta["count"], features,
+                        "MCU_DESCRIBE" if has_desc else "HOST_EXPECTED")]
+            if meta["version"] == 1:
+                lines.append("Stock v1 speeds: %s" % (list(meta["values"]),))
+            else:
+                all_ids = gcmd.get_int("ALL", 0, minval=0, maxval=1)
+                ids = range(min(meta["count"], len(PARAMETERS))) if all_ids else (0, 6, 7, 8, 11, 20, 27)
+                for param_id in ids:
+                    value = drv.get_v2(param_id)
+                    if has_desc:
+                        desc = drv.describe_v2(param_id)
+                        default, low, high = desc["default"], desc["min"], desc["max"]
+                        typ = str(desc["type"])
+                    else:
+                        spec = PARAM_BY_ID[param_id]
+                        default, low, high = spec.default, spec.minval, spec.maxval
+                        typ = "host:%s" % spec.value_type
+                    ok = low <= value <= high
+                    lines.append("ID=%d GET=%d EXPECT=%s RANGE=%d..%d "
+                                 "TYPE=%s STATUS=%s"
+                                 % (param_id, value, default, low, high,
+                                    typ, "OK" if ok else "INVALID"))
+        except Exception as exc:
+            raise gcmd.error(str(exc))
+        gcmd.respond_info("\n".join(lines))
+
     def cmd_apply(self, gcmd):
         try:
+            # v3.19 never accepts bulk APPLY; use only explicit manual SET.
+            driver = self._driver()
+            metadata = self._probe(driver)
+            if metadata.get("features", 0) == 0xF7:
+                raise CfsRuntimeUnsupported(
+                    "v3.19: BOX_CFS_CONFIG_APPLY disabled; manual SET only")
             meta, _values = self._apply_configured()
             meta, values = self._read_all()
         except Exception as exc:
@@ -591,8 +644,15 @@ class BoxCfsRuntime:
                 current = driver.info_v1()[spec.param_id]
                 self.override_mask = 0
             else:
-                desc = driver.describe_v2(spec.param_id)
-                self._validate_descriptor(spec, desc)
+                if meta.get("features", 0) == 0xF7:
+                    if spec.param_id < 7:
+                        raise CfsRuntimeUnsupported(
+                            "v3.19 protects stock IDs 0..6; only advanced 7..27 are writable")
+                    desc = {"min": spec.minval, "max": spec.maxval}
+                    # Firmware independently range-checks using ROM bounds.
+                else:
+                    desc = driver.describe_v2(spec.param_id)
+                    self._validate_descriptor(spec, desc)
                 if not desc["min"] <= value <= desc["max"]:
                     raise CfsRuntimeConfigError(
                         "%s value %d outside firmware range %d..%d"
@@ -636,6 +696,10 @@ class BoxCfsRuntime:
                 }
                 self.override_mask = 0
             else:
+                if meta.get("features", 0) == 0xF7:
+                    if spec is not None and spec.param_id < 7:
+                        raise CfsRuntimeUnsupported(
+                            "v3.19 reset only supports advanced IDs 7..27")
                 driver.reset_v2(
                     0xFF if spec is None else spec.param_id)
                 meta = driver.info_v2()
@@ -666,6 +730,7 @@ class BoxCfsRuntime:
             "protocol_version": self.protocol_version,
             "parameter_count": self.param_count,
             "override_mask": self.override_mask,
+            "firmware_features": self.firmware_features,
             "configured_overrides": {
                 PARAM_BY_ID[param_id].name: value
                 for param_id, value in sorted(self.overrides.items())
