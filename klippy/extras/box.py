@@ -4820,7 +4820,7 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
     def _operation(self):
         # A load/unload must not begin during an in-flight config write,
         # including when the last sampled BOX_STATE still reports IDLE.
-        if self._cfs_runtime_write_owner is not None:
+        if getattr(self, "_cfs_runtime_write_owner", None) is not None:
             raise BoxError("CFS runtime config write active: operation refused")
         self.operation_depth += 1
         try:
