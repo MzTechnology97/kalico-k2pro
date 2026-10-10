@@ -1,6 +1,6 @@
 # CFS v3.21 — safe runtime write guard (experimental)
 
-> The physical CFS firmware **has not yet been flashed or validated**. The external CM5/Kalico companion has been staged and validated with the existing v3.20 firmware. Keep the v3.13 recovery firmware available.
+> The experimental v3.21 CFS was **flashed and physically tested on 2026-10-10**, including successful SET/RESET immediately after unloading. **It is NOT approved for production release:** the independent MCU motor-active guard still requires hardening/verification. Keep the v3.13 recovery firmware available.
 
 ## Root cause corrected in the v3.21 firmware candidate
 
@@ -32,6 +32,8 @@ The firmware performs an **independent** check against the MCU state. Host statu
 
 The exact v3.21 binary was built locally on CM5: 178100 bytes, SHA-256 `4a918febbee1e411ae736acb7fd79eb718e3401a641ee947008bbecf1e6c0b19`. It is staged in the local installer helper, with v3.20 and v3.13 rollbacks. It is **not** currently shipped as a validated binary on GitHub.
 
-An environment issue prevents guarded installation: `sudo -n true` hangs on the CM5, so the flashing helper cannot safely stop Klipper and hand over the UART to T113. Do not bypass that control. After privileged service access is restored, the first tests must demonstrate both rejection of SET/RESET during active physical load/unload and success after unloading **without an electrical power cycle**. Only then repeat the timing comparisons and consider release.
+The earlier `sudo -n true` installer issue was overcome by the device operator, who installed firmware v3.21. On-device checks found signature `0x97`, 28/28 default GET and `ready/standby` with CFS `IDLE`. A real PLA slot-1 load (11.529 s) and unload (14.536 s) completed; both ID7 and ID8 SET/RESET succeeded immediately after unloading **without electrical MCU restart**, even though RFID stock `active_slot_raw` remained 1. After two cycles, **all 21** advanced IDs passed SET/GET/RESET and all 28 defaults were restored.
+
+**Critical distinction:** a harmless ID18 SET sent during active loading was rejected by Kalico *before* load completion. An unload-time request was queued until movement finished, and was correctly accepted once idle; it is not proof of unload-time rejection. During early `feeding_to_buffer`, Klipper's CFS status showed `box.state=IDLE` but `box.operation.active=true`. Thus the independent MCU candidate checking only `BOX_STATE==IDLE` is **not proven to block writes during every active motor stage**. Do not bypass the host preflight, do not auto-apply values, and do not merge for production until the MCU guard is strengthened or independently validated. See [full v3.21 real-hardware evidence](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/feature/cfs-v321-busy-guard-forensics/firmware/v3.21-busy-guard/hardware-validation-2026-10-10.json).
 
 See [CFS firmware issue #7](https://github.com/MzTechnology97/k2-cfs-rfid-tools/issues/7) and [draft v3.21 firmware PR #8](https://github.com/MzTechnology97/k2-cfs-rfid-tools/pull/8).
