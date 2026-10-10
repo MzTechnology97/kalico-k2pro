@@ -1311,6 +1311,9 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         self.drivers_ready = False
         self.snapshot = BoxSnapshot(loaded_slot=None)
         self.operation_depth = 0
+        # Exclusive manual CFS runtime configuration write lock.
+        # Prevent a physical operation from starting during SET/RESET.
+        self._cfs_runtime_write_owner = None
         # K2-OpenHost: live load/unload stage for the UI while the poll
         # timer is paused by an operation.
         self.operation_progress = None
@@ -4794,8 +4797,31 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
     # Coherent live state and budgeted polling
     # ------------------------------------------------------------------
 
+    def acquire_cfs_runtime_write(self, owner):
+        """Reserve the CFS physical-operation mutex during manual SET/RESET.
+
+        This protects host-controlled load/unload only. It does NOT prove
+        that the CFS MCU's own BOX_STATE is a true motor-idle indicator.
+        """
+        if (not owner or self._cfs_runtime_write_owner is not None
+                or self.operation_depth != 0
+                or self.operation_progress is not None
+                or self.change_engine.pending is not None):
+            raise BoxError("CFS operation active: runtime write denied")
+        self._cfs_runtime_write_owner = owner
+
+    def release_cfs_runtime_write(self, owner):
+        """Only the current owner may release the runtime-write lock."""
+        if self._cfs_runtime_write_owner != owner:
+            raise BoxError("CFS runtime-write owner mismatch")
+        self._cfs_runtime_write_owner = None
+
     @contextmanager
     def _operation(self):
+        # A load/unload must not begin during an in-flight config write,
+        # including when the last sampled BOX_STATE still reports IDLE.
+        if self._cfs_runtime_write_owner is not None:
+            raise BoxError("CFS runtime config write active: operation refused")
         self.operation_depth += 1
         try:
             yield
