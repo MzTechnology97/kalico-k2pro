@@ -47,7 +47,8 @@ The six v1 speed settings and 21 advanced examples in `config/k2/macros/box.cfg`
 - Host guard: five rejected requests (stock IDs, invalid bounds, APPLY), with baseline unchanged. These exercised Kalico's validation, **not a direct MCU protocol-bypass test**.
 - Host restart: a temporary ID18 override (402) survived **Klipper restart**, and was reset to 400 after reconnection; this is distinct from rebooting or electrically power-cycling the CFS MCU.
 - ARM emulation: 21 individual advanced set/get/reset cycles, 42 invalid bound rejections, corrupt sidecar fallback, busy-state rejection, heap wrapper and stock-protection checks.
-- Still unvalidated: electrical power-cycle/reset of the CFS MCU with RAM boot-clear, real load/unload/RFID motion under physical load, direct MCU-boundary rejection bypassing host checks and alternative CFS generations. EEPROM persistence is intentionally absent.
+- **Physical MCU rail power-cycle validated (2026-10-10):** T113 GPIO-controlled power was measured `ON → OFF (2 s) → ON`. ID 18 RAM override was `400 → 405` before the cut and returned to **400** after reboot without RESET; all 28 CFS values equaled the initial baseline. After a transient startup CFS query timeout, manual **read-only** INFO succeeded. Motor-control discovery recovered on the **second** startup attempt following transient RS-485 timeouts.
+- Still unvalidated: repeated/long-term physical power-cycle stability, real load/unload/RFID motion under physical load, direct MCU-boundary rejection bypassing host checks and alternative CFS generations. EEPROM persistence is intentionally absent.
 - If the CFS fails to boot or responds with `0xFFFF`, stop bench operations and use the installer helper's v3.13 candidate or the Creality recovery updater. Do not continue writing or moving the CFS during a fault.
 
 Run the host mock regression without touching the printer:
