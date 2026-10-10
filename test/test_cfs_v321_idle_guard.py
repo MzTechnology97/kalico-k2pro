@@ -21,6 +21,24 @@ class FakeBox:
         self.rfid_read_owner = None
         self.claim_count = 0
         self.release_count = 0
+        self._cfs_runtime_write_owner = None
+        self.operation_depth = 0
+        self.operation_progress = None
+        self.change_engine = type("ChangeEngine", (), {"pending": None})()
+
+    def acquire_cfs_runtime_write(self, owner):
+        if (
+            self._cfs_runtime_write_owner is not None
+            or self.operation_depth != 0
+            or self.operation_progress is not None
+            or self.change_engine.pending is not None
+        ):
+            raise RuntimeError("Runtime writer cannot overlap movement")
+        self._cfs_runtime_write_owner = owner
+
+    def release_cfs_runtime_write(self, owner):
+        assert self._cfs_runtime_write_owner == owner
+        self._cfs_runtime_write_owner = None
 
     def get_status(self, eventtime):
         return self.data
@@ -98,7 +116,9 @@ def test_v321_write_guard():
     def accepted():
         with instance._v321_claim_write({"features": 0x97}):
             assert box.rfid_read_owner == "BOX_CFS_RUNTIME_WRITE"
+            assert box._cfs_runtime_write_owner == "BOX_CFS_RUNTIME_WRITE"
         assert box.rfid_read_owner is None
+        assert box._cfs_runtime_write_owner is None
 
     def rejected():
         try:
@@ -144,7 +164,21 @@ def test_v321_write_guard():
     except ValueError:
         pass
     assert box.rfid_read_owner is None
+    assert box._cfs_runtime_write_owner is None
     assert box.claim_count == box.release_count
+
+    # A physical operation already in progress excludes SET/RESET.
+    box.operation_depth = 1
+    try:
+        with instance._v321_claim_write({"features": 0x97}):
+            raise AssertionError("Must not write during motion")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Motion did not exclude runtime write")
+    assert box._cfs_runtime_write_owner is None
+    assert box.rfid_read_owner is None
+    box.operation_depth = 0
 
 
 if __name__ == "__main__":
