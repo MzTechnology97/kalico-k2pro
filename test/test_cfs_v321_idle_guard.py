@@ -27,10 +27,12 @@ class FakeBox:
         self.change_engine = type("ChangeEngine", (), {"pending": None})()
 
     def acquire_cfs_runtime_write(self, owner):
-        if (self._cfs_runtime_write_owner is not None
-                or self.operation_depth != 0
-                or self.operation_progress is not None
-                or self.change_engine.pending is not None):
+        if (
+            self._cfs_runtime_write_owner is not None
+            or self.operation_depth != 0
+            or self.operation_progress is not None
+            or self.change_engine.pending is not None
+        ):
             raise RuntimeError("Runtime writer cannot overlap movement")
         self._cfs_runtime_write_owner = owner
 
