@@ -23,7 +23,7 @@ BOX_CFS_CONFIG_DIAG ALL=1
 
 This queries GET for every ID. With v3.19 the `source=HOST_EXPECTED` label means bounds and defaults come from the Kalico catalogue, **not** from the CFS; only GET values are actual device responses. An ID 6 expected value of `None` means it is hardware-captured and has no fixed default.
 
-On the reference printer one manually supervised check passed for ID 18:
+On the reference printer, all 21 advanced IDs (7–27) have now passed separate SET → GET → RESET cycles, and a four-override isolation plus RESET ALL test restored the complete 28-value baseline. The following is the original manual ID 18 smoke test:
 
 ```gcode
 BOX_CFS_CONFIG_SET PARAM=rfid_neighbor_detect_delay_ms VALUE=401
@@ -42,9 +42,12 @@ The six v1 speed settings and 21 advanced examples in `config/k2/macros/box.cfg`
 
 ## Verification and recovery
 
-- User hardware: v3.19 `0xF7`, 28/28 GET success, ID18 manual SET/GET/RESET success, three further full read-only passes success (2026-10-10).
+- Real CFS hardware (2026-10-10): v3.19 `0xF7`, 28/28 GET, **21/21** individual advanced SET/GET/RESET cycles, four independent concurrent overrides and RESET ALL restoring all 28 values.
+- Read stress: **60** complete GET sweeps (**1,680** individual GET operations), zero errors and no changes.
+- Host guard: five rejected requests (stock IDs, invalid bounds, APPLY), with baseline unchanged. These exercised Kalico's validation, **not a direct MCU protocol-bypass test**.
+- Host restart: a temporary ID18 override (402) survived **Klipper restart**, and was reset to 400 after reconnection; this is distinct from rebooting or electrically power-cycling the CFS MCU.
 - ARM emulation: 21 individual advanced set/get/reset cycles, 42 invalid bound rejections, corrupt sidecar fallback, busy-state rejection, heap wrapper and stock-protection checks.
-- Not validated: all advanced writes on real hardware, long-running CFS operations, EEPROM persistence (intentionally absent), power-cycle isolation, moved motors/real RFID read timing.
+- Still unvalidated: electrical power-cycle/reset of the CFS MCU with RAM boot-clear, real load/unload/RFID motion under physical load, direct MCU-boundary rejection bypassing host checks and alternative CFS generations. EEPROM persistence is intentionally absent.
 - If the CFS fails to boot or responds with `0xFFFF`, stop bench operations and use the installer helper's v3.13 candidate or the Creality recovery updater. Do not continue writing or moving the CFS during a fault.
 
 Run the host mock regression without touching the printer:
@@ -52,3 +55,5 @@ Run the host mock regression without touching the printer:
 ```bash
 python3 test/cfs_runtime_v319_standalone.py
 ```
+
+For sanitized evidence and timing measurements, see [v3.19 hardware validation](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/firmware/v3.19-volatile-ram/hardware-validation-2026-10-10.json). One transient startup discovery RS-485 timeout was observed following the Klipper restart; motor initialization completed and subsequent CFS communication recovered.
