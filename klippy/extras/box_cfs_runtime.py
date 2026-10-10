@@ -426,11 +426,11 @@ class BoxCfsRuntime:
                 "CFS CONFIG v2 exposes %d parameters, host expects at least %d"
                 % (meta["count"], len(PARAMETERS)))
 
-        # v3.19 0xF7 is manual bench ONLY; skip all configured auto-apply,
+        # v3.19/v3.20/v3.21 features 0xF7/0xB7 are manual bench ONLY; skip all configured auto-apply,
         # including the six stock speeds from box.cfg.
-        if meta.get("features", 0) == 0xF7:
+        if meta.get("features", 0) in (0xF7, 0xB7, 0x97):
             raise CfsRuntimeUnsupported(
-                "Experimental CFS v3.19: automatic SET disabled; manual bench only")
+                "Experimental CFS v3.19/v3.20/v3.21: automatic SET disabled; manual bench only")
 
         # Firmware API v2 advertises SET as bit 1. A read-only diagnostic
         # firmware must never receive automatic runtime write attempts.
@@ -482,12 +482,12 @@ class BoxCfsRuntime:
                 "api=v%d values=%s",
                 self.address, meta["version"], values)
         except CfsRuntimeUnsupported as exc:
-            if "Experimental CFS v3.19" in str(exc):
-                # The v3.19 bench image deliberately refuses auto-apply.
+            if "Experimental CFS v3.19/v3.20/v3.21" in str(exc):
+                # The v3.19/v3.20/v3.21 bench images deliberately refuse auto-apply.
                 # It can still answer diagnostic GET and controlled manual SET.
                 self.supported = True
                 self.last_error = None
-                logging.info("box_cfs_runtime: v3.19 manual bench; auto-apply skipped")
+                logging.info("box_cfs_runtime: v3.19/v3.20/v3.21 manual bench; auto-apply skipped")
                 return
             self.last_error = str(exc)
             self.supported = False
@@ -600,12 +600,12 @@ class BoxCfsRuntime:
 
     def cmd_apply(self, gcmd):
         try:
-            # v3.19 never accepts bulk APPLY; use only explicit manual SET.
+            # v3.19/v3.20/v3.21 never accept bulk APPLY; use only explicit manual SET.
             driver = self._driver()
             metadata = self._probe(driver)
-            if metadata.get("features", 0) == 0xF7:
+            if metadata.get("features", 0) in (0xF7, 0xB7, 0x97):
                 raise CfsRuntimeUnsupported(
-                    "v3.19: BOX_CFS_CONFIG_APPLY disabled; manual SET only")
+                    "v3.19/v3.20/v3.21: BOX_CFS_CONFIG_APPLY disabled; manual SET only")
             meta, _values = self._apply_configured()
             meta, values = self._read_all()
         except Exception as exc:
@@ -626,6 +626,52 @@ class BoxCfsRuntime:
         return gcmd.get_int(
             "VALUE", minval=spec.minval, maxval=spec.maxval)
 
+    def _v321_check_host_idle(self, expected_owner=None):
+        """Fail-closed secondary host preflight for v3.21 manual writes.
+
+        The MCU independently checks the LIVE Creality CMD_BOX_STATE source
+        (0x200037D2 == IDLE) on each SET/RESET, avoiding any serial-cache race.
+        This host guard is defense in depth, NOT a substitute for the MCU.
+        """
+        box = self.printer.lookup_object("box", None)
+        sensor = self.printer.lookup_object(
+            "filament_switch_sensor filament_sensor", None)
+        print_stats = self.printer.lookup_object("print_stats", None)
+        if box is None or sensor is None or print_stats is None:
+            raise CfsRuntimeBusy("v3.21 write: box/sensor/print_stats unavailable")
+        now = self.reactor.monotonic()
+        data = box.get_status(now)
+        filament = sensor.get_status(now)
+        printing = print_stats.get_status(now)
+        if (data.get("state") != "IDLE"
+                or data.get("state_code") != 0
+                or data.get("loaded_slot") != -1
+                or (data.get("operation") or {}).get("active") is not False
+                or filament.get("filament_detected") is not False
+                or printing.get("state") != "standby"
+                or getattr(box, "rfid_read_owner", None) != expected_owner):
+            raise CfsRuntimeBusy(
+                "v3.21 manual write requires empty CFS IDLE, clear head "
+                "sensor, standby printer and no active RFID read")
+        return box
+
+    def _v321_claim_write(self, meta):
+        """Return a context manager serializing runtime writes vs RFID reads."""
+        from contextlib import contextmanager, nullcontext
+        if meta.get("features") != 0x97:
+            return nullcontext()
+        @contextmanager
+        def claim():
+            box = self._v321_check_host_idle()
+            box.acquire_rfid_read("BOX_CFS_RUNTIME_WRITE")
+            try:
+                # Re-check state after claiming the RFID read lock.
+                self._v321_check_host_idle(expected_owner="BOX_CFS_RUNTIME_WRITE")
+                yield
+            finally:
+                box.release_rfid_read()
+        return claim()
+
     def cmd_set(self, gcmd):
         name = gcmd.get("PARAM", "").strip().lower()
         spec = PARAM_BY_NAME.get(name)
@@ -644,10 +690,10 @@ class BoxCfsRuntime:
                 current = driver.info_v1()[spec.param_id]
                 self.override_mask = 0
             else:
-                if meta.get("features", 0) == 0xF7:
+                if meta.get("features", 0) in (0xF7, 0xB7, 0x97):
                     if spec.param_id < 7:
                         raise CfsRuntimeUnsupported(
-                            "v3.19 protects stock IDs 0..6; only advanced 7..27 are writable")
+                            "v3.19/v3.20/v3.21 protect stock IDs 0..6; only advanced 7..27 are writable")
                     desc = {"min": spec.minval, "max": spec.maxval}
                     # Firmware independently range-checks using ROM bounds.
                 else:
@@ -657,7 +703,8 @@ class BoxCfsRuntime:
                     raise CfsRuntimeConfigError(
                         "%s value %d outside firmware range %d..%d"
                         % (spec.name, value, desc["min"], desc["max"]))
-                driver.set_v2(spec.param_id, value)
+                with self._v321_claim_write(meta):
+                    driver.set_v2(spec.param_id, value)
                 current = driver.get_v2(spec.param_id)
                 meta = driver.info_v2()
                 self._record_meta(meta)
@@ -696,12 +743,13 @@ class BoxCfsRuntime:
                 }
                 self.override_mask = 0
             else:
-                if meta.get("features", 0) == 0xF7:
+                if meta.get("features", 0) in (0xF7, 0xB7, 0x97):
                     if spec is not None and spec.param_id < 7:
                         raise CfsRuntimeUnsupported(
-                            "v3.19 reset only supports advanced IDs 7..27")
-                driver.reset_v2(
-                    0xFF if spec is None else spec.param_id)
+                            "v3.19/v3.20/v3.21 reset only support advanced IDs 7..27")
+                with self._v321_claim_write(meta):
+                    driver.reset_v2(
+                        0xFF if spec is None else spec.param_id)
                 meta = driver.info_v2()
                 self._record_meta(meta)
                 if spec is None:
