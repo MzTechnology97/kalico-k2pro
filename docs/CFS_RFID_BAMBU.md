@@ -276,3 +276,8 @@ A new extra (for example `box_rfid_snapmaker`) does not change `box.py`. Any pri
 | `rfid_decoder_read(slot, identity, max_reads, automatic)` | returns `(tag, rereads used)`, never more than `max_reads`. `(None, used)` means not this vendor's tag; raise on a CFS or bus error |
 
 A new MIFARE vendor with a fixed key only needs a decoder class in `box_rfid_mifare.DECODERS`.
+
+
+### Experimental CFS v3.19 runtime settings
+
+For the separate 28-parameter volatile RAM bench firmware, its `0xF7` feature mask and safety limitations, see [CFS runtime v3.19](CFS_RUNTIME_V319.md). This does **not** activate the experimental motion hooks.
