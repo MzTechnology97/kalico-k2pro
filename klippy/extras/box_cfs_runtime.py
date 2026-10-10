@@ -629,9 +629,9 @@ class BoxCfsRuntime:
     def _v321_check_host_idle(self, expected_owner=None):
         """Fail-closed secondary host preflight for v3.21 manual writes.
 
-        The MCU independently checks the LIVE Creality CMD_BOX_STATE source
-        (0x200037D2 == IDLE) on each SET/RESET, avoiding any serial-cache race.
-        This host guard is defense in depth, NOT a substitute for the MCU.
+        The MCU checks Creality's CMD_BOX_STATE mode byte, which can remain
+        IDLE during early physical feeding. The host's operation mutex is
+        mandatory; a separate true MCU motor-active flag remains unverified.
         """
         box = self.printer.lookup_object("box", None)
         sensor = self.printer.lookup_object(
@@ -664,12 +664,21 @@ class BoxCfsRuntime:
         def claim():
             box = self._v321_check_host_idle()
             box.acquire_rfid_read("BOX_CFS_RUNTIME_WRITE")
+            acquired_motion_lock = False
             try:
-                # Re-check state after claiming the RFID read lock.
+                # Exclude physical load/unload at the source, not merely by a
+                # potentially stale BOX_STATE snapshot. The lock is held
+                # across the on-wire SET/RESET and released in finally.
+                box.acquire_cfs_runtime_write("BOX_CFS_RUNTIME_WRITE")
+                acquired_motion_lock = True
                 self._v321_check_host_idle(expected_owner="BOX_CFS_RUNTIME_WRITE")
                 yield
             finally:
-                box.release_rfid_read()
+                try:
+                    if acquired_motion_lock:
+                        box.release_cfs_runtime_write("BOX_CFS_RUNTIME_WRITE")
+                finally:
+                    box.release_rfid_read()
         return claim()
 
     def cmd_set(self, gcmd):
