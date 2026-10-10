@@ -11,10 +11,7 @@ class FakeBoxError(Exception):
 
 def _box_mutex_class():
     src = (
-        Path(__file__).resolve().parents[1]
-        / "klippy"
-        / "extras"
-        / "box.py"
+        Path(__file__).resolve().parents[1] / "klippy" / "extras" / "box.py"
     ).read_text()
     tree = ast.parse(src)
     target = next(
@@ -40,9 +37,7 @@ def _box_mutex_class():
         body=selected,
         decorator_list=[],
     )
-    module = ast.fix_missing_locations(
-        ast.Module(body=[cls], type_ignores=[])
-    )
+    module = ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[]))
     scope = {
         "contextmanager": contextmanager,
         "BoxError": FakeBoxError,
