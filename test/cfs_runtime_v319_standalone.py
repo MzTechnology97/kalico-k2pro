@@ -107,12 +107,16 @@ def main():
     assert not any(call[0] == "set" for call in driver.calls)
 
     try:
-        runtime.cmd_set(MockGcode({"PARAM": "feeder_forward_speed", "VALUE": "200"}))
+        runtime.cmd_set(
+            MockGcode({"PARAM": "feeder_forward_speed", "VALUE": "200"})
+        )
         raise AssertionError("stock speed SET must be rejected")
     except ValueError:
         pass
 
-    runtime.cmd_set(MockGcode({"PARAM": "hub_transition_wait_ms", "VALUE": "3300"}))
+    runtime.cmd_set(
+        MockGcode({"PARAM": "hub_transition_wait_ms", "VALUE": "3300"})
+    )
     assert driver.values[7] == 3300
     assert ("set", 7, 3300) in driver.calls
 
@@ -127,10 +131,10 @@ def main():
     lines = MockGcode({"ALL": 1})
     runtime.cmd_diag(lines)
     assert lines.lines and "features=0xF7" in lines.lines[0]
-    assert not any(
-        call[0] == "set" and call[1] < 7 for call in driver.calls
+    assert not any(call[0] == "set" and call[1] < 7 for call in driver.calls)
+    print(
+        "PASS: v3.19 manual advanced SET/RESET, blocked stock writes and auto-apply"
     )
-    print("PASS: v3.19 manual advanced SET/RESET, blocked stock writes and auto-apply")
 
 
 if __name__ == "__main__":
