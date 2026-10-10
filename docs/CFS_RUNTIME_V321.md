@@ -37,3 +37,38 @@ The earlier `sudo -n true` installer issue was overcome by the device operator, 
 **Critical distinction:** a harmless ID18 SET sent during active loading was rejected by Kalico *before* load completion. An unload-time request was queued until movement finished, and was correctly accepted once idle; it is not proof of unload-time rejection. During early `feeding_to_buffer`, Klipper's CFS status showed `box.state=IDLE` but `box.operation.active=true`. Thus the independent MCU candidate checking only `BOX_STATE==IDLE` is **not proven to block writes during every active motor stage**. Do not bypass the host preflight, do not auto-apply values, and do not merge for production until the MCU guard is strengthened or independently validated. See [full v3.21 real-hardware evidence](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/feature/cfs-v321-busy-guard-forensics/firmware/v3.21-busy-guard/hardware-validation-2026-10-10.json).
 
 See [CFS firmware issue #7](https://github.com/MzTechnology97/k2-cfs-rfid-tools/issues/7) and [draft v3.21 firmware PR #8](https://github.com/MzTechnology97/k2-cfs-rfid-tools/pull/8).
+
+## Additional host operation mutex (2026-10-10)
+
+The `Box._operation()` context now refuses to begin a physical CFS operation
+while a manual runtime-config write is in progress. Conversely, SET/RESET
+claims `Box.acquire_cfs_runtime_write()` and refuses to proceed if a physical
+operation has already begun or a filament change is pending. Its owner-checked
+release occurs in `finally`, and the existing RFID transport lock is held
+throughout the on-wire write. The operation/transaction locks are acquired
+in the same Klipper G-code reactor and do not introduce another blocking
+serial operation between checking and reserving the mutex.
+
+This closes an **application-level time-of-check/time-of-use gap** that could
+occur if a physical operation were started after a host status preflight but
+before the SET/RESET transaction completed. It does not authorize firmware
+writes while motors run.
+
+**Important remaining firmware limitation:** The v3.21 MCU checks the stock
+`CMD_BOX_STATE` load-mode byte (`0x200037D2`). On real hardware its value
+was `IDLE` during the early `feeding_to_buffer` motor operation. Independent
+CFS MCU motor/task-running status has **not** been identified or proven; this
+host lock must not be presented as a firmware-side fix. A direct firmware
+protocol caller that bypasses the Klipper safety layer remains outside
+the demonstrated safety boundary. Never disable the host guard or auto-apply.
+
+The true box/feeder protocol also differentiates an idle state from
+feed/change mode and specific transient busy events. Do not repurpose
+`BOX_STATE` mode values or `active_slot_raw` to represent all physical
+movement. Until independent MCU task activity can be verified, keep the
+CFS v3.21 firmware release experimental and leave the production merge
+gated on [issue #9](https://github.com/MzTechnology97/k2-cfs-rfid-tools/issues/9).
+
+Offline regression tests:
+`test/test_cfs_v321_idle_guard.py` and
+`test/test_cfs_v322_motion_mutex.py`.
