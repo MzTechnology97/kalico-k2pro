@@ -18,9 +18,13 @@ Firmware compatibility:
     0x13 CONFIG_V2_RESET
     0x14 CONFIG_V2_DESCRIBE
 
-All writes are RAM-only. The CFS firmware independently range-checks v2 values
-and rejects SET/RESET while the stock RFID task is busy. EEPROM and physical
-RFID tags are never written by this extra.
+All permitted writes are RAM-only. Experimental API2 firmware v3.19-v3.22
+advertises 28 parameters but ONLY v3.20-v3.22 IDs 7/8 are connected to
+the real stock execution path. Other advanced IDs are bench storage without
+motion effect; they must never be presented as effective tuning knobs.
+The MCU BOX_STATE guard is NOT a complete motor-activity interlock. Kalico
+requires its host operation/RFID mutex for supervised writes. EEPROM and
+physical RFID tags are never written by this extra.
 """
 
 import logging
@@ -48,6 +52,17 @@ SUB_CONFIG_V2_RESET = 0x13
 SUB_CONFIG_V2_DESCRIBE = 0x14
 CONFIG_V2_VERSION = 2
 CONFIG_V2_DESCRIPTOR_SIZE = 1  # firmware INFO advertises catalog revision 1
+
+# Verified effective stock hooks by exact experimental firmware feature byte.
+# This is NOT a writable bitmask: stored-only RAM overrides are deliberately
+# excluded even when a raw firmware CONFIG_V2_SET would accept them.
+# Do not extend this table without proof of each real stock callsite.
+EXPERIMENTAL_EFFECTIVE_HOOKS = {
+    0xF7: frozenset(),        # v3.19: all 21 values are RAM bench only
+    0xB7: frozenset((7, 8)), # v3.20: two proven original timing callsites
+    0x97: frozenset((7, 8)), # v3.21: MCU BOX_STATE guard (insufficient alone)
+    0xD7: frozenset((7, 8)), # v3.22: 4 extra GET-only opaque probes
+}
 
 STATUS_OK = 0
 STATUS_BAD_REQUEST = 1
@@ -432,7 +447,7 @@ class BoxCfsRuntime:
         # including the six stock speeds from box.cfg.
         if meta.get("features", 0) in (0xF7, 0xB7, 0x97, 0xD7):
             raise CfsRuntimeUnsupported(
-                "Experimental CFS v3.19/v3.20/v3.21: automatic SET disabled; manual bench only")
+                "Experimental CFS v3.19-v3.22: automatic SET disabled; supervised hooks only")
 
         # Firmware API v2 advertises SET as bit 1. A read-only diagnostic
         # firmware must never receive automatic runtime write attempts.
@@ -518,6 +533,24 @@ class BoxCfsRuntime:
             logging.exception("box_cfs_runtime: automatic apply failed")
 
     @staticmethod
+    def _require_effective_hook(meta, param_id):
+        """Fail closed on ROM defaults / fake tunables in experimental images.
+
+        Do NOT trust CONFIG_V2_SET success as evidence that any stock motor
+        or RFID callsite is actually wired to a setting.
+        """
+        feature = meta.get("features", 0)
+        if meta.get("version") != 2 or feature not in EXPERIMENTAL_EFFECTIVE_HOOKS:
+            return
+        if param_id not in EXPERIMENTAL_EFFECTIVE_HOOKS[feature]:
+            hooks = sorted(EXPERIMENTAL_EFFECTIVE_HOOKS[feature])
+            raise CfsRuntimeUnsupported(
+                "Experimental CFS 0x%02X: ID %d is NOT connected to a "
+                "stock motion/RFID callsite; SET blocked (effective IDs: %s)"
+                % (feature, param_id,
+                   ",".join(map(str, hooks)) if hooks else "none"))
+
+    @staticmethod
     def _format_value(spec, value, override=False):
         suffix = "*" if override else ""
         if spec.value_type == "bool":
@@ -552,6 +585,15 @@ class BoxCfsRuntime:
                     spec, values[spec.name], overridden))
             if parts:
                 lines.append("%s: %s" % (title, " ".join(parts)))
+        feature = meta.get("features", 0)
+        if meta.get("version") == 2 and feature in EXPERIMENTAL_EFFECTIVE_HOOKS:
+            hooks = sorted(EXPERIMENTAL_EFFECTIVE_HOOKS[feature])
+            lines.append(
+                "EXPERIMENTAL 0x%02X: effective stock hooks=%s; IDs 0..6 "
+                "READ-ONLY; IDs 9..27 STORED-ONLY bench values (not tuning). "
+                "GET alone does not prove hardware effect; override_mask=0 "
+                "is a HOST PLACEHOLDER."
+                % (feature, ",".join(map(str, hooks)) if hooks else "none"))
         return "\n".join(lines)
 
     def cmd_info(self, gcmd):
@@ -640,7 +682,7 @@ class BoxCfsRuntime:
             metadata = self._probe(driver)
             if metadata.get("features", 0) in (0xF7, 0xB7, 0x97, 0xD7):
                 raise CfsRuntimeUnsupported(
-                    "v3.19/v3.20/v3.21: BOX_CFS_CONFIG_APPLY disabled; manual SET only")
+                    "v3.19-v3.22: BOX_CFS_CONFIG_APPLY disabled; supervised hooks only")
             meta, _values = self._apply_configured()
             meta, values = self._read_all()
         except Exception as exc:
@@ -734,10 +776,11 @@ class BoxCfsRuntime:
                 current = driver.info_v1()[spec.param_id]
                 self.override_mask = 0
             else:
-                if meta.get("features", 0) in (0xF7, 0xB7, 0x97, 0xD7):
+                self._require_effective_hook(meta, spec.param_id)
+                if meta.get("features", 0) in EXPERIMENTAL_EFFECTIVE_HOOKS:
                     if spec.param_id < 7:
                         raise CfsRuntimeUnsupported(
-                            "v3.19/v3.20/v3.21 protect stock IDs 0..6; only advanced 7..27 are writable")
+                            "experimental CFS: stock IDs 0..6 are read-only; only connected hooks are writable")
                     desc = {"min": spec.minval, "max": spec.maxval}
                     # Firmware independently range-checks using ROM bounds.
                 else:
