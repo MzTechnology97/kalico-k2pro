@@ -36,3 +36,49 @@ Related experimental firmware branch: [v3.22 sources and offline validation](htt
 G-code requests for `BOX_CFS_CONFIG_SNAPSHOT` dispatched while a physical CFS move was active were **queued until after the move**, taking 10.545 seconds during loading and 13.797 seconds during unloading. Both `0000:0000 / 0001:0000` replies occurred **after physical movement completed**. These measurements must **not** be described as in-motion samples and cannot validate an independent MCU motor-busy guard. Further work requires a correctly timestamped, low-impact MCU-side or passive event sampler that does not bypass the host write interlock.
 
 The temporary initial `NO_RESPONSE` condition recovered; its cause has not been proven. The CFS is operational, with Klipper `ready/standby`, CFS `IDLE`, 28 parameters at baseline, heaters off and no runtime error.
+
+## 2026-10-11 source-level capability cleanup (unflashed)
+
+The v3.22 firmware still exposes a *28-entry* API2 parameter catalogue.
+The previous host screen displayed advanced IDs 9–27 as if they were effective
+controls. Source-level ARM audit confirms that **ONLY IDs 7 and 8** reach the
+original stock execution callsites (`0x08011116`, `0x080112CA`).
+
+| IDs | Firmware capability | Permitted Kalico behavior |
+| --- | --- | --- |
+| 0–5 | stock speed table, GET only | read-only |
+| 6 | stock reverse-detooth toggle, GET only | read-only |
+| 7 | hub transition timing, real MOVW hook | supervised manual SET/GET/RESET |
+| 8 | insert sensor timeout, real MOVW hook | supervised manual SET/GET/RESET |
+| 9–27 | volatile sidecar storage; NO firmware execution hooks | GET for historical bench diagnosis; manual SET now **blocked** |
+| 28–31 | fixed opaque MCU-state words | read-only diagnostic SNAPSHOT; never an idle/busy certificate |
+
+The v3.19 feature `0xF7` has **zero** verified active advanced hooks.
+The feature signatures `0xB7` (v3.20), `0x97` (v3.21), and `0xD7`
+(v3.22) have only `7,8`. The host now calls an explicit feature-to-hook
+gate **before submitting any manual SET**. This does NOT change the currently
+installed experimental MCU image, which still accepts raw SET on IDs 9–27.
+The host cannot protect an external raw RS-485 writer.
+
+Both source config templates now list all 28 recognised parameter names with
+English comments, correct units and truthfully marked active/inactive
+functionality. The reference config uses `auto_apply: false` with every
+parameter commented. No live K2 Pro config has been modified by this patch.
+
+The firmware does not dispatch `CONFIG_V2_DESCRIBE (0x14)`, and old v3.13
+legacy `0x0D–0x0F` comments do not reflect the v3.22 dispatcher. Firmware
+descriptor defaults and limits in the Python host may be labelled
+`HOST_EXPECTED` and are not device-derived in this experimental signature.
+The previous `override_mask=0` is a **host placeholder**, not evidence that
+the CFS has no currently stored advanced overrides.
+
+The v3.12 stock-geometry third-party remaining code (fixed proxy total 330 m,
+type-4 stock odometer) remains unchanged. Kalico separately maintains
+spool-specific estimates from tag information or profile/material nominal
+lengths. Do not equate these two reference-length systems.
+
+**Release gates remain closed:** independent MCU motor-activity proof, heap
+ownership and bootloader flash partition safety are still absent. No flash,
+auto-apply, direct unsafe protocol writes or production merge is authorised.
+Firmware audit companion:
+[fix/cfs-v322-source-audit](https://github.com/MzTechnology97/k2-cfs-rfid-tools/tree/fix/cfs-v322-source-audit).
