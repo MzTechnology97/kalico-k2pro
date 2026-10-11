@@ -1,5 +1,8 @@
 """Offline proof that passive CFS trace sends zero RS-485 commands."""
 
+import ast
+import logging
+from contextlib import contextmanager
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,6 +108,10 @@ class FakePrinter:
     def register_event_handler(self, name, cb):
         self.listeners.append((name, cb))
 
+    def send_event(self, name, *args):
+        return [handler(*args) for event, handler in self.listeners
+                if event == name]
+
 
 class FakeConfig:
     def __init__(self, printer, settings=None):
@@ -147,7 +154,8 @@ def test_disabled_until_manual_start_and_no_transport():
         "BOX_CFS_TRACE_START", "BOX_CFS_TRACE_STOP",
         "BOX_CFS_TRACE_SHOW", "BOX_CFS_TRACE_CLEAR"}
     assert set(name for name, _ in printer.listeners) == {
-        "klippy:shutdown", "klippy:disconnect"}
+        "klippy:shutdown", "klippy:disconnect",
+        "box:cfs_operation_stage", "box:cfs_operation_end"}
     assert all(x in ("box", "gcode") for x in printer.lookups)
 
     cmd = FakeCommand()
@@ -243,3 +251,121 @@ def test_unavailable_box_refused_without_timer():
         trace.cmd_start(FakeCommand())
     assert not trace.running
     assert printer.reactor.schedule[trace._timer] == printer.reactor.NEVER
+
+
+def _load_real_box_operation_methods():
+    """Execute exact Box operation methods without importing printer hardware."""
+    source = (Path(__file__).resolve().parents[1]
+              / "klippy" / "extras" / "box.py").read_text()
+    tree = ast.parse(source)
+    box_type = next(
+        item for item in tree.body
+        if isinstance(item, ast.ClassDef) and item.name == "Box")
+    required = {
+        "_operation", "_set_operation_progress", "_emit_passive_cfs_event"}
+    methods = [
+        method for method in box_type.body
+        if isinstance(method, ast.FunctionDef) and method.name in required]
+    assert set(method.name for method in methods) == required
+    cls = ast.ClassDef(
+        name="IsolatedBoxMethods", bases=[], keywords=[],
+        body=methods, decorator_list=[])
+    module = ast.fix_missing_locations(
+        ast.Module(body=[cls], type_ignores=[]))
+    namespace = {
+        "contextmanager": contextmanager,
+        "_klog": lambda *args, **kwargs: None,
+        "logging": logging,
+        "BoxError": RuntimeError,
+    }
+    exec(compile(module, "box.py AST extracted", "exec"), namespace)
+    return namespace["IsolatedBoxMethods"]
+
+
+def test_real_box_operation_events_capture_all_stages_while_timer_blocked():
+    """Stage callbacks run synchronously even if reactor cannot schedule."""
+    printer, trace = setup_trace()
+    cls = _load_real_box_operation_methods()
+    box = cls()
+    box.printer = printer
+    box.snapshot = FakeBox().snapshot
+    box._cfs_runtime_write_owner = None
+    box.operation_depth = 0
+    box.operation_progress = None
+    box.clog_baseline = None
+    printer.box = box
+    trace.cmd_start(FakeCommand())
+    # Simulate a synchronous physical operation. No timer fires at all.
+    with box._operation():
+        printer.reactor.now = 10.1
+        box._set_operation_progress("load", 1, "feeding_to_buffer")
+        printer.reactor.now = 10.3
+        box._set_operation_progress("load", 1, "feeding_to_printhead")
+        printer.reactor.now = 10.7
+        box._set_operation_progress("load", 1, "verifying")
+        assert box.operation_depth == 1
+        assert trace.samples == 1
+        assert trace.stage_events == 3
+        assert [e["cached"]["operation_stage"] for e in trace.history
+                if e["reason"] == "HOST_STAGE_EVENT"] == [
+                    "feeding_to_buffer", "feeding_to_printhead", "verifying"]
+    assert box.operation_depth == 0
+    assert box.operation_progress is None
+    assert trace.operation_ends == 1
+    assert trace.history[-1]["reason"] == "HOST_OPERATION_END"
+    assert trace.history[-1]["cached"]["operation_result"] == "unknown"
+    assert trace.samples == 1  # no timed polling during motor wait
+    assert all(name in ("box", "gcode") for name in printer.lookups)
+    printer.reactor.fire(12.0)
+    assert trace.poll_gaps == 1
+    assert trace.get_status(12.)["host_stage_events"] == 3
+    assert trace.get_status(12.)["host_operation_end_events"] == 1
+
+
+def test_faulting_stage_listener_cannot_interrupt_actual_box_operation():
+    printer, trace = setup_trace()
+    cls = _load_real_box_operation_methods()
+    box = cls()
+    box.printer = printer
+    box.snapshot = FakeBox().snapshot
+    box._cfs_runtime_write_owner = None
+    box.operation_depth = 0
+    box.operation_progress = None
+    box.clog_baseline = None
+    printer.box = box
+    trace.cmd_start(FakeCommand())
+
+    def broken_listener(*args):
+        raise RuntimeError("broken observer")
+
+    # The Box boundary guards against observers raising into the CFS path.
+    printer.register_event_handler("box:cfs_operation_stage", broken_listener)
+    with box._operation():
+        box._set_operation_progress("unload", 0, "retracting_to_cfs")
+        assert box.operation_progress["stage"] == "retracting_to_cfs"
+    assert box.operation_depth == 0
+    assert trace.stage_events == 1
+    assert trace.operation_ends == 1
+
+    # The end event reports completion-of-context, NEVER success.
+    with pytest.raises(ValueError):
+        with box._operation():
+            box._set_operation_progress("load", 2, "preparing")
+            raise ValueError("simulated original operation failed")
+    assert trace.operation_ends == 2
+    assert trace.history[-1]["cached"]["operation_result"] == "unknown"
+
+
+def test_stage_observer_failure_is_suppressed_and_disables_capture():
+    printer, trace = setup_trace()
+    trace.cmd_start(FakeCommand())
+
+    def fail(*args):
+        raise ValueError("trace ring allocation failed")
+
+    trace._append = fail
+    printer.send_event("box:cfs_operation_stage", "load", 1, "preparing")
+    assert not trace.running
+    assert trace.last_error == "ValueError: trace ring allocation failed"
+    assert printer.reactor.schedule[trace._timer] == printer.reactor.NEVER
+    assert all(name in ("box", "gcode") for name in printer.lookups)
