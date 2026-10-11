@@ -369,3 +369,91 @@ def test_stage_observer_failure_is_suppressed_and_disables_capture():
     assert trace.last_error == "ValueError: trace ring allocation failed"
     assert printer.reactor.schedule[trace._timer] == printer.reactor.NEVER
     assert all(name in ("box", "gcode") for name in printer.lookups)
+
+
+def test_exact_host_stage_callback_intervals_even_with_no_timer_poll():
+    printer, trace = setup_trace()
+    real_box_cls = _load_real_box_operation_methods()
+    box = real_box_cls()
+    box.printer = printer
+    box.snapshot = FakeBox().snapshot
+    box._cfs_runtime_write_owner = None
+    box.operation_depth = 0
+    box.operation_progress = None
+    box.clog_baseline = None
+    printer.box = box
+    trace.cmd_start(FakeCommand())
+
+    with box._operation():
+        printer.reactor.now = 10.1
+        box._set_operation_progress("load", 0, "preparing")
+        printer.reactor.now = 10.4
+        box._set_operation_progress("load", 0, "feeding_to_buffer")
+        printer.reactor.now = 11.2
+        box._set_operation_progress("load", 0, "feeding_to_printhead")
+        printer.reactor.now = 12.0
+        box._set_operation_progress("load", 0, "verifying")
+    stages = [r["cached"] for r in trace.history
+              if r["reason"] == "HOST_STAGE_EVENT"]
+    assert [r["previous_host_stage"] for r in stages] == [
+        None, "preparing", "feeding_to_buffer", "feeding_to_printhead"]
+    assert [r["previous_host_stage_interval_s"] for r in stages] == [
+        None, 0.3, 0.8, 0.8]
+    ending = trace.history[-1]
+    assert ending["reason"] == "HOST_OPERATION_END"
+    assert ending["cached"]["operation_result"] == "unknown"
+    assert ending["cached"]["last_host_stage"] == "verifying"
+    assert ending["cached"]["last_host_stage_interval_s"] == 0
+    assert ending["cached"]["host_first_stage_to_end_s"] == 1.9
+    assert trace.host_stage_intervals == 4
+    assert trace.max_host_stage_interval_s == pytest.approx(0.8)
+    assert trace.last_operation_host_span_s == 1.9
+    # No timer-driven samples during the whole simulated load.
+    assert trace.samples == 1
+    assert trace.poll_gaps == 0
+    assert all(x in ("box", "gcode") for x in printer.lookups)
+    gcmd = FakeCommand(LIMIT=5)
+    trace.cmd_show(gcmd)
+    assert "previous_host_interval_s=0.8" in gcmd.lines[0]
+    assert "host_first_stage_to_end_s=1.9" in gcmd.lines[0]
+    status = trace.get_status(12.0)
+    assert status["host_stage_intervals"] == 4
+    assert status["host_intervals_are_not_motor_timings"] is True
+    assert status["last_operation_host_span_s"] == 1.9
+
+
+def test_host_intervals_reset_between_operations_and_clear():
+    printer, trace = setup_trace()
+    trace.cmd_start(FakeCommand())
+    printer.reactor.now = 10.1
+    printer.send_event("box:cfs_operation_stage", "load", 1, "preparing")
+    printer.reactor.now = 10.6
+    printer.send_event("box:cfs_operation_end")
+    printer.reactor.now = 11.0
+    printer.send_event("box:cfs_operation_stage", "unload", 1, "retracting")
+    assert trace.history[-1]["cached"]["previous_host_stage"] is None
+    printer.reactor.now = 12.0
+    printer.send_event("box:cfs_operation_end")
+    assert trace.last_operation_host_span_s == 1.0
+    assert trace.host_stage_intervals == 2
+    trace.cmd_stop(FakeCommand())
+    trace.cmd_clear(FakeCommand())
+    assert trace.host_stage_intervals == 0
+    assert trace.max_host_stage_interval_s == 0
+    assert trace.last_operation_host_span_s is None
+    assert trace._stage_started_at is None
+
+
+def test_non_monotonic_host_timestamp_disables_only_diagnostics():
+    printer, trace = setup_trace()
+    trace.cmd_start(FakeCommand())
+    printer.reactor.now = 11
+    printer.send_event("box:cfs_operation_stage", "load", 0, "preparing")
+    printer.reactor.now = 10
+    # If host monotonicity breaks, diagnostic capture stops and does NOT
+    # issue a motor/serial request or throw into Box command execution.
+    printer.send_event("box:cfs_operation_stage", "load", 0, "verifying")
+    assert not trace.running
+    assert "non-monotonic host" in trace.last_error
+    assert trace.get_status(10)["host_intervals_are_not_motor_timings"] is True
+    assert printer.reactor.schedule[trace._timer] == printer.reactor.NEVER

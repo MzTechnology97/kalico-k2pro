@@ -37,6 +37,12 @@ class BoxCfsTrace:
         self.changes = 0
         self.stage_events = 0
         self.operation_ends = 0
+        self.host_stage_intervals = 0
+        self.max_host_stage_interval_s = 0.0
+        self.last_operation_host_span_s = None
+        self._stage_started_at = None
+        self._stage_name = None
+        self._first_stage_at = None
         self.poll_gaps = 0
         self.max_gap_s = 0.0
         self.last_poll = None
@@ -107,34 +113,68 @@ class BoxCfsTrace:
             self._append(eventtime, "CACHED_STATE_CHANGED", state)
             self.last_state = state
 
+    def _host_stage_interval(self, now):
+        # Elapsed HOST callback time, not proven motor-run duration.
+        if self._stage_started_at is None:
+            return None
+        delta = now - self._stage_started_at
+        if delta < 0:
+            raise ValueError("non-monotonic host stage timestamps")
+        self.host_stage_intervals += 1
+        self.max_host_stage_interval_s = max(
+            self.max_host_stage_interval_s, delta)
+        return round(delta, 3)
+
     def _on_stage(self, kind, slot, stage):
-        # Called synchronously from Box._set_operation_progress, before a
-        # blocking RS-485 command. Never query the MCU or sleep in this hook.
+        # Synchronous callback even while the reactor timer is blocked.
+        # No serial requests, no motor or MCU time sources are used.
         if not self.running:
             return
         try:
-            self._append(self.reactor.monotonic(), "HOST_STAGE_EVENT", {
+            now = self.reactor.monotonic()
+            previous_duration = self._host_stage_interval(now)
+            self._append(now, "HOST_STAGE_EVENT", {
                 "operation_active": True,
                 "operation_kind": kind,
                 "operation_slot": slot,
                 "operation_stage": stage,
+                "previous_host_stage": self._stage_name,
+                "previous_host_stage_interval_s": previous_duration,
             })
             self.stage_events += 1
+            self._stage_started_at = now
+            self._stage_name = stage
+            if self._first_stage_at is None:
+                self._first_stage_at = now
         except Exception as exc:
             self._fail_passive_capture(exc)
 
     def _on_operation_end(self):
-        # No claim that the operation succeeded: this event is emitted in
-        # the box's finally block, including after a failed operation.
+        # Context exit includes failures: result remains UNKNOWN.
         if not self.running:
             return
         try:
-            self._append(self.reactor.monotonic(), "HOST_OPERATION_END", {
+            now = self.reactor.monotonic()
+            last_stage_duration = self._host_stage_interval(now)
+            operation_span = None
+            if self._first_stage_at is not None:
+                span = now - self._first_stage_at
+                if span < 0:
+                    raise ValueError("non-monotonic operation timestamps")
+                operation_span = round(span, 3)
+            self._append(now, "HOST_OPERATION_END", {
                 "operation_active": False,
                 "operation_stage": None,
                 "operation_result": "unknown",
+                "last_host_stage": self._stage_name,
+                "last_host_stage_interval_s": last_stage_duration,
+                "host_first_stage_to_end_s": operation_span,
             })
             self.operation_ends += 1
+            self.last_operation_host_span_s = operation_span
+            self._stage_started_at = None
+            self._stage_name = None
+            self._first_stage_at = None
         except Exception as exc:
             self._fail_passive_capture(exc)
 
@@ -171,6 +211,12 @@ class BoxCfsTrace:
         self.history.clear()
         self.samples = self.changes = self.poll_gaps = 0
         self.stage_events = self.operation_ends = 0
+        self.host_stage_intervals = 0
+        self.max_host_stage_interval_s = 0.0
+        self.last_operation_host_span_s = None
+        self._stage_started_at = None
+        self._stage_name = None
+        self._first_stage_at = None
         self.max_gap_s = 0.0
         self.last_poll = self.last_state = self.last_error = None
         self.started = self.reactor.monotonic()
@@ -211,6 +257,12 @@ class BoxCfsTrace:
         self.started = self.last_poll = self.last_state = None
         self.samples = self.changes = self.poll_gaps = 0
         self.stage_events = self.operation_ends = 0
+        self.host_stage_intervals = 0
+        self.max_host_stage_interval_s = 0.0
+        self.last_operation_host_span_s = None
+        self._stage_started_at = None
+        self._stage_name = None
+        self._first_stage_at = None
         self.max_gap_s = 0.0
         self.last_error = None
         gcmd.respond_info("CFS passive HOST trace cleared")
@@ -222,9 +274,12 @@ class BoxCfsTrace:
         lines = [
             "CFS passive HOST trace (NO MCU MOTOR TELEMETRY): "
             "active=%s samples=%d changes=%d gaps=%d max_gap=%.3fs "
-            "stages=%d ends=%d events_kept=%d/%d" %
+            "stages=%d ends=%d host_intervals=%d max_host_interval=%.3fs "
+            "last_host_span=%s events_kept=%d/%d" %
             (self.running, self.samples, self.changes, self.poll_gaps,
              self.max_gap_s, self.stage_events, self.operation_ends,
+             self.host_stage_intervals, self.max_host_stage_interval_s,
+             self.last_operation_host_span_s,
              len(self.history), self.history_max),
             "Sampling cannot observe internal motion while the "
             "Klipper reactor is blocked; NO missing-stage interpolation.",
@@ -233,13 +288,18 @@ class BoxCfsTrace:
             s = row["cached"] or {}
             lines.append(
                 "t+%.3fs %s op=%s/%s/%s depth=%s box=%s status=%s "
-                "loaded=%s ready=%s gap=%s" %
+                "loaded=%s ready=%s gap=%s previous_host_stage=%s "
+                "previous_host_interval_s=%s end_last_host_interval_s=%s "
+                "host_first_stage_to_end_s=%s" %
                 (row["elapsed_s"], row["reason"],
                  s.get("operation_kind"), s.get("operation_slot"),
                  s.get("operation_stage"), s.get("operation_active"),
                  s.get("box_state_code"), s.get("box_status_code"),
                  s.get("loaded_slot"), s.get("box_data_ready"),
-                 s.get("gap_s")))
+                 s.get("gap_s"), s.get("previous_host_stage"),
+                 s.get("previous_host_stage_interval_s"),
+                 s.get("last_host_stage_interval_s"),
+                 s.get("host_first_stage_to_end_s")))
         gcmd.respond_info("\n".join(lines))
 
     def get_status(self, eventtime):
@@ -253,6 +313,10 @@ class BoxCfsTrace:
             "state_changes": self.changes,
             "host_stage_events": self.stage_events,
             "host_operation_end_events": self.operation_ends,
+            "host_stage_intervals": self.host_stage_intervals,
+            "max_host_stage_interval_s": self.max_host_stage_interval_s,
+            "last_operation_host_span_s": self.last_operation_host_span_s,
+            "host_intervals_are_not_motor_timings": True,
             "reactor_gaps": self.poll_gaps,
             "longest_gap_s": self.max_gap_s,
             "retained_events": len(self.history),
