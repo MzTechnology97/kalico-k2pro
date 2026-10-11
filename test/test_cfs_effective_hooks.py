@@ -115,8 +115,34 @@ def test_diagnostic_info_explicitly_marks_storage_only():
     assert "HOST PLACEHOLDER" in result
 
 
+def test_reference_cfg_does_not_enable_fictitious_knobs():
+    from pathlib import Path
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    specs = {p.name for p in _load_module().PARAMETERS}
+    for path in (
+        root / "config/k2/macros/box.cfg",
+        root / "config/k2/reference/k2pro-cm5/macros/box.cfg",
+    ):
+        text = path.read_text()
+        start = text.index("# Runtime CFS parameter reference")
+        end = text.index("# CFS event notifications", start)
+        block = text[start:end]
+        names = re.findall(r"^# ([a-z_]+):", block, re.M)
+        assert len(names) == 28
+        assert set(names) == specs
+        assert "auto_apply: false" in block
+        assert "auto_apply: true" not in block
+        for line in block.splitlines():
+            if ": " not in line or line.lstrip().startswith("#"):
+                continue
+            assert line.startswith("auto_apply: false"), line
+
+
 if __name__ == "__main__":
     test_bench_only_ids_never_become_motor_controls()
     test_manual_set_uses_effective_hook_gate_before_transport()
     test_diagnostic_info_explicitly_marks_storage_only()
-    print("PASS: experimental capabilities and true manual SET paths")
+    test_reference_cfg_does_not_enable_fictitious_knobs()
+    print("PASS: capabilities, manual SET guards, and config catalog")
