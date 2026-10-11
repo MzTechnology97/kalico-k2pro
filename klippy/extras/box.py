@@ -4830,7 +4830,11 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             if self.operation_depth == 0:
                 self.clog_baseline = None
                 self.operation_progress = None
-                self._emit_passive_cfs_event("box:cfs_operation_end")
+                # Some standalone validators use a minimal Box subset;
+                # the trace notifier is optional in such environments.
+                notify = getattr(self, "_emit_passive_cfs_event", None)
+                if notify is not None:
+                    notify("box:cfs_operation_end")
 
     def _emit_passive_cfs_event(self, event, *args):
         # Optional host-only telemetry. Event subscribers MUST NOT be allowed
@@ -4846,8 +4850,9 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         # Synchronous host callback: captures stage boundaries even when
         # the reactor timer is blocked waiting for a CFS motor response.
         # Does not query the MCU or imply physical motor activity.
-        self._emit_passive_cfs_event(
-            "box:cfs_operation_stage", kind, slot, stage)
+        notify = getattr(self, "_emit_passive_cfs_event", None)
+        if notify is not None:
+            notify("box:cfs_operation_stage", kind, slot, stage)
 
     def _refresh_sensor_snapshot(self):
         detected, error = self.get_filament_sensor_state()
