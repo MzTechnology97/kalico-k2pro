@@ -4830,9 +4830,24 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             if self.operation_depth == 0:
                 self.clog_baseline = None
                 self.operation_progress = None
+                self._emit_passive_cfs_event("box:cfs_operation_end")
+
+    def _emit_passive_cfs_event(self, event, *args):
+        # Optional host-only telemetry. Event subscribers MUST NOT be allowed
+        # to interrupt load/unload or change CFS motor/RS-485 behaviour.
+        try:
+            self.printer.send_event(event, *args)
+        except Exception:
+            _klog("optional passive CFS trace callback failed",
+                  level=logging.exception)
 
     def _set_operation_progress(self, kind, slot, stage):
         self.operation_progress = {"kind": kind, "slot": slot, "stage": stage}
+        # Synchronous host callback: captures stage boundaries even when
+        # the reactor timer is blocked waiting for a CFS motor response.
+        # Does not query the MCU or imply physical motor activity.
+        self._emit_passive_cfs_event(
+            "box:cfs_operation_stage", kind, slot, stage)
 
     def _refresh_sensor_snapshot(self):
         detected, error = self.get_filament_sensor_state()
