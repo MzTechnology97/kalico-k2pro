@@ -2,6 +2,7 @@
 
 Offline import via the existing CFS v3.22 mock fixture. No serial/device IO.
 """
+
 from contextlib import nullcontext
 
 from test_cfs_v322_readonly_probes import _load_module
@@ -18,8 +19,8 @@ class FakeGcmd:
 
     def get_int(self, name, minval=None, maxval=None):
         assert name == "VALUE"
-        assert (minval is None or self.value >= minval)
-        assert (maxval is None or self.value <= maxval)
+        assert minval is None or self.value >= minval
+        assert maxval is None or self.value <= maxval
         return self.value
 
     def respond_info(self, msg):
@@ -45,20 +46,22 @@ class FakeDriver:
 
 def test_bench_only_ids_never_become_motor_controls():
     runtime = _load_module()
-    assert set(runtime.EXPERIMENTAL_EFFECTIVE_HOOKS) == {
-        0xF7, 0xB7, 0x97, 0xD7}
+    assert set(runtime.EXPERIMENTAL_EFFECTIVE_HOOKS) == {0xF7, 0xB7, 0x97, 0xD7}
     for feature, allowed in runtime.EXPERIMENTAL_EFFECTIVE_HOOKS.items():
         for param_id in range(28):
             try:
                 runtime.BoxCfsRuntime._require_effective_hook(
-                    {"version": 2, "features": feature}, param_id)
+                    {"version": 2, "features": feature}, param_id
+                )
             except runtime.CfsRuntimeUnsupported:
                 assert param_id not in allowed
             else:
                 assert param_id in allowed
     assert runtime.EXPERIMENTAL_EFFECTIVE_HOOKS[0xF7] == frozenset()
-    assert all(runtime.EXPERIMENTAL_EFFECTIVE_HOOKS[feature]
-               == frozenset((7, 8)) for feature in (0xB7, 0x97, 0xD7))
+    assert all(
+        runtime.EXPERIMENTAL_EFFECTIVE_HOOKS[feature] == frozenset((7, 8))
+        for feature in (0xB7, 0x97, 0xD7)
+    )
 
 
 def test_manual_set_uses_effective_hook_gate_before_transport():
@@ -109,7 +112,8 @@ def test_diagnostic_info_explicitly_marks_storage_only():
     values = {p.name: p.default or 0 for p in runtime.PARAMETERS}
     result = extra._format_groups(
         {"version": 2, "count": 28, "features": 0xD7, "override_mask": 0},
-        values)
+        values,
+    )
     assert "effective stock hooks=7,8" in result
     assert "STORED-ONLY" in result
     assert "HOST PLACEHOLDER" in result
