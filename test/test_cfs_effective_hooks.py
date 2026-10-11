@@ -129,7 +129,7 @@ def test_reference_cfg_does_not_enable_fictitious_knobs():
         start = text.index("# Runtime CFS parameter reference")
         end = text.index("# CFS event notifications", start)
         block = text[start:end]
-        names = re.findall(r"^# ([a-z_]+):", block, re.M)
+        names = re.findall(r"^# ([a-z0-9_]+):", block, re.M)
         assert len(names) == 28
         assert set(names) == specs
         assert "auto_apply: false" in block
