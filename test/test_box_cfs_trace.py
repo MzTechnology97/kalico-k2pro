@@ -1,0 +1,245 @@
+"""Offline proof that passive CFS trace sends zero RS-485 commands."""
+
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+def load_trace():
+    path = (Path(__file__).resolve().parents[1]
+            / "klippy" / "extras" / "box_cfs_trace.py")
+    spec = spec_from_file_location("test_box_cfs_trace_module", path)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeReactor:
+    NEVER = float("inf")
+
+    def __init__(self):
+        self.now = 10.0
+        self.schedule = {}
+
+    def register_timer(self, callback):
+        self.callback = callback
+        self.schedule[callback] = self.NEVER
+        return callback
+
+    def update_timer(self, timer, when):
+        self.schedule[timer] = when
+
+    def monotonic(self):
+        return self.now
+
+    def fire(self, at):
+        self.now = at
+        value = self.callback(at)
+        self.schedule[self.callback] = value
+        return value
+
+
+class FakeGCode:
+    def __init__(self):
+        self.commands = {}
+
+    def register_command(self, command, method):
+        assert command not in self.commands
+        self.commands[command] = method
+
+
+class FakeCommand:
+    def __init__(self, **args):
+        self.args = args
+        self.lines = []
+
+    def get_int(self, name, default, minval=None, maxval=None):
+        value = self.args.get(name, default)
+        if minval is not None and value < minval:
+            raise ValueError("below min")
+        if maxval is not None and value > maxval:
+            raise ValueError("above max")
+        return value
+
+    def error(self, message):
+        return RuntimeError(message)
+
+    def respond_info(self, message):
+        self.lines.append(message)
+
+
+class FakeBox:
+    def __init__(self):
+        self.snapshot = SimpleNamespace(
+            data_ready=True, state_code=0, status_code=0,
+            loaded_slot=-1, tracking=False, filament_detected=False,
+            filament_sensor_error=None)
+        self.operation_depth = 0
+        self.operation_progress = None
+
+    def unexpected_serial_call(self, *args, **kwargs):
+        raise AssertionError("passive CFS tracing must NEVER open RS-485")
+
+
+class FakePrinter:
+    def __init__(self):
+        self.reactor = FakeReactor()
+        self.gcode = FakeGCode()
+        self.box = FakeBox()
+        self.listeners = []
+        self.lookups = []
+
+    def get_reactor(self):
+        return self.reactor
+
+    def lookup_object(self, name, default=None):
+        self.lookups.append(name)
+        if name == "gcode":
+            return self.gcode
+        if name == "box":
+            return self.box
+        raise AssertionError("Unexpected transport or MCU lookup: " + name)
+
+    def register_event_handler(self, name, cb):
+        self.listeners.append((name, cb))
+
+
+class FakeConfig:
+    def __init__(self, printer, settings=None):
+        self.printer = printer
+        self.settings = settings or {}
+
+    def get_printer(self):
+        return self.printer
+
+    def getfloat(self, name, default, minval=None, maxval=None):
+        v = self.settings.get(name, default)
+        if minval is not None:
+            assert v >= minval
+        if maxval is not None:
+            assert v <= maxval
+        return v
+
+    def getint(self, name, default, minval=None, maxval=None):
+        v = self.settings.get(name, default)
+        if minval is not None:
+            assert v >= minval
+        if maxval is not None:
+            assert v <= maxval
+        return v
+
+
+def setup_trace(settings=None):
+    module = load_trace()
+    printer = FakePrinter()
+    trace = module.load_config(FakeConfig(printer, settings))
+    return printer, trace
+
+
+def test_disabled_until_manual_start_and_no_transport():
+    printer, trace = setup_trace()
+    assert not trace.running
+    assert trace.history_max == 256
+    assert printer.reactor.schedule[trace._timer] == printer.reactor.NEVER
+    assert set(printer.gcode.commands) == {
+        "BOX_CFS_TRACE_START", "BOX_CFS_TRACE_STOP",
+        "BOX_CFS_TRACE_SHOW", "BOX_CFS_TRACE_CLEAR"}
+    assert set(name for name, _ in printer.listeners) == {
+        "klippy:shutdown", "klippy:disconnect"}
+    assert all(x in ("box", "gcode") for x in printer.lookups)
+
+    cmd = FakeCommand()
+    trace.cmd_start(cmd)
+    assert trace.running and trace.samples == 1
+    assert len(trace.history) == 1
+    assert "NO RS-485" in cmd.lines[0] or "No RS-485" in cmd.lines[0]
+    assert printer.reactor.schedule[trace._timer] == 10.2
+    with pytest.raises(RuntimeError, match="already running"):
+        trace.cmd_start(FakeCommand())
+
+    # Observe cached state change only, no bus transaction.
+    printer.box.operation_depth = 1
+    printer.box.operation_progress = {
+        "kind": "load", "slot": 1, "stage": "move_to_hub"}
+    printer.reactor.fire(10.2)
+    assert trace.samples == 2
+    assert trace.changes == 2
+    assert trace.history[-1]["cached"]["operation_stage"] == "move_to_hub"
+    assert all(x in ("box", "gcode") for x in printer.lookups)
+
+
+def test_capture_detects_scheduler_gap_not_falsely_implied_motor_idle():
+    printer, trace = setup_trace()
+    trace.cmd_start(FakeCommand())
+    printer.box.operation_depth = 1
+    printer.box.operation_progress = {
+        "kind": "unload", "slot": 0, "stage": "return"}
+    printer.reactor.fire(12.0)  # 2 sec schedule gap
+    assert trace.poll_gaps == 1
+    assert trace.max_gap_s == 2
+    assert trace.history[-2]["reason"] == "MISSED_WINDOW"
+    assert trace.history[-1]["cached"]["operation_active"] is True
+    status = trace.get_status(12.0)
+    assert status["not_mcu_motor_telemetry"]
+    assert status["sampling_may_miss_motion"]
+    assert status["reactor_gaps"] == 1
+    show = FakeCommand(LIMIT=2)
+    trace.cmd_show(show)
+    assert "NO MCU MOTOR TELEMETRY" in show.lines[0]
+    assert "MISSED_WINDOW" in show.lines[0]
+    assert "NO missing-stage interpolation" in show.lines[0]
+    stopped = FakeCommand()
+    trace.cmd_stop(stopped)
+    assert "longest gap" in stopped.lines[0]
+    assert printer.reactor.schedule[trace._timer] == printer.reactor.NEVER
+    trace.cmd_stop(FakeCommand())  # idempotent
+    trace.cmd_clear(FakeCommand())
+    assert trace.samples == 0
+    assert list(trace.history) == []
+
+
+def test_bounded_buffer_and_stop_on_disconnect():
+    printer, trace = setup_trace({"max_events": 16, "sample_interval": 0.05})
+    trace.cmd_start(FakeCommand())
+    for n in range(40):
+        printer.box.operation_progress = {
+            "kind": "load", "slot": 1, "stage": "phase_%d" % n}
+        printer.reactor.fire(10.05 + n * 0.05)
+    assert len(trace.history) <= 16
+    assert trace.samples == 41
+    for event, callback in printer.listeners:
+        if event == "klippy:disconnect":
+            callback()
+    assert not trace.running
+    assert printer.reactor.schedule[trace._timer] == printer.reactor.NEVER
+    # Clear is permitted only after disconnect has stopped capture.
+    trace.cmd_clear(FakeCommand())
+    assert not trace.history
+    status = trace.get_status(50.)
+    assert len(status["recent_events"]) <= 8
+
+
+def test_fail_closed_if_reading_cached_host_state_raises():
+    printer, trace = setup_trace()
+    trace.cmd_start(FakeCommand())
+
+    def fail():
+        raise RuntimeError("host cache failure")
+
+    trace._cached_state = fail
+    result = printer.reactor.fire(10.2)
+    assert result == printer.reactor.NEVER
+    assert not trace.running
+    assert "host cache failure" in trace.last_error
+    assert all(x in ("box", "gcode") for x in printer.lookups)
+
+
+def test_unavailable_box_refused_without_timer():
+    printer, trace = setup_trace()
+    printer.box = None
+    with pytest.raises(RuntimeError, match="not available"):
+        trace.cmd_start(FakeCommand())
+    assert not trace.running
+    assert printer.reactor.schedule[trace._timer] == printer.reactor.NEVER
