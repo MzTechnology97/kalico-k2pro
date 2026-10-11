@@ -35,6 +35,8 @@ class BoxCfsTrace:
         self.running = False
         self.samples = 0
         self.changes = 0
+        self.stage_events = 0
+        self.operation_ends = 0
         self.poll_gaps = 0
         self.max_gap_s = 0.0
         self.last_poll = None
@@ -46,6 +48,12 @@ class BoxCfsTrace:
         self.gcode.register_command("BOX_CFS_TRACE_STOP", self.cmd_stop)
         self.gcode.register_command("BOX_CFS_TRACE_SHOW", self.cmd_show)
         self.gcode.register_command("BOX_CFS_TRACE_CLEAR", self.cmd_clear)
+        # Events originate from the host's existing stage transitions.
+        # Unlike timed polls, callbacks run BEFORE synchronous motor waits.
+        self.printer.register_event_handler(
+            "box:cfs_operation_stage", self._on_stage)
+        self.printer.register_event_handler(
+            "box:cfs_operation_end", self._on_operation_end)
         self.printer.register_event_handler("klippy:shutdown", self._shutdown)
         self.printer.register_event_handler("klippy:disconnect", self._shutdown)
 
@@ -99,6 +107,46 @@ class BoxCfsTrace:
             self._append(eventtime, "CACHED_STATE_CHANGED", state)
             self.last_state = state
 
+    def _on_stage(self, kind, slot, stage):
+        # Called synchronously from Box._set_operation_progress, before a
+        # blocking RS-485 command. Never query the MCU or sleep in this hook.
+        if not self.running:
+            return
+        try:
+            self._append(self.reactor.monotonic(), "HOST_STAGE_EVENT", {
+                "operation_active": True,
+                "operation_kind": kind,
+                "operation_slot": slot,
+                "operation_stage": stage,
+            })
+            self.stage_events += 1
+        except Exception as exc:
+            self._fail_passive_capture(exc)
+
+    def _on_operation_end(self):
+        # No claim that the operation succeeded: this event is emitted in
+        # the box's finally block, including after a failed operation.
+        if not self.running:
+            return
+        try:
+            self._append(self.reactor.monotonic(), "HOST_OPERATION_END", {
+                "operation_active": False,
+                "operation_stage": None,
+                "operation_result": "unknown",
+            })
+            self.operation_ends += 1
+        except Exception as exc:
+            self._fail_passive_capture(exc)
+
+    def _fail_passive_capture(self, exc):
+        # Diagnostics must not throw into Box's physical-operation path.
+        self.running = False
+        self.last_error = "%s: %s" % (type(exc).__name__, exc)
+        try:
+            self.reactor.update_timer(self._timer, self.reactor.NEVER)
+        except Exception:
+            pass
+
     def _poll(self, eventtime):
         if not self.running:
             return self.reactor.NEVER
@@ -107,9 +155,7 @@ class BoxCfsTrace:
         except Exception as exc:
             # Passive diagnostics must never propagate an error into an
             # active operation; fail closed and stop capturing.
-            self.running = False
-            self.last_error = "%s: %s" % (type(exc).__name__, exc)
-            self.reactor.update_timer(self._timer, self.reactor.NEVER)
+            self._fail_passive_capture(exc)
             return self.reactor.NEVER
         return eventtime + self.interval
 
@@ -124,6 +170,7 @@ class BoxCfsTrace:
             raise gcmd.error("CFS box is not available")
         self.history.clear()
         self.samples = self.changes = self.poll_gaps = 0
+        self.stage_events = self.operation_ends = 0
         self.max_gap_s = 0.0
         self.last_poll = self.last_state = self.last_error = None
         self.started = self.reactor.monotonic()
@@ -163,6 +210,7 @@ class BoxCfsTrace:
         self.history.clear()
         self.started = self.last_poll = self.last_state = None
         self.samples = self.changes = self.poll_gaps = 0
+        self.stage_events = self.operation_ends = 0
         self.max_gap_s = 0.0
         self.last_error = None
         gcmd.respond_info("CFS passive HOST trace cleared")
@@ -174,9 +222,10 @@ class BoxCfsTrace:
         lines = [
             "CFS passive HOST trace (NO MCU MOTOR TELEMETRY): "
             "active=%s samples=%d changes=%d gaps=%d max_gap=%.3fs "
-            "events_kept=%d/%d" %
+            "stages=%d ends=%d events_kept=%d/%d" %
             (self.running, self.samples, self.changes, self.poll_gaps,
-             self.max_gap_s, len(self.history), self.history_max),
+             self.max_gap_s, self.stage_events, self.operation_ends,
+             len(self.history), self.history_max),
             "Sampling cannot observe internal motion while the "
             "Klipper reactor is blocked; NO missing-stage interpolation.",
         ]
@@ -202,6 +251,8 @@ class BoxCfsTrace:
             "interval_s": self.interval,
             "samples": self.samples,
             "state_changes": self.changes,
+            "host_stage_events": self.stage_events,
+            "host_operation_end_events": self.operation_ends,
             "reactor_gaps": self.poll_gaps,
             "longest_gap_s": self.max_gap_s,
             "retained_events": len(self.history),
