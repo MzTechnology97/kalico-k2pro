@@ -288,13 +288,18 @@ class BoxCfsTrace:
             s = row["cached"] or {}
             lines.append(
                 "t+%.3fs %s op=%s/%s/%s depth=%s box=%s status=%s "
-                "loaded=%s ready=%s gap=%s" %
+                "loaded=%s ready=%s gap=%s previous_host_stage=%s "
+                "previous_host_interval_s=%s end_last_host_interval_s=%s "
+                "host_first_stage_to_end_s=%s" %
                 (row["elapsed_s"], row["reason"],
                  s.get("operation_kind"), s.get("operation_slot"),
                  s.get("operation_stage"), s.get("operation_active"),
                  s.get("box_state_code"), s.get("box_status_code"),
                  s.get("loaded_slot"), s.get("box_data_ready"),
-                 s.get("gap_s")))
+                 s.get("gap_s"), s.get("previous_host_stage"),
+                 s.get("previous_host_stage_interval_s"),
+                 s.get("last_host_stage_interval_s"),
+                 s.get("host_first_stage_to_end_s")))
         gcmd.respond_info("\n".join(lines))
 
     def get_status(self, eventtime):
