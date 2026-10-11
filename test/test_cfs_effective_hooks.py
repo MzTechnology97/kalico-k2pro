@@ -116,8 +116,8 @@ def test_diagnostic_info_explicitly_marks_storage_only():
 
 
 def test_reference_cfg_does_not_enable_fictitious_knobs():
-    from pathlib import Path
     import re
+    from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     specs = {p.name for p in _load_module().PARAMETERS}
