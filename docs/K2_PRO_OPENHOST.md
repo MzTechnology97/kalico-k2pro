@@ -724,6 +724,21 @@ For single-Z printers without a bottom switch, `z_reference: trusted_position` r
 
 Integrated homing through `[z_align]` is hardware-validated (three consecutive `G28` / `M84` cycles aligned at the first MCU attempt on 2026-10-03). It requires the stock 16 Z microsteps: at 64 the MCU-driven routine lost steps and failed with photoelectric errors. `PLR_RECOVER` still needs a supervised power-cut validation.
 
+## Host fan (CM5)
+
+The reference host is a Raspberry Pi **Compute Module 5** on a Waveshare **CM5-IO-BASE-A**. The board's 4-pin fan header is wired to the CM5's own `FAN_PWM` and `FAN_TACH` pins, not to an I2C fan controller like the EMC2301 of the CM4-IO-BASE-A. The kernel drives it through the `pwm-fan` driver: RP1 PWM channel 3, hwmon `pwmfan`, with the RPM taken from the RP1's tachometer counter. Out of the box it follows the trip points of the CPU thermal zone: off below 50 °C, then 75, 125, 175 and 250 of 255 at 50, 60, 67.5 and 75 °C.
+
+`[host_fan]` (`klippy/extras/host_fan.py`, example `config/k2/macros/host_fan.cfg`) moves that control into Klipper:
+
+- **How:** while Klipper drives the fan it sets the `mode` of the `cpu-thermal` zone to `disabled`, so the kernel stops changing the fan; it writes `pwm1` and reads `fan1_input`. CPU throttling at 85 °C is done by the firmware and is not affected.
+- **Control:** `target` (default) keeps the fan at `min_speed` up to `target_temp`, then raises it linearly to `max_speed` at `target_temp + ramp_delta`. `manual` holds a fixed speed. `kernel` gives the fan back to the kernel and only monitors. Above `full_speed_temp` the fan runs at `max_speed` in every mode. A fan starting from a stop gets `kick_start_time` at full speed.
+- **Hand-back:** on a Klipper disconnect (restart, `FIRMWARE_RESTART`, service stop) and on a shutdown (unless `shutdown_speed` is set) the zone goes back to `enabled`. If the Klipper process dies, the installer helper's `ExecStopPost` drop-in for `klipper.service` does the same.
+- **Front ends:** the fan is published as `temperature_fan cm5_fan`. Mainsail and Fluidd show its temperature, target, speed and RPM, Moonraker records its history, and the target can be set from the temperature panel (`SET_TEMPERATURE_FAN_TARGET`).
+- **Stall check:** while it drives the fan, `stall_time` seconds without tachometer pulses print a `!!` warning in the console.
+- **Permissions:** Klipper needs group write access to the hwmon `pwm1` and to the zone's `mode`. The installer helper's `./helper.sh install host-fan` adds a udev rule for this, the `klipper.service` drop-in and the include. Without them, `[host_fan]` reports the reason and only monitors.
+
+Commands: `SET_HOST_FAN TARGET=55`, `SET_HOST_FAN SPEED=0.6`, `SET_HOST_FAN MODE=kernel`, `HOST_FAN_STATUS`. Options are in the [Config Reference](Config_Reference.md#host_fan). Tests: `test/test_host_fan.py`.
+
 ## Local extras and clean Git updates
 
 Moonraker/Mainsail update management expects this repository to remain clean. Files tracked by this fork should not be overwritten by external installers. Locally installed extras such as ShakeTune can remain outside Git tracking so they do not mark the Kalico repository dirty.
