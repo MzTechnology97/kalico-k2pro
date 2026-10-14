@@ -4044,6 +4044,58 @@ control: curve
 #   This parameter is deprecated and should no longer be used.
 ```
 
+### [host_fan]
+
+The CPU fan of a Raspberry Pi 5 / Compute Module 5 host, driven by the
+kernel's `pwm-fan` driver (hwmon `pwmfan`), controlled from Klipper
+(K2-OpenHost). Klipper disables the kernel's automatic fan control (the
+`mode` of the CPU thermal zone), writes the hwmon `pwm1` and reads
+`fan1_input`; the kernel gets the fan back when Klipper disconnects or shuts
+down. The fan is published as `temperature_fan <name>`, so front ends show it
+like a temperature fan and `SET_TEMPERATURE_FAN_TARGET` works on it. Klipper
+needs write access to the hwmon `pwm1` and to the thermal zone `mode`;
+without it the module only monitors. See
+[K2_PRO_OPENHOST.md](K2_PRO_OPENHOST.md#host-fan-cm5).
+
+```
+[host_fan my_host_fan]
+#control: target
+#   target: speed follows the CPU temperature; manual: fixed
+#   manual_speed; kernel: the kernel's automatic control (monitoring only).
+#target_temp: 55
+#   Up to this CPU temperature the fan runs at min_speed.
+#ramp_delta: 15
+#   Degrees above target_temp at which the fan reaches max_speed.
+#min_speed: 0.3
+#max_speed: 1.0
+#full_speed_temp: 75
+#   Above this temperature the fan runs at max_speed in every mode.
+#manual_speed:
+#   Speed in manual mode. The default is max_speed.
+#shutdown_speed:
+#   Speed on a Klipper shutdown. The default hands the fan back to the
+#   kernel.
+#kick_start_time: 0.5
+#   Time at full speed when the fan starts from a stop.
+#update_interval: 2.0
+#stall_time: 10
+#   Seconds without tachometer pulses while driven before a console
+#   warning. 0 disables the check.
+#min_temp: 0
+#max_temp: 100
+#   Range of the target temperature.
+#hwmon_name: pwmfan
+#thermal_zone: cpu-thermal
+#   The hwmon device of the fan and the type of the thermal zone that
+#   drives it.
+```
+
+Commands: `SET_HOST_FAN [FAN=<name>] [MODE=target|manual|kernel] [SPEED=<0..1>]
+[TARGET=<temp>]` (SPEED alone selects manual, TARGET alone selects target),
+`HOST_FAN_STATUS [FAN=<name>]`, and `SET_TEMPERATURE_FAN_TARGET
+TEMPERATURE_FAN=<name> [TARGET=] [MIN_SPEED=] [MAX_SPEED=]`. The first
+host fan also answers without `FAN=`.
+
 ### [fan_generic]
 
 Manually controlled fan (one may define any number of sections with a
