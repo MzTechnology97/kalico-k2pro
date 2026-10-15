@@ -388,9 +388,12 @@ class HostFan:
         if self.problem:
             raise gcmd.error("host_fan %s: %s" % (self.name, self.problem))
 
-    def _kick(self):
-        if self.timer is not None and not self.shutdown:
-            self.reactor.update_timer(self.timer, self.reactor.NOW)
+    def _apply_now(self):
+        # Apply a command at once, so its reply shows the new state.
+        if self.timer is None or self.shutdown:
+            return
+        waketime = self._update(self.reactor.monotonic())
+        self.reactor.update_timer(self.timer, waketime)
 
     cmd_SET_TEMPERATURE_FAN_TARGET_help = "Sets a temperature fan target"
 
@@ -411,7 +414,7 @@ class HostFan:
         self.min_speed = min_speed
         self.max_speed = max_speed
         self.mode = "target"
-        self._kick()
+        self._apply_now()
 
     cmd_SET_HOST_FAN_help = (
         "Host fan: MODE=target|manual|kernel, SPEED=0..1 (manual), TARGET=<C>"
@@ -440,7 +443,7 @@ class HostFan:
             self.mode = mode
         if self.mode == "kernel":
             self._release()
-        self._kick()
+        self._apply_now()
         self.cmd_HOST_FAN_STATUS(gcmd)
 
     cmd_HOST_FAN_STATUS_help = "Report the host fan state"

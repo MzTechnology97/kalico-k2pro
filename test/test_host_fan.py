@@ -24,6 +24,10 @@ class FakeReactor:
 
     def __init__(self):
         self.timers = []
+        self.now = 1.0
+
+    def monotonic(self):
+        return self.now
 
     def register_timer(self, callback, waketime):
         self.timers.append([callback, waketime])
@@ -288,9 +292,11 @@ def test_manual_and_kernel_modes(tmp_path):
     fan, sysfs, printer = make(tmp_path, temp=50.0)
     gcode = printer.objects["gcode"]
     gcmd = gcode.run("SET_HOST_FAN", SPEED="0.8")
-    fan._update(1.0)
+    # Applied at once: the reply already shows the new speed.
     assert fan.mode == "manual" and sysfs.pwm == round(0.8 * 255)
     assert "manual 80%" in gcmd.replies[-1]
+    assert "80% (pwm 204)" in gcmd.replies[-1]
+    assert "kernel control off" in gcmd.replies[-1]
     # Without FAN= the first host fan answers; with FAN=cm5 too.
     gcode.run("SET_HOST_FAN", FAN="cm5", MODE="kernel")
     assert fan.mode == "kernel" and sysfs.mode == "enabled"
