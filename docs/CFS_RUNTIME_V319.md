@@ -51,10 +51,27 @@ The six v1 speed settings and 21 advanced examples in `config/k2/macros/box.cfg`
 - Still unvalidated: repeated/long-term physical power-cycle stability, real load/unload/RFID motion under physical load, direct MCU-boundary rejection bypassing host checks and alternative CFS generations. EEPROM persistence is intentionally absent.
 - If the CFS fails to boot or responds with `0xFFFF`, stop bench operations and use the installer helper's v3.13 candidate or the Creality recovery updater. Do not continue writing or moving the CFS during a fault.
 
+## Experimental builds after v3.19 (v3.20-v3.22)
+
+The CFS on the reference printer has since run later experimental builds, which `box_cfs_runtime.py` recognises by their feature byte. The firmware images are not published yet; the labels are the ones the code uses.
+
+| Feature byte | Build | Host behaviour |
+|---|---|---|
+| `0xF7` | v3.19 RAM bench | auto-apply and `BOX_CFS_CONFIG_APPLY` refused; manual SET/RESET only on IDs 7-27 |
+| `0xB7` | v3.20 | as v3.19 |
+| `0x97` | v3.21 | as v3.19, and every manual SET/RESET is guarded (below) |
+| `0xD7` | v3.22 diagnostic | as v3.21, plus `BOX_CFS_CONFIG_SNAPSHOT` |
+
+- **Guarded writes (`0x97`, `0xD7`):** a SET/RESET runs only with the CFS `IDLE` (state code 0), no slot loaded, no Box operation active, the printhead filament sensor clear, the printer in `standby` and no RFID read in progress. While it runs, the host holds the Box RFID-read lock and a new CFS runtime-write lock (`Box.acquire_cfs_runtime_write`), which makes `Box._operation()` refuse a load or unload until the write ends. The firmware checks the live CFS state on its own as well; the host guard is defence in depth, not a replacement.
+- **`BOX_CFS_CONFIG_SNAPSHOT` (`0xD7` only):** reads the fixed GET IDs 28-31, two opaque internal state words of the CFS firmware, under the RFID-read lock. It is diagnostics only: the values do **not** prove that the motors are idle. No address can be chosen and nothing is written.
+- **First print on an experimental build (2026-10-15):** a 34 h PETG-CF print ran with the CFS on `0xD7`. When slot 3 ran out, the automatic runout swap loaded slot 4 in about 43 s and the print went on (K2-OpenHost `TEST_STATUS`). The runtime overrides were not used during the print: `0xD7` refuses auto-apply, so the CFS ran with its stock values. This is one swap on one CFS, not a validation of the builds' motion hooks, which stay disabled.
+- Tests: `test/test_box_cfs_runtime_v322.py` covers the feature bytes, the protected IDs, the guarded writes, the snapshot and the Box lock, against mocks.
+
 Run the host mock regression without touching the printer:
 
 ```bash
 python3 test/cfs_runtime_v319_standalone.py
+python3 -m pytest test/test_box_cfs_runtime_v322.py
 ```
 
 For sanitized evidence and timing measurements, see [v3.19 hardware validation](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/firmware/v3.19-volatile-ram/hardware-validation-2026-10-10.json). One transient startup discovery RS-485 timeout was observed following the Klipper restart; motor initialization completed and subsequent CFS communication recovered.
