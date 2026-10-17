@@ -205,3 +205,29 @@ def test_without_box_keeps_the_delayed_contact():
     printer.reactor.run()
     assert rt.supported is True
     assert driver.probes >= 1
+
+
+class StockCfsDriver(CfsDriver):
+    """Stock Creality firmware: 0x57 answers status 1 (invalid command)."""
+
+    def probe(self, timeout=1.0):
+        self.probes += 1
+        raise runtime.CfsRuntimeConfigError("CONFIG_INFO returned status 1")
+
+
+def test_stock_firmware_is_unsupported_at_once():
+    for options in ({}, {"hub_forward_speed": "100"}):
+        printer = Printer(Box(online=(1,)))
+        rt = runtime.BoxCfsRuntime(Config(printer, options))
+        driver = StockCfsDriver()
+        rt._driver = lambda: driver
+        printer.send_event("klippy:connect")
+        printer.send_event("serial_485:ready")
+        printer.send_event("box:ready")
+        start = printer.reactor.now
+        printer.reactor.run()
+        assert driver.probes == 1  # no retries
+        assert printer.reactor.now == start  # no delay
+        assert rt.supported is False
+        assert "status 1" in rt.last_error
+        assert driver.writes == []
