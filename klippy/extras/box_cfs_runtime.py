@@ -345,9 +345,13 @@ class BoxCfsRuntime:
         self.last_values = {}
         self.last_error = None
         self._auto_attempt = 0
+        self._probe_generation = 0
+        self._box_present = False
 
+        self.printer.register_event_handler("klippy:connect", self._connect)
         self.printer.register_event_handler(
             "serial_485:ready", self._serial_ready)
+        self.printer.register_event_handler("box:ready", self._box_ready)
         self.gcode.register_command("BOX_CFS_CONFIG_INFO", self.cmd_info)
         self.gcode.register_command("BOX_CFS_CONFIG_DIAG", self.cmd_diag)
         self.gcode.register_command(
@@ -356,14 +360,71 @@ class BoxCfsRuntime:
         self.gcode.register_command("BOX_CFS_CONFIG_SET", self.cmd_set)
         self.gcode.register_command("BOX_CFS_CONFIG_RESET", self.cmd_reset)
 
+    def _connect(self):
+        # A CFS fresh from power-on answers at 0xFE until [box] has
+        # enumerated it (A1/A0). With [box], the first contact waits for
+        # box:ready, sent after every enumeration and rediscovery.
+        self._box_present = self.printer.lookup_object("box", None) is not None
+
     def _serial_ready(self, *args):
         self.serial = self.printer.lookup_object(
             "serial_485 %s" % self.serial_name)
         self.protocol_version = None
+        if not self._box_present:
+            self._start_contact(self.reactor.monotonic() + 1.0)
+
+    def _box_ready(self, *args):
+        box = self.printer.lookup_object("box", None)
+        drivers = getattr(box, "drivers", None) or {}
+        if self.address not in drivers:
+            logging.info(
+                "box_cfs_runtime: CFS address %d is not online after "
+                "enumeration; not probed", self.address)
+            return
+        self._start_contact(self.reactor.monotonic())
+
+    def _start_contact(self, waketime):
+        # A new contact supersedes retries still pending from an earlier one.
+        self._probe_generation += 1
+        self._auto_attempt = 0
+        self.supported = None
+        self.last_error = None
+        self._schedule(self._first_contact, waketime)
+
+    def _schedule(self, callback, waketime):
+        generation = self._probe_generation
+
+        def run(eventtime):
+            if generation == self._probe_generation:
+                callback(eventtime)
+
+        self.reactor.register_callback(run, waketime)
+
+    def _first_contact(self, eventtime):
         if self.auto_apply and self.overrides:
-            self._auto_attempt = 0
-            self.reactor.register_callback(
-                self._auto_apply, self.reactor.monotonic() + 1.0)
+            self._auto_apply(eventtime)
+        else:
+            self._probe_status(eventtime)
+
+    def _probe_status(self, eventtime):
+        # No override to apply: read the API version and feature byte so
+        # the status is right from the start.
+        self._auto_attempt += 1
+        try:
+            self._probe(self._driver())
+        except CfsRuntimeConfigError as exc:
+            self.last_error = str(exc)
+            if ("timed out" in str(exc).lower()
+                    and self._auto_attempt < 3):
+                self._schedule(
+                    self._probe_status, eventtime + self.AUTO_RETRY_INTERVAL)
+                return
+            self.supported = False
+            logging.warning("box_cfs_runtime: %s", exc)
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.supported = False
+            logging.exception("box_cfs_runtime: probe failed")
 
     def _transport(self):
         if self.serial is None:
@@ -497,7 +558,7 @@ class BoxCfsRuntime:
         except CfsRuntimeBusy as exc:
             self.last_error = str(exc)
             if self._auto_attempt < self.AUTO_RETRY_LIMIT:
-                self.reactor.register_callback(
+                self._schedule(
                     self._auto_apply,
                     eventtime + self.AUTO_RETRY_INTERVAL)
             else:
@@ -507,7 +568,7 @@ class BoxCfsRuntime:
             self.last_error = str(exc)
             if ("timed out" in str(exc).lower()
                     and self._auto_attempt < 3):
-                self.reactor.register_callback(
+                self._schedule(
                     self._auto_apply,
                     eventtime + self.AUTO_RETRY_INTERVAL)
                 return
