@@ -104,6 +104,8 @@ nav:
   - K2 Pro CFS CFG5T (IT): CFS_RUNTIME_CFG5T_IT.md
   - K2 Pro CFS CFG6 (EN): CFS_RUNTIME_CFG6_EN.md
   - K2 Pro CFS CFG6 (IT): CFS_RUNTIME_CFG6_IT.md
+  - K2 Pro CFS CFG6 parameters (EN): CFS_RUNTIME_CFG6_PARAMETERS_EN.md
+  - K2 Pro CFS CFG6 parametri (IT): CFS_RUNTIME_CFG6_PARAMETERS_IT.md
   - K2 Pro CFS v3.21 safe idle guard: CFS_RUNTIME_V321.md
   - K2 Pro CFS v3.22 read-only probes: CFS_RUNTIME_V322.md
   - K2 Pro CFS passive host trace: CFS_HOST_PASSIVE_TRACE_20261011.md
