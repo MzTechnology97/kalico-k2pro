@@ -331,3 +331,32 @@ def test_full_profile_requires_exact_firmware_revision_too():
         contact(printer)
         assert driver.writes == []
         assert "without the v3.23 contract" in rt.apply_state
+
+
+def test_cfg4_diagnostic_units_vs_legacy_d7():
+    ident = dict(K2OH, revision="v323-cfg4")
+    rt, printer, driver = make({"auto_apply": "false"},
+                               identity=ident, features=0xD7)
+    contact(printer)
+    meta = driver.probe()
+    assert rt._cfg4_for_diagnostics(meta)
+    assert rt._diagnostic_spec(meta, 8).default == 7000
+    assert rt._diagnostic_spec(meta, 8).maxval == 50000
+    assert rt._diagnostic_spec(meta, 17).default == 400
+    assert rt._diagnostic_spec(meta, 20).default == 1250
+    assert rt._diagnostic_spec(meta, 22).default == 25
+    output = rt._format_groups(meta, {
+        "insert_sensor_timeout_ms": 7000,
+        "feed_total_timeout_20ms_ticks": 1250,
+        "odometer_stall_20ms_ticks": 25,
+        "rfid_pre_measure_settle_ms": 400,
+    })
+    assert "insert_sensor_timeout_ms=7000(stock=7000)" in output
+    assert "feed_total_timeout_20ms_ticks=1250(stock=1250)" in output
+    assert "odometer_stall_20ms_ticks=25(stock=25)" in output
+    assert "rfid_pre_measure_settle_ms=400(stock=400)" in output
+    assert "K2OH CFG4: effective writable IDs=1,2,3,5,7,8" in output
+    assert "IDs 0..6 READ-ONLY" not in output
+    rt.identity = dict(ident, magic="NOID")
+    assert not rt._cfg4_for_diagnostics(meta)
+    assert rt._diagnostic_spec(meta, 8).default == 700
