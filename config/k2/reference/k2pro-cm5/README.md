@@ -46,10 +46,12 @@ on this machine.
 
 - `retract_length: 20`, `retract_velocity: 6000.0` (profile: 30 / 3000);
 - `cut_pos_x: -10.60` from `CALIBRATE_CUT_POS` on this machine;
-- `[box_cfs_runtime]` enabled with `auto_apply: False`: the hub speeds
-  100/220/100/150, `rfid_measure_speed: 150`, `rfid_neighbor_retry_count: 1`
-  and `load_retry_count: 1`, the other writable options at their stock values,
-  the five read-only ones commented.
+- `[box_cfs_runtime]` enabled with `auto_apply: False` and the eight options
+  the CFG5T firmware applies (IDs 1, 2, 3, 5, 7, 8, 20, 22): hub speeds
+  100/220/100/150, the timeouts at stock. The other catalogue entries are
+  listed as comments only, because CFG5T has no firmware hook for them;
+- `cfs_live_remaining: True`: the CFS type-4 remaining leads, the local
+  estimate is the fallback.
 
 `macros/print.cfg`: `PRTOUCH_SCRUB` disabled.
 
