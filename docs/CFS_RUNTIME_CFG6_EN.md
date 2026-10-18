@@ -4,6 +4,8 @@
 
 Required firmware identity: K2OH revision v323-cfg6, features 0xE3, API v2, 28 settings. All fields are checked before allowing SET. OpenCFS (OCFS), stock Creality, CFG4 and CFG5T cannot receive CFG6 writes.
 
+**[Detailed reference for all 28 parameters: actual behavior, ranges, CM5 values and risks](CFS_RUNTIME_CFG6_PARAMETERS_EN.md).**
+
 ## Writable parameters
 
 New IDs: 6 (reverse de-tooth), 9 (hub pullback), 11/12/13 (RFID hub speeds), 14/15/16/17 (RFID timings), 18/19 (neighbor spool motion and settling), 21 (feed recovery timeout), 23 (neighbor search attempts), 24 (de-tooth timeout), 27 (pretension cycles).
@@ -50,3 +52,6 @@ auto_apply: True
 ```
 
 Keep CFG5T and v3.22 as recovery options.
+
+
+Technical details ID0–27: [full EN reference](CFS_RUNTIME_CFG6_PARAMETERS_EN.md) and [IT](CFS_RUNTIME_CFG6_PARAMETERS_IT.md).
