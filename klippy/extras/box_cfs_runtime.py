@@ -964,6 +964,31 @@ class BoxCfsRuntime:
                 % (feature, param_id,
                    ",".join(map(str, hooks)) if hooks else "none"))
 
+    def _cfg4_for_diagnostics(self, meta):
+        """Identify the *exact* patched-stock CFG4 build, not legacy D7."""
+        ident = self.identity or {}
+        return (meta.get("version") == 2
+                and meta.get("count") == 28
+                and meta.get("features") == K2OH_CFG4_FEATURES
+                and is_k2oh(ident)
+                and ident.get("variant") == 4
+                and ident.get("revision") == K2OH_CFG4_REVISION
+                and ident.get("version") == "cfs0_000_153")
+
+    def _diagnostic_spec(self, meta, param_id):
+        """Use firmware wire units for diagnostics, not unhooked CFG units.
+
+        CFG4 ID8 reads true ms; unhooked ID20/22 still read raw stock
+        20ms ticks even though newer CFG options are named in ms.
+        """
+        spec = PARAM_BY_ID[param_id]
+        if self._cfg4_for_diagnostics(meta):
+            if param_id in K2OH_CFG4_WRITABLE_IDS:
+                return K2OH_BY_ID[param_id]
+            if param_id == 17:
+                return spec._replace(default=400)
+        return spec
+
     @staticmethod
     def _format_value(spec, value, override=False):
         suffix = "*" if override else ""
@@ -990,7 +1015,7 @@ class BoxCfsRuntime:
         for title, ids in groups:
             parts = []
             for param_id in ids:
-                spec = PARAM_BY_ID[param_id]
+                spec = self._diagnostic_spec(meta, param_id)
                 if spec.name not in values:
                     continue
                 overridden = bool(
@@ -1000,7 +1025,12 @@ class BoxCfsRuntime:
             if parts:
                 lines.append("%s: %s" % (title, " ".join(parts)))
         feature = meta.get("features", 0)
-        if meta.get("version") == 2 and feature in EXPERIMENTAL_EFFECTIVE_HOOKS:
+        if self._cfg4_for_diagnostics(meta):
+            lines.append(
+                "K2OH CFG4: effective writable IDs=1,2,3,5,7,8; "
+                "other IDs GET-only. ID20/22 report raw 20ms ticks, "
+                "not CFG milliseconds. Host override_mask is a placeholder.")
+        elif meta.get("version") == 2 and feature in EXPERIMENTAL_EFFECTIVE_HOOKS:
             hooks = sorted(EXPERIMENTAL_EFFECTIVE_HOOKS[feature])
             lines.append(
                 "EXPERIMENTAL 0x%02X: effective stock hooks=%s; IDs 0..6 "
@@ -1053,9 +1083,12 @@ class BoxCfsRuntime:
                         default, low, high = desc["default"], desc["min"], desc["max"]
                         typ = str(desc["type"])
                     else:
-                        spec = PARAM_BY_ID[param_id]
+                        spec = self._diagnostic_spec(meta, param_id)
                         default, low, high = spec.default, spec.minval, spec.maxval
-                        typ = "host:%s" % spec.value_type
+                        typ = ("host:stock_20ms_ticks" if
+                               self._cfg4_for_diagnostics(meta)
+                               and param_id in (20, 22)
+                               else "host:%s" % spec.value_type)
                     ok = low <= value <= high
                     lines.append("ID=%d GET=%d EXPECT=%s RANGE=%d..%d "
                                  "TYPE=%s STATUS=%s"
