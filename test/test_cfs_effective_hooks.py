@@ -126,19 +126,22 @@ def test_reference_cfg_does_not_enable_fictitious_knobs():
 
     module = _load_module()
     root = Path(__file__).resolve().parents[1]
-    # IDs the v3.23 CFG5T firmware (v323-cfg5t, 0xE5) actually applies; the
-    # other catalogue entries have no firmware SET hook and stay comments.
+    # The distributed templates now document CFG6 (v323-cfg6, 0xE3).
+    # Only its 23 actual firmware callsites are advertised as writable.
+    # IDs 0/4 (GPIO feeders) and 10/25/26 (dead stock code) remain GET-only.
     effective = {
         p.name
         for p in module.K2OH_PARAMETERS
-        if p.param_id in (1, 2, 3, 5, 7, 8, 20, 22)
+        if p.param_id in module.K2OH_CFG6_WRITABLE_IDS
     }
     reference_only = {p.name for p in module.K2OH_PARAMETERS} - effective
 
     def runtime_block(path):
         text = (root / path).read_text()
         start = re.search(
-            r"^# CFS runtime (configuration|parameters)", text, re.M
+            r"^# (?:K2OH CFG6|CFS runtime (?:configuration|parameters))",
+            text,
+            re.M,
         )
         end = text.index("# CFS event notifications", start.start())
         return text[start.start() : end]
