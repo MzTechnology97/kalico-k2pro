@@ -55,3 +55,6 @@ Keep CFG5T and v3.22 as recovery options.
 
 
 Technical details ID0–27: [full EN reference](CFS_RUNTIME_CFG6_PARAMETERS_EN.md) and [IT](CFS_RUNTIME_CFG6_PARAMETERS_IT.md).
+
+
+**Latest status and archived/open PR audit:** [CFG6 status and safety follow-ups](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/docs/CFG6_STATUS_PR_TRIAGE_20261018_EN.md) · [IT](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/docs/CFG6_STATUS_PR_TRIAGE_20261018_IT.md).
