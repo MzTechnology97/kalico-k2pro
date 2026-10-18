@@ -231,3 +231,55 @@ def test_stock_firmware_is_unsupported_at_once():
         assert rt.supported is False
         assert "status 1" in rt.last_error
         assert driver.writes == []
+
+
+def _make_with_driver_factory(box, options, monkeypatch, assigned=True):
+    """Build the runtime with its real _driver(), recording the address used."""
+    printer = Printer(box)
+    rt = runtime.BoxCfsRuntime(Config(printer, options))
+    calls = []
+
+    class Driver(CfsDriver):
+        def __init__(self, serial, address):
+            CfsDriver.__init__(self)
+            self.assigned = assigned
+            calls.append(address)
+
+    monkeypatch.setattr(runtime, "CfsRuntimeDriver", Driver)
+    printer.send_event("klippy:connect")
+    return rt, printer, calls
+
+
+def test_several_cfs_online_probes_only_the_configured_one(monkeypatch):
+    box = Box(online=(1, 2, 3))
+    before = dict(box.drivers)
+    rt, printer, calls = _make_with_driver_factory(box, {}, monkeypatch)
+    printer.send_event("serial_485:ready")
+    printer.send_event("box:ready")
+    printer.reactor.run()
+    assert calls == [1]
+    assert rt.supported is True
+    # The Box driver table is only read, never changed.
+    assert box.drivers == before
+
+
+def test_runtime_for_the_second_cfs_uses_its_address(monkeypatch):
+    box = Box(online=(1, 2))
+    rt, printer, calls = _make_with_driver_factory(
+        box, {"address": "2"}, monkeypatch)
+    printer.send_event("serial_485:ready")
+    printer.send_event("box:ready")
+    printer.reactor.run()
+    assert calls == [2]
+    assert rt.supported is True
+
+
+def test_configured_cfs_missing_while_others_are_online(monkeypatch):
+    box = Box(online=(1, 3))
+    rt, printer, calls = _make_with_driver_factory(
+        box, {"address": "2"}, monkeypatch)
+    printer.send_event("serial_485:ready")
+    printer.send_event("box:ready")
+    printer.reactor.run()
+    assert calls == []
+    assert rt.supported is None
