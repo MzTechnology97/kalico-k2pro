@@ -320,3 +320,14 @@ def test_opencfs_is_identified_as_separate_firmware_not_k2oh():
     assert status["k2oh"] is False
     assert driver.writes == []
     assert "OpenCFS identified" in status["apply_state"]
+
+
+def test_full_profile_requires_exact_firmware_revision_too():
+    for identity in (dict(K2OH, revision="unrelated"),
+                     dict(K2OH, variant=2),
+                     dict(K2OH, version="cfs0_000_999")):
+        rt, printer, driver = make(OPTIONS, identity=identity,
+                                   features=runtime.K2OH_FEATURES)
+        contact(printer)
+        assert driver.writes == []
+        assert "without the v3.23 contract" in rt.apply_state
