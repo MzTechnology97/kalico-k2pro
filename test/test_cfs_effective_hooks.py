@@ -139,7 +139,9 @@ def test_reference_cfg_does_not_enable_fictitious_knobs():
     def runtime_block(path):
         text = (root / path).read_text()
         start = re.search(
-            r"^# (?:K2OH CFG6|CFS runtime (?:configuration|parameters))", text, re.M
+            r"^# (?:K2OH CFG6|CFS runtime (?:configuration|parameters))",
+            text,
+            re.M,
         )
         end = text.index("# CFS event notifications", start.start())
         return text[start.start() : end]
