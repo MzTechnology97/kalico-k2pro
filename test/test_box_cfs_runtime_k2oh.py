@@ -200,9 +200,9 @@ def test_k2oh_firmware_gets_the_values_in_ms():
 
 @pytest.mark.parametrize("driver_args, reason", [
     ({"identity": None}, "not K2-OpenHost firmware"),
-    ({"identity": OCFS}, "not K2-OpenHost firmware (0x7A identity OCFS)"),
+    ({"identity": OCFS}, "OpenCFS identified"),
     ({"features": 0xD7}, "without the v3.23 contract"),
-    ({"features": 0x2B, "identity": OCFS}, "not K2-OpenHost firmware"),
+    ({"features": 0x2B, "identity": OCFS}, "OpenCFS identified"),
 ])
 def test_other_firmware_gets_nothing(driver_args, reason):
     rt, printer, driver = make(OPTIONS, **driver_args)
@@ -279,3 +279,44 @@ def test_console_has_no_write_command():
     commands = set(printer.objects["gcode"].commands)
     assert commands == {"BOX_CFS_CONFIG_INFO", "BOX_CFS_CONFIG_DIAG",
                         "BOX_CFS_CONFIG_SNAPSHOT"}
+
+
+def test_cfg4_signature_applies_only_six_real_effective_parameters():
+    ident = dict(K2OH, revision="v323-cfg4")
+    configured = dict(OPTIONS, hub_transition_speed="220", hub_reverse_speed="150")
+    rt, printer, driver = make(configured, identity=ident, features=0xD7)
+    contact(printer)
+    assert driver.writes == [(2, 220), (3, 100), (5, 150), (8, 8000)]
+    status = rt.get_status(0.0)
+    assert status["firmware_family"] == "k2oh"
+    assert status["opencfs"] is False
+    assert "load_retry_count" in status["apply_state"]
+    assert "skipped unsupported" in status["apply_state"]
+
+
+def test_cfg4_ms_precision_gate_and_revision_match():
+    ident = dict(K2OH, revision="v323-cfg4")
+    rt, printer, driver = make(
+        {"insert_sensor_timeout_ms": "8001"},
+        identity=ident, features=0xD7)
+    contact(printer)
+    assert driver.writes == []
+    assert "multiple of 10" in rt.apply_state
+    rt2, printer2, driver2 = make(
+        {"hub_transition_speed": "220"},
+        identity=dict(K2OH, revision="other-build"), features=0xD7)
+    contact(printer2)
+    assert driver2.writes == []
+    assert "without the v3.23 contract" in rt2.apply_state
+
+
+def test_opencfs_is_identified_as_separate_firmware_not_k2oh():
+    rt, printer, driver = make(OPTIONS, identity=OCFS, features=0x2B)
+    contact(printer)
+    status = rt.get_status(0.0)
+    assert status["identity"]["magic"] == "OCFS"
+    assert status["opencfs"] is True
+    assert status["firmware_family"] == "opencfs"
+    assert status["k2oh"] is False
+    assert driver.writes == []
+    assert "OpenCFS identified" in status["apply_state"]

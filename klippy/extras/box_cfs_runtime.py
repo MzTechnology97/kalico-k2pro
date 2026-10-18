@@ -167,6 +167,10 @@ CMD_BUILD_INFO = 0x7A
 K2OH_MAGIC = "K2OH"
 K2OH_FORMAT = 1
 K2OH_FEATURES = 0xC7
+K2OH_CFG4_FEATURES = 0xD7
+K2OH_CFG4_REVISION = "v323-cfg4"
+K2OH_CFG4_WRITABLE_IDS = frozenset((1, 2, 3, 5, 7, 8))
+OCFS_MAGIC = "OCFS"
 FLAG_K2OH_WRITABLE = 1 << 5
 
 
@@ -270,6 +274,20 @@ def parse_identity(payload):
 def is_k2oh(identity):
     return bool(identity) and identity.get("magic") == K2OH_MAGIC \
         and identity.get("format") == K2OH_FORMAT
+
+def is_opencfs(identity):
+    """The OpenCFS 0x7A identity; not equivalent to K2OH runtime writes."""
+    return bool(identity) and identity.get("magic") == OCFS_MAGIC \
+        and identity.get("format") == 1 \
+        and identity.get("variant") in (1, 2, 3)
+
+
+def firmware_family(identity):
+    if is_opencfs(identity):
+        return "opencfs"
+    if is_k2oh(identity):
+        return "k2oh"
+    return "creality-or-unknown"
 
 
 class CfsRuntimeConfigError(RuntimeError):
@@ -664,8 +682,13 @@ class BoxCfsRuntime:
         # apply the configured values if, and only if, this is K2-OpenHost
         # firmware and the printer is not printing.
         self._auto_attempt += 1
+        driver = self._driver()
         try:
-            driver = self._driver()
+            self.identity = driver.identity()
+        except Exception as exc:
+            self.identity = None
+            logging.info("box_cfs_runtime: no 0x7A identity: %s", exc)
+        try:
             meta = self._probe(driver)
         except CfsRuntimeConfigError as exc:
             self.last_error = str(exc)
@@ -682,11 +705,6 @@ class BoxCfsRuntime:
             self.supported = False
             logging.exception("box_cfs_runtime: probe failed")
             return
-        try:
-            self.identity = driver.identity()
-        except Exception as exc:
-            self.identity = None
-            logging.info("box_cfs_runtime: no 0x7A identity: %s", exc)
         self._auto_attempt = 0
         self._apply_at_contact(driver, meta, eventtime)
 
@@ -695,10 +713,17 @@ class BoxCfsRuntime:
             return "auto_apply is off"
         if not self.overrides:
             return "no values configured"
+        if is_opencfs(self.identity):
+            return "OpenCFS identified: independent firmware, K2OH CFG writes unsupported"
         if not is_k2oh(self.identity):
             return ("not K2-OpenHost firmware (0x7A identity %s)"
                     % ((self.identity or {}).get("magic") or "none"))
-        if meta.get("version") != 2 or meta.get("features") != K2OH_FEATURES:
+        cfg4 = (meta.get("features") == K2OH_CFG4_FEATURES
+                and self.identity.get("revision") == K2OH_CFG4_REVISION
+                and self.identity.get("variant") == 4
+                and self.identity.get("version") == "cfs0_000_153")
+        if (meta.get("version") != 2
+                or not (cfg4 or meta.get("features") == K2OH_FEATURES)):
             return ("K2-OpenHost firmware without the v3.23 contract "
                     "(features 0x%02X)" % meta.get("features", 0))
         stats = self.printer.lookup_object("print_stats", None)
@@ -717,7 +742,19 @@ class BoxCfsRuntime:
             return
         try:
             applied = {}
+            cfg4 = (meta.get("features") == K2OH_CFG4_FEATURES)
+            skipped = []
             for param_id, value in sorted(self.overrides.items()):
+                if cfg4 and param_id not in K2OH_CFG4_WRITABLE_IDS:
+                    skipped.append(K2OH_BY_ID[param_id].name)
+                    continue
+                if cfg4 and param_id == 8 and value % 10:
+                    raise CfsRuntimeConfigError(
+                        "insert_sensor_timeout_ms must be a multiple of 10 ms")
+                current = driver.get_v2(param_id)
+                if current == value:
+                    applied[K2OH_BY_ID[param_id].name] = current
+                    continue
                 driver.set_v2(param_id, value)
                 readback = driver.get_v2(param_id)
                 if readback != value:
@@ -745,6 +782,11 @@ class BoxCfsRuntime:
             return
         self.last_values.update(applied)
         self.apply_state = "applied %d value(s)" % len(applied)
+        if skipped:
+            self.apply_state += "; skipped unsupported: " + ", ".join(skipped)
+            logging.warning(
+                "box_cfs_runtime: CFS %d CFG4 omitted unimplemented IDs: %s",
+                self.address, ", ".join(skipped))
         logging.info("box_cfs_runtime: CFS %d: applied %s",
                      self.address, applied)
 
@@ -1262,6 +1304,8 @@ class BoxCfsRuntime:
             "ignored_options": list(self.ignored_options),
             "identity": dict(self.identity) if self.identity else None,
             "k2oh": is_k2oh(self.identity),
+            "opencfs": is_opencfs(self.identity),
+            "firmware_family": firmware_family(self.identity),
             "apply_state": self.apply_state,
             "values": dict(self.last_values),
             "last_error": self.last_error,
