@@ -65,3 +65,6 @@ Conservare CFG5T e v3.22 come rollback.
 
 
 Approfondimento tecnico ID0–27: [riferimento completo IT](CFS_RUNTIME_CFG6_PARAMETERS_IT.md) e [EN](CFS_RUNTIME_CFG6_PARAMETERS_EN.md).
+
+
+**Aggiornamento attività e audit delle PR:** [stato CFG6 e issue ancora aperte](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/docs/CFG6_STATUS_PR_TRIAGE_20261018_IT.md) · [EN](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/docs/CFG6_STATUS_PR_TRIAGE_20261018_EN.md).
