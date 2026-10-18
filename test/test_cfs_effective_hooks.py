@@ -109,6 +109,7 @@ def test_manual_set_uses_effective_hook_gate_before_transport():
 def test_diagnostic_info_explicitly_marks_storage_only():
     runtime = _load_module()
     extra = runtime.BoxCfsRuntime.__new__(runtime.BoxCfsRuntime)
+    extra.identity = None  # v3.22 0xD7: no 0x7A identity
     values = {p.name: p.default or 0 for p in runtime.PARAMETERS}
     result = extra._format_groups(
         {"version": 2, "count": 28, "features": 0xD7, "override_mask": 0},
