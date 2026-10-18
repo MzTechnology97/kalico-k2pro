@@ -45,3 +45,5 @@ Example:
 
 CFS hardware remains unqualified for new v3.23 CFG4 behaviour. Keep
 the v3.22 custom-image rollback mechanism available.
+
+[Versione italiana](CFS_RUNTIME_V323_CFG4_IT.md) | [English parameter guide](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/docs/CFS_V323_PARAMETER_GUIDE_EN.md) | [Guida parametri in italiano](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/docs/CFS_V323_PARAMETER_GUIDE_IT.md)
