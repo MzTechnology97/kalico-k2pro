@@ -170,6 +170,17 @@ K2OH_FEATURES = 0xC7
 K2OH_CFG4_FEATURES = 0xD7
 K2OH_CFG4_REVISION = "v323-cfg4"
 K2OH_CFG4_WRITABLE_IDS = frozenset((1, 2, 3, 5, 7, 8))
+# Offline lab only: K2OH CFG5 0xE7 / v323-cfg5, NOT supported by the
+# installed CFS v323-cfg4. Patch the live extra only after hardware validation.
+K2OH_CFG5_FEATURES = 0xE7
+K2OH_CFG5_REVISION = "v323-cfg5"
+K2OH_CFG5T_FEATURES = 0xE5  # gated type4 TASK trial, not hardware-validated
+K2OH_CFG5T_REVISION = "v323-cfg5t"
+K2OH_CFG6_FEATURES = 0xE3
+K2OH_CFG6_REVISION = "v323-cfg6"
+K2OH_CFG6_WRITABLE_IDS = frozenset(
+    (1,2,3,5,6,7,8,9,11,12,13,14,15,16,17,18,19,20,21,22,23,24,27))
+K2OH_CFG5_WRITABLE_IDS = frozenset((1, 2, 3, 5, 7, 8, 20, 22))
 OCFS_MAGIC = "OCFS"
 FLAG_K2OH_WRITABLE = 1 << 5
 
@@ -296,6 +307,7 @@ def firmware_family(identity):
 # and keeps its own consumption estimate as fallback (box_rfid_estimates).
 LIVE_REMAINING_FIRMWARE = frozenset((
     ("v323-cfg5t", 0xE5),  # CFG5 Type4 lab build
+    ("v323-cfg6", 0xE3),   # CFG6 advanced and type-4 build
 ))
 
 
@@ -750,7 +762,19 @@ class BoxCfsRuntime:
             and self.identity.get("revision") == "v3.23-k2oh"
             and self.identity.get("variant") == 4
             and self.identity.get("version") == "cfs0_000_153")
-        if meta.get("version") != 2 or not (cfg4 or full_profile):
+        cfg5 = (meta.get("features") == K2OH_CFG5_FEATURES
+                and self.identity.get("revision") == K2OH_CFG5_REVISION
+                and self.identity.get("variant") == 4
+                and self.identity.get("version") == "cfs0_000_153")
+        cfg5t = (meta.get("features") == K2OH_CFG5T_FEATURES
+                 and self.identity.get("revision") == K2OH_CFG5T_REVISION
+                 and self.identity.get("variant") == 4
+                 and self.identity.get("version") == "cfs0_000_153")
+        cfg6 = (meta.get("features") == K2OH_CFG6_FEATURES
+                and self.identity.get("revision") == K2OH_CFG6_REVISION
+                and self.identity.get("variant") == 4
+                and self.identity.get("version") == "cfs0_000_153")
+        if meta.get("version") != 2 or not (cfg4 or cfg5 or cfg5t or cfg6 or full_profile):
             return ("K2-OpenHost firmware without the v3.23 contract "
                     "(features 0x%02X)" % meta.get("features", 0))
         stats = self.printer.lookup_object("print_stats", None)
@@ -769,15 +793,26 @@ class BoxCfsRuntime:
             return
         try:
             applied = {}
-            cfg4 = (meta.get("features") == K2OH_CFG4_FEATURES)
+            cfg4 = meta.get("features") == K2OH_CFG4_FEATURES
+            cfg5 = meta.get("features") in (K2OH_CFG5_FEATURES,
+                                                K2OH_CFG5T_FEATURES)
+            cfg6 = meta.get("features") == K2OH_CFG6_FEATURES
+            allowed = (
+                K2OH_CFG4_WRITABLE_IDS if cfg4 else
+                K2OH_CFG5_WRITABLE_IDS if cfg5 else
+                K2OH_CFG6_WRITABLE_IDS if cfg6 else None)
             skipped = []
             for param_id, value in sorted(self.overrides.items()):
-                if cfg4 and param_id not in K2OH_CFG4_WRITABLE_IDS:
+                if allowed is not None and param_id not in allowed:
                     skipped.append(K2OH_BY_ID[param_id].name)
                     continue
-                if cfg4 and param_id == 8 and value % 10:
+                if (cfg4 or cfg5 or cfg6) and param_id == 8 and value % 10:
                     raise CfsRuntimeConfigError(
                         "insert_sensor_timeout_ms must be a multiple of 10 ms")
+                if (cfg5 or cfg6) and param_id in (20, 22) and value % 20:
+                    raise CfsRuntimeConfigError(
+                        "%s must be a multiple of 20 ms"
+                        % K2OH_BY_ID[param_id].name)
                 current = driver.get_v2(param_id)
                 if current == value:
                     applied[K2OH_BY_ID[param_id].name] = current
@@ -998,6 +1033,27 @@ class BoxCfsRuntime:
                 and ident.get("revision") == K2OH_CFG4_REVISION
                 and ident.get("version") == "cfs0_000_153")
 
+    def _cfg5_for_diagnostics(self, meta):
+        ident = self.identity or {}
+        signature = ((K2OH_CFG5_FEATURES, K2OH_CFG5_REVISION),
+                     (K2OH_CFG5T_FEATURES, K2OH_CFG5T_REVISION))
+        return (meta.get("version") == 2
+                and meta.get("count") == 28
+                and (meta.get("features"), ident.get("revision")) in signature
+                and is_k2oh(ident)
+                and ident.get("variant") == 4
+                and ident.get("version") == "cfs0_000_153")
+
+    def _cfg6_for_diagnostics(self, meta):
+        identity = self.identity or {}
+        return (meta.get("version") == 2
+                and meta.get("count") == 28
+                and meta.get("features") == K2OH_CFG6_FEATURES
+                and is_k2oh(identity)
+                and identity.get("variant") == 4
+                and identity.get("revision") == K2OH_CFG6_REVISION
+                and identity.get("version") == "cfs0_000_153")
+
     def _diagnostic_spec(self, meta, param_id):
         """Use firmware wire units for diagnostics, not unhooked CFG units.
 
@@ -1005,6 +1061,14 @@ class BoxCfsRuntime:
         20ms ticks even though newer CFG options are named in ms.
         """
         spec = PARAM_BY_ID[param_id]
+        if self._cfg6_for_diagnostics(meta):
+            if param_id in K2OH_CFG6_WRITABLE_IDS:
+                return K2OH_BY_ID[param_id]
+        if self._cfg5_for_diagnostics(meta):
+            if param_id in K2OH_CFG5_WRITABLE_IDS:
+                return K2OH_BY_ID[param_id]
+            if param_id == 17:
+                return spec._replace(default=400)
         if self._cfg4_for_diagnostics(meta):
             if param_id in K2OH_CFG4_WRITABLE_IDS:
                 return K2OH_BY_ID[param_id]
@@ -1048,7 +1112,17 @@ class BoxCfsRuntime:
             if parts:
                 lines.append("%s: %s" % (title, " ".join(parts)))
         feature = meta.get("features", 0)
-        if self._cfg4_for_diagnostics(meta):
+        if self._cfg6_for_diagnostics(meta):
+            lines.append(
+                "K2OH CFG6 LAB: effective writable IDs="
+                "1,2,3,5,6,7,8,9,11-24 excluding 10/25/26,27; "
+                "ID6 controls de-tooth action, ID17 true stock 400ms; "
+                "ROM/default getters do not prove hardware runtime effects.")
+        elif self._cfg5_for_diagnostics(meta):
+            lines.append(
+                "K2OH CFG5 LAB: effective writable IDs=1,2,3,5,7,8,20,22; "
+                "ID20/22 report true milliseconds; no live type4 guarantee.")
+        elif self._cfg4_for_diagnostics(meta):
             lines.append(
                 "K2OH CFG4: effective writable IDs=1,2,3,5,7,8; "
                 "other IDs GET-only. ID20/22 report raw 20ms ticks, "
