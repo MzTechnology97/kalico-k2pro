@@ -25,7 +25,7 @@
 | 7 | `hub_transition_wait_ms` | 3200 | 100–10000 ms | 3200 | Sì |
 | 8 | `insert_sensor_timeout_ms` | 7000 | 1000–50000 ms, step 10 | 7000 | Sì |
 | 9 | `hub_pullback_timeout_ms` | 5000 | 500–15000 ms | 5000 | Sì |
-| 10 | `unload_sensor_timeout_ms` | 1000 | 100–5000 ms | GET-only | No |
+| 10 | `unload_sensor_timeout_ms` | 1000 | 100–5000 (solo catalogo; stock 1000 polling tick ≈ 10 s) | GET-only | No |
 | 11 | `rfid_seek_speed` | 160 | 1–255 raw | 160 | Sì |
 | 12 | `rfid_measure_speed` | 120 | 1–255 raw | 150 | Sì |
 | 13 | `rfid_reposition_speed` | 100 | 1–255 raw | 100 | Sì |
@@ -41,7 +41,7 @@
 | 23 | `rfid_neighbor_retry_count` | 3 | 1–10 attempts | 1 | Sì |
 | 24 | `reverse_detooth_timeout_ms` | 1000 | 100–10000 ms | 1000 | Sì |
 | 25 | `buffer_fill_timeout_ms` | 30000 | 1000–60000 ms | GET-only | No |
-| 26 | `transition_detect_timeout_ms` | 300 | 50–5000 ms | GET-only | No |
+| 26 | `transition_detect_timeout_ms` | 300 | 50–5000 (solo catalogo; stock 300 polling tick ≈ 3 s) | GET-only | No |
 | 27 | `load_retry_count` | 3 | 1–10 cycles | 1 | Sì |
 
 ## Effetto sul comportamento, parametro per parametro
@@ -98,7 +98,7 @@ Abilita/disabilita il ramo effettivo di movimento reverse de-tooth (disimpegno/r
 
 ### ID 08 — `insert_sensor_timeout_ms`
 
-È la finestra massima concessa al sensore/percorso d'inserimento durante la fase di caricamento. Se scade, il firmware segue il ramo di errore/recupero previsto; non accelera il movimento.
+È la finestra massima concessa al sensore/percorso d'inserimento durante una fase di caricamento. Se scade, il firmware segue il ramo di errore/recupero previsto; non accelera il movimento. **L'hook regola un callsite da 700 poll stock, non tutti i percorsi OEM che utilizzano il medesimo timeout.**
 
 **Limiti e verifica:** CFG in ms; il firmware converte in tick da 10 ms. (hook: `0x080112CA`.) Stock: **7000**; range ammesso: **1000–50000 ms, step 10**; valore CM5: **7000**; SET: **sì**.
 
@@ -110,7 +110,7 @@ Abilita/disabilita il ramo effettivo di movimento reverse de-tooth (disimpegno/r
 
 ### ID 10 — `unload_sensor_timeout_ms`
 
-Voce descrittiva di un timeout scarico stock il cui percorso individuato non viene eseguito in questa variante. Cambiarne il valore non avrebbe effetti dimostrati.
+Voce presente nel catalogo CFG6 ma non collegata a un hook operativo. Lo stock usa, in un percorso del sensore, un contatore di 1000 poll da 10 ms (circa 10 s): il nome `_ms` del catalogo non rispecchia quel valore grezzo. Non è possibile modificare questo timeout tramite CFG6.
 
 **Limiti e verifica:** SET/RESET bloccati. Stock: **1000**; range ammesso: **100–5000 ms**; valore CM5: **GET-only**; SET: **no**.
 
@@ -164,7 +164,7 @@ Costante temporale del movimento/posizionamento usato nella ricerca del tag su u
 
 ### ID 19 — `rfid_neighbor_settle_ms`
 
-Pausa dopo il movimento di ricerca sullo slot/bobina vicina; permette stabilizzazione prima di continuare o riprovare.
+Pausa stock di 100 ms **dopo** il movimento di ricerca sullo slot/bobina vicina; permette stabilizzazione prima di continuare o riprovare. Un altro delay OEM da 500 ms è indipendente e non viene modificato dall'ID19.
 
 **Limiti e verifica:** Hook nella chiamata delay `0x08013078`. (hook: `0x08013078`.) Stock: **100**; range ammesso: **10–1000 ms**; valore CM5: **100**; SET: **sì**.
 
@@ -206,7 +206,7 @@ Timeout del riempimento buffer presente nel catalogo, ma senza percorso stock ra
 
 ### ID 26 — `transition_detect_timeout_ms`
 
-Timeout di rilevamento transizione presente solo nel catalogo, senza un aggancio stock operativo in questa build.
+Campo presente nel catalogo ma non collegato a un hook CFG6. La ricostruzione OEM individua un contatore di 300 poll da 10 ms (circa 3 s) in un sito, oltre a un percorso di retry separato: il valore grezzo 300 non significa 300 ms. Nessuno di questi percorsi è modificabile tramite CFG6.
 
 **Limiti e verifica:** Non esposto a SET/RESET. Stock: **300**; range ammesso: **50–5000 ms**; valore CM5: **GET-only**; SET: **no**.
 
@@ -234,3 +234,7 @@ Numero dei cicli di pretensione avanti/indietro nel percorso di caricamento. Non
 [builder](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/firmware/v3.25-cfg6-lab/build-v3_23.py) · [ARM wrappers](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/firmware/v3.25-cfg6-lab/handler-v3_23.S) · [automated tests](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/firmware/v3.25-cfg6-lab/test_all_offline.py)
 
 [Guida di integrazione Kalico](https://github.com/MzTechnology97/kalico-k2pro/blob/k2-pro-openhost/docs/CFS_RUNTIME_CFG6_IT.md) · [English version](CFS_RUNTIME_CFG6_PARAMETERS_EN.md)
+
+## Nota sulle unità dei campi non operativi
+
+Gli ID **10 e 26** sono GET-only e mantengono un catalogo storico con suffisso `_ms`. Nell'eseguibile OEM, però, alcune chiamate sensore lavorano in **poll da 10 ms**: `1000` poll ≈ **10 s** (ID10) e `300` poll ≈ **3 s** (candidato ID26). Questi numeri **non sono timeout configurabili in CFG6**. Per ID8, invece, l'extra espone millisecondi reali e il firmware usa una conversione `/10`, ma modifica soltanto il callsite effettivamente agganciato. Riferimento: [audit ROM OEM dei tick e dei feeder](https://github.com/MzTechnology97/k2-cfs-rfid-tools/pull/53).
