@@ -31,4 +31,22 @@ Existing 1/2/3/5 (hub speeds), 7/8 (hub timing), 20 (total feed timeout), 22 (od
 
 The host tests are mocks; no firmware or printer motion is exercised. Retain CFG5T and v3.22 rollback images.
 
-[Guida italiana](CFS_RUNTIME_CFG6_IT.md) | [CFG6 firmware source](https://github.com/MzTechnology97/k2-cfs-rfid-tools/tree/feat/cfg6-full-hooks-lab/firmware/v3.25-cfg6-lab)
+[Guida italiana](CFS_RUNTIME_CFG6_IT.md) | [CFG6 firmware source](https://github.com/MzTechnology97/k2-cfs-rfid-tools/tree/main/firmware/v3.25-cfg6-lab)
+
+## Initial CFG6 hardware readback — 18 October 2026
+
+The user-flashed G32/APP153 CFS identified as `K2OH / v323-cfg6 / 0xE3`, API2 with 28 IDs. With the printer in `standby`, the CFS `IDLE` and no axes homed, `auto_apply: True` was enabled in the CM5's active `box.cfg`. After restarting **only Klipper**, the runtime reported **`applied 23 value(s)`**, with no errors or ignored options. An independent `BOX_CFS_CONFIG_DIAG ALL=1` read back **28/28 valid values**, all 23 configured overrides exactly matching CFS GET responses.
+
+Confirmed custom settings include hub transition/insert/reverse speeds `220/100/150`, RFID measure speed `150`, RFID neighbour retry count `1`, and pretension cycle count `1`. IDs 0/4/10/25/26 remain read-only.
+
+**No G28, Z homing, axis motion or filament manipulation took place.** The first post-flash motor initialization needed a retry, with RS-485 timeout/CRC warnings. The subsequent Klipper-only restart completed motor initialization on the first attempt, with one broadcast timeout. These observations validate the runtime protocol and volatile readback, **not prolonged RS-485 stability, physical RFID/load/unload behavior, or live type-4 filament use in a real print**.
+
+The distributed `box.cfg` templates remain fully commented to prevent unintended writes on new installations. On a verified CFG6 unit, enable the active configuration as follows:
+
+```ini
+[box_cfs_runtime]
+auto_apply: True
+# Add the 23 settings from the CFG6 template; keep IDs 0/4/10/25/26 disabled.
+```
+
+Keep CFG5T and v3.22 as recovery options.
