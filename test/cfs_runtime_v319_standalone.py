@@ -114,11 +114,17 @@ def main():
     except ValueError:
         pass
 
-    runtime.cmd_set(
-        MockGcode({"PARAM": "hub_transition_wait_ms", "VALUE": "3300"})
-    )
-    assert driver.values[7] == 3300
-    assert ("set", 7, 3300) in driver.calls
+    # v3.19 connects no advanced ID to a stock callsite, so even ID 7 is
+    # stored-only there: SET is refused before anything is sent.
+    try:
+        runtime.cmd_set(
+            MockGcode({"PARAM": "hub_transition_wait_ms", "VALUE": "3300"})
+        )
+        raise AssertionError("stored-only SET must be rejected on v3.19")
+    except ValueError:
+        pass
+    assert not any(call[0] == "set" for call in driver.calls)
+    assert driver.values[7] == 3200
 
     runtime.cmd_reset(MockGcode({"PARAM": "hub_transition_wait_ms"}))
     assert driver.values[7] == 3200
@@ -133,7 +139,7 @@ def main():
     assert lines.lines and "features=0xF7" in lines.lines[0]
     assert not any(call[0] == "set" and call[1] < 7 for call in driver.calls)
     print(
-        "PASS: v3.19 manual advanced SET/RESET, blocked stock writes and auto-apply"
+        "PASS: v3.19 stored-only SET refused, RESET allowed, blocked stock writes and auto-apply"
     )
 
 

@@ -168,8 +168,14 @@ def test_experimental_builds_protect_stock_ids(features):
 @pytest.mark.parametrize("features", EXPERIMENTAL)
 def test_advanced_set_and_reset_when_idle(features):
     rt, driver, box = make(features)
-    rt.cmd_set(Gcmd(PARAM="hub_transition_wait_ms", VALUE="3300"))
-    assert ("set", 7, 3300) in driver.calls
+    if features == 0xF7:
+        # v3.19 connects no ID to a stock callsite: SET is refused.
+        with pytest.raises(ValueError):
+            rt.cmd_set(Gcmd(PARAM="hub_transition_wait_ms", VALUE="3300"))
+        assert not any(call[0] == "set" for call in driver.calls)
+    else:
+        rt.cmd_set(Gcmd(PARAM="hub_transition_wait_ms", VALUE="3300"))
+        assert ("set", 7, 3300) in driver.calls
     rt.cmd_reset(Gcmd(PARAM="hub_transition_wait_ms"))
     assert ("reset", 7) in driver.calls
     # Locks are released afterwards in every case.
