@@ -238,3 +238,7 @@ Number of forward/backward pretension cycles in the loading path. It is not the 
 ## GET-only unit caveat
 
 IDs **10 and 26** are GET-only and retain historical `_ms` names, but some OEM sensor routines run in **10ms polls**: 1000 polls ≈ **10s** for the ID10-related site; 300 polls ≈ **3s** for one ID26 candidate. These are **not tunable CFG6 timeouts**. Writable ID8 uses real host milliseconds converted by `/10` inside the firmware, but affects only the patched OEM callsite. Source: [OEM ROM source audit of polling units and GPIO feeders](https://github.com/MzTechnology97/k2-cfs-rfid-tools/pull/53).
+
+## Safety: unresolved MCU issue (18 October 2026)
+
+[Firmware issue #9](https://github.com/MzTechnology97/k2-cfs-rfid-tools/issues/9) **remains unresolved**: a prior physical test saw MCU `BOX_STATE=IDLE` while `box.operation.active=true` during `feeding_to_buffer`. CFG6 SET/GET was validated **only with the printer idle**. Exact identity, `auto_apply: True` at startup and 23/23 readback **do not establish an atomic MCU motor-stop interlock**. Never send direct SET/RESET during loading, unloading, or movement; keep Kalico's host safeguards and a known-good rollback. Physical task/motor-state and RTOS-race qualification is still needed.
