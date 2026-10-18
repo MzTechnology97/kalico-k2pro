@@ -139,31 +139,41 @@ def test_reference_cfg_does_not_enable_fictitious_knobs():
         "buffer_fill_timeout_ms",
         "transition_detect_timeout_ms",
     }
-    for path in (
-        root / "config/k2/macros/box.cfg",
-        root / "config/k2/reference/k2pro-cm5/macros/box.cfg",
-    ):
-        text = path.read_text()
+
+    def runtime_block(path):
+        text = (root / path).read_text()
         start = text.index("# CFS runtime parameters (box_cfs_runtime)")
         end = text.index("# CFS event notifications", start)
-        block = text[start:end]
-        # Modifiable on v3.23: "#name: value  # IDn ..." with the stock value.
-        modifiable = re.findall(
-            r"^#([a-z0-9_]+): (\S+)\s+# ID(\d+)", block, re.M
-        )
-        assert {name for name, _, _ in modifiable} == writable
-        for name, value, pid in modifiable:
-            spec = module.K2OH_BY_NAME[name]
-            assert spec.param_id == int(pid), name
-            if spec.value_type != "bool":
-                assert int(value) == spec.default, name
-        # Not modifiable: listed apart, never in the uncomment-ready form.
-        listed = set(re.findall(r"^#   ([a-z0-9_]+):", block, re.M))
-        assert listed == read_only
-        assert "#[box_cfs_runtime]" in block
-        # Nothing is enabled in the distributed profile.
-        for line in block.splitlines():
-            assert not line.strip() or line.lstrip().startswith("#"), line
+        return text[start:end]
+
+    # Distributed profile: every option in uncomment-ready form, nothing on.
+    block = runtime_block("config/k2/macros/box.cfg")
+    # Modifiable on v3.23: "#name: value  # IDn ..." with the stock value.
+    modifiable = re.findall(r"^#([a-z0-9_]+): (\S+)\s+# ID(\d+)", block, re.M)
+    assert {name for name, _, _ in modifiable} == writable
+    for name, value, pid in modifiable:
+        spec = module.K2OH_BY_NAME[name]
+        assert spec.param_id == int(pid), name
+        if spec.value_type != "bool":
+            assert int(value) == spec.default, name
+    # Not modifiable: listed apart, never in the uncomment-ready form.
+    assert set(re.findall(r"^#   ([a-z0-9_]+):", block, re.M)) == read_only
+    assert "#[box_cfs_runtime]" in block
+    for line in block.splitlines():
+        assert not line.strip() or line.lstrip().startswith("#"), line
+
+    # Reference machine: the values it runs, only writable ones, in range.
+    block = runtime_block("config/k2/reference/k2pro-cm5/macros/box.cfg")
+    assert re.search(r"^\[box_cfs_runtime\]$", block, re.M)
+    active = dict(re.findall(r"^([a-z0-9_]+):\s*(\S+)", block, re.M))
+    assert active.pop("auto_apply").lower() in ("true", "false")
+    active.pop("address", None)
+    assert set(active) <= writable, set(active) - writable
+    for name, value in active.items():
+        spec = module.K2OH_BY_NAME[name]
+        if spec.value_type != "bool":
+            assert spec.minval <= int(value) <= spec.maxval, name
+    assert set(re.findall(r"^#   ([a-z0-9_]+):", block, re.M)) == read_only
 
 
 if __name__ == "__main__":
