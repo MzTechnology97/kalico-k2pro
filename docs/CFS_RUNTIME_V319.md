@@ -32,7 +32,7 @@ BOX_CFS_CONFIG_RESET PARAM=rfid_neighbor_detect_delay_ms
 BOX_CFS_CONFIG_DIAG ALL=1
 ```
 
-The CFS reported 401 after SET and 400 after RESET, but **this is not permission to change other settings in normal operation**. Do not run bulk SET tests, move filament, perform RFID rotations or start printing using v3.19 until the remaining tests pass. For normal motion use the rollback v3.13 or vendor stock firmware as appropriate.
+The CFS reported 401 after SET and 400 after RESET, but **this is not permission to change other settings in normal operation**. Since the effective-hook guard (kalico-k2pro #70, ported to `k2-pro-openhost`), Kalico refuses this SET: on v3.19 no ID is connected to a stock callsite, and on v3.20-v3.22 only IDs 7 and 8 are. See [CFS runtime v3.22](CFS_RUNTIME_V322.md). Do not run bulk SET tests, move filament, perform RFID rotations or start printing using v3.19 until the remaining tests pass. For normal motion use the rollback v3.13 or vendor stock firmware as appropriate.
 
 ## Persistence and limits
 
