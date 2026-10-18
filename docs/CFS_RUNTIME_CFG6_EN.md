@@ -1,6 +1,6 @@
 # Kalico CFG6 - Advanced runtime controls (English)
 
-**Experimental development, not hardware-qualified. Do not use CFG6 for production prints.** The physical CFS still runs CFG5T; no active Kalico module is replaced.
+**Experimental firmware, not yet qualified for production motion/RFID operation.** The user-flashed physical CFS now runs CFG6. Its matching Kalico runtime has been integrated into `k2-pro-openhost`, and the CM5 has verified all 23 startup SET/GET values with `auto_apply: True`. Full mechanical and extended RS-485 testing is still pending.
 
 Required firmware identity: K2OH revision v323-cfg6, features 0xE3, API v2, 28 settings. All fields are checked before allowing SET. OpenCFS (OCFS), stock Creality, CFG4 and CFG5T cannot receive CFG6 writes.
 
