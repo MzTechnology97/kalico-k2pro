@@ -722,8 +722,12 @@ class BoxCfsRuntime:
                 and self.identity.get("revision") == K2OH_CFG4_REVISION
                 and self.identity.get("variant") == 4
                 and self.identity.get("version") == "cfs0_000_153")
-        if (meta.get("version") != 2
-                or not (cfg4 or meta.get("features") == K2OH_FEATURES)):
+        full_profile = (
+            meta.get("features") == K2OH_FEATURES
+            and self.identity.get("revision") == "v3.23-k2oh"
+            and self.identity.get("variant") == 4
+            and self.identity.get("version") == "cfs0_000_153")
+        if meta.get("version") != 2 or not (cfg4 or full_profile):
             return ("K2-OpenHost firmware without the v3.23 contract "
                     "(features 0x%02X)" % meta.get("features", 0))
         stats = self.printer.lookup_object("print_stats", None)
