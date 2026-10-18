@@ -26,6 +26,20 @@ installer helper fills in) and `macros/prtouch.cfg` match the profile in
 duplicated here. The other files in `macros/` are the ones running
 on this machine.
 
+## Choices specific to this machine
+
+This printer runs on a UPS, so a mains power loss does not stop a print. For
+that reason only:
+
+- `[power_loss_recovery]` is commented out in `macros/system.cfg`;
+- `[z_align]` is commented out in `printer.cfg`. It is needed only to find Z
+  again after a power loss, and without it Z can run at 64 microsteps (the
+  MCU-driven z_align loses steps at 64).
+
+Without a UPS keep both enabled, as in the generic profile, and Z at 16
+microsteps. The `microsteps: 64` comment in `printer.cfg` still describes
+the z_align limit.
+
 ## Differences from the generic profile
 
 `printer.cfg`:
@@ -33,9 +47,9 @@ on this machine.
 - `[mcu rpi]` host MCU on the CM5 (its `CM5-temp` sensor is in `macros/sensors.cfg`);
 - extruder sensor `PT1000`, bed sensor `R3men_bed` (custom thermistor
   definitions included), extruder `rotation_distance: 7.0207`;
-- microsteps X/Y 32, Z 64 with TMC2208 `interpolate: False`; `[z_align]` is
-  commented out (the MCU-driven z_align lost steps at 64). Z
-  `homing_retract_dist: 10`; TMC2208 Z `stealthchop_threshold: 0`;
+- microsteps X/Y 32, Z 64 with TMC2208 `interpolate: False` (possible only
+  without `[z_align]`, see below); Z `homing_retract_dist: 10`; TMC2208 Z
+  `stealthchop_threshold: 0`;
 - heater bed `max_power: 0.6`; `ptc_power_limiter` bed 0.6 / chamber 0.5 /
   combined 1.0;
 - input shaper 50 Hz (X) / 40.8 Hz (Y) and ShakeTune resonance settings;
