@@ -83,7 +83,8 @@ class Config:
         return self.options.get(name, default)
 
     def getint(self, name, default=None, minval=None, maxval=None):
-        return int(self.options.get(name, default))
+        value = self.options.get(name, default)
+        return None if value is None else int(value)
 
     def getboolean(self, name, default=None):
         value = self.options.get(name, default)
@@ -250,17 +251,32 @@ def _make_with_driver_factory(box, options, monkeypatch, assigned=True):
     return rt, printer, calls
 
 
-def test_several_cfs_online_probes_only_the_configured_one(monkeypatch):
+def test_several_cfs_online_are_each_probed(monkeypatch):
     box = Box(online=(1, 2, 3))
     before = dict(box.drivers)
     rt, printer, calls = _make_with_driver_factory(box, {}, monkeypatch)
     printer.send_event("serial_485:ready")
     printer.send_event("box:ready")
     printer.reactor.run()
-    assert calls == [1]
-    assert rt.supported is True
+    assert sorted(calls) == [1, 2, 3]
+    assert all(rt.units[a].supported is True for a in (1, 2, 3))
+    status = rt.get_status(0.0)
+    assert status["address"] == 1 and status["supported"] is True
+    assert sorted(status["boxes"]) == ["1", "2", "3"]
+    assert status["boxes"]["2"]["firmware_features"] == FEATURES_V322
     # The Box driver table is only read, never changed.
     assert box.drivers == before
+
+
+def test_address_option_limits_to_one_cfs(monkeypatch):
+    box = Box(online=(1, 2, 3))
+    rt, printer, calls = _make_with_driver_factory(
+        box, {"address": "1"}, monkeypatch)
+    printer.send_event("serial_485:ready")
+    printer.send_event("box:ready")
+    printer.reactor.run()
+    assert calls == [1]
+    assert sorted(rt.get_status(0.0)["boxes"]) == ["1"]
 
 
 def test_runtime_for_the_second_cfs_uses_its_address(monkeypatch):
@@ -283,3 +299,73 @@ def test_configured_cfs_missing_while_others_are_online(monkeypatch):
     printer.reactor.run()
     assert calls == []
     assert rt.supported is None
+
+
+class Gcmd:
+    def __init__(self, **params):
+        self.params = params
+        self.replies = []
+
+    def get_int(self, name, default=None, minval=None, maxval=None):
+        value = self.params.get(name)
+        return default if value is None else int(value)
+
+    def respond_info(self, msg):
+        self.replies.append(msg)
+
+    def error(self, msg):
+        return ValueError(msg)
+
+
+def _ready_runtime(monkeypatch, online, options=None):
+    rt, printer, calls = _make_with_driver_factory(
+        Box(online=online), dict(options or {}), monkeypatch)
+    printer.send_event("serial_485:ready")
+    printer.send_event("box:ready")
+    printer.reactor.run()
+    seen = []
+    for address in rt.units:
+        rt.units[address].cmd_info = (
+            lambda gcmd, address=address: seen.append(address))
+    return rt, seen
+
+
+def test_commands_select_the_cfs_with_address(monkeypatch):
+    rt, seen = _ready_runtime(monkeypatch, (1, 2))
+    gcmd = Gcmd()
+    rt._dispatch(gcmd, "cmd_info")  # default: first online
+    gcmd2 = Gcmd(ADDRESS="2")
+    rt._dispatch(gcmd2, "cmd_info")
+    assert seen == [1, 2]
+    # With several CFS online the reply says which one answered.
+    assert gcmd.replies == ["CFS 1:"] and gcmd2.replies == ["CFS 2:"]
+
+
+def test_single_cfs_reply_is_unchanged(monkeypatch):
+    rt, seen = _ready_runtime(monkeypatch, (1,))
+    gcmd = Gcmd()
+    rt._dispatch(gcmd, "cmd_info")
+    assert seen == [1] and gcmd.replies == []
+
+
+def test_command_for_an_offline_cfs_is_refused(monkeypatch):
+    rt, seen = _ready_runtime(monkeypatch, (1, 2))
+    try:
+        rt._dispatch(Gcmd(ADDRESS="3"), "cmd_info")
+    except ValueError as exc:
+        assert "not online" in str(exc)
+    else:
+        raise AssertionError("an offline CFS must be refused")
+    assert seen == []
+
+
+def test_address_option_refuses_other_cfs(monkeypatch):
+    rt, seen = _ready_runtime(monkeypatch, (1, 2), {"address": "1"})
+    try:
+        rt._dispatch(Gcmd(ADDRESS="2"), "cmd_info")
+    except ValueError as exc:
+        assert "limited to CFS 1" in str(exc)
+    else:
+        raise AssertionError("address: 1 must refuse CFS 2")
+    rt._dispatch(Gcmd(), "cmd_info")
+    assert seen == [1]

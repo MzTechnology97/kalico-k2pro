@@ -310,6 +310,17 @@ class CfsRuntimeDriver:
             }
 
 
+# G-code commands and the unit method each one runs.
+RUNTIME_COMMANDS = (
+    ("BOX_CFS_CONFIG_INFO", "cmd_info"),
+    ("BOX_CFS_CONFIG_DIAG", "cmd_diag"),
+    ("BOX_CFS_CONFIG_SNAPSHOT", "cmd_snapshot"),
+    ("BOX_CFS_CONFIG_APPLY", "cmd_apply"),
+    ("BOX_CFS_CONFIG_SET", "cmd_set"),
+    ("BOX_CFS_CONFIG_RESET", "cmd_reset"),
+)
+
+
 class BoxCfsRuntime:
     AUTO_RETRY_LIMIT = 20
     AUTO_RETRY_INTERVAL = 0.5
@@ -319,7 +330,10 @@ class BoxCfsRuntime:
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object("gcode")
         self.serial_name = config.get("serial", "serial485")
-        self.address = config.getint("address", 1, minval=1, maxval=4)
+        # address: N limits the runtime config to that CFS. Without it every
+        # CFS that [box] brings online is handled, each with its own state.
+        self.fixed_address = config.getint("address", None, minval=1, maxval=4)
+        self.address = self.fixed_address or 1
         self.auto_apply = config.getboolean("auto_apply", True)
 
         # Only options that actually exist in the config are sent to the CFS.
@@ -347,18 +361,77 @@ class BoxCfsRuntime:
         self._auto_attempt = 0
         self._probe_generation = 0
         self._box_present = False
+        # One unit per CFS address; this object is the unit of self.address.
+        self.units = {self.address: self}
 
         self.printer.register_event_handler("klippy:connect", self._connect)
         self.printer.register_event_handler(
             "serial_485:ready", self._serial_ready)
         self.printer.register_event_handler("box:ready", self._box_ready)
-        self.gcode.register_command("BOX_CFS_CONFIG_INFO", self.cmd_info)
-        self.gcode.register_command("BOX_CFS_CONFIG_DIAG", self.cmd_diag)
-        self.gcode.register_command(
-            "BOX_CFS_CONFIG_SNAPSHOT", self.cmd_snapshot)
-        self.gcode.register_command("BOX_CFS_CONFIG_APPLY", self.cmd_apply)
-        self.gcode.register_command("BOX_CFS_CONFIG_SET", self.cmd_set)
-        self.gcode.register_command("BOX_CFS_CONFIG_RESET", self.cmd_reset)
+        for command, method in RUNTIME_COMMANDS:
+            self.gcode.register_command(
+                command,
+                lambda gcmd, method=method: self._dispatch(gcmd, method),
+                desc=self.cmd_RUNTIME_help)
+
+    cmd_RUNTIME_help = (
+        "CFS runtime configuration; ADDRESS=<1-4> selects the CFS "
+        "(default: the configured one, or the first online)")
+
+    def _unit(self, address):
+        """The runtime unit of one CFS address, created on first use."""
+        unit = self.units.get(address)
+        if unit is None:
+            unit = BoxCfsRuntime.__new__(BoxCfsRuntime)
+            unit.printer = self.printer
+            unit.reactor = self.reactor
+            unit.gcode = self.gcode
+            unit.serial_name = self.serial_name
+            unit.fixed_address = self.fixed_address
+            unit.address = address
+            unit.auto_apply = self.auto_apply
+            unit.overrides = self.overrides
+            unit.serial = self.serial
+            unit.supported = None
+            unit.protocol_version = None
+            unit.param_count = None
+            unit.override_mask = 0
+            unit.firmware_features = 0
+            unit.last_values = {}
+            unit.last_error = None
+            unit._auto_attempt = 0
+            unit._probe_generation = 0
+            unit._box_present = self._box_present
+            unit.units = self.units
+            self.units[address] = unit
+        return unit
+
+    def _online(self):
+        """Sorted CFS addresses [box] has online; None without [box]."""
+        box = self.printer.lookup_object("box", None)
+        if box is None:
+            return None
+        return sorted(getattr(box, "drivers", None) or {})
+
+    def _default_address(self):
+        if self.fixed_address is not None:
+            return self.fixed_address
+        online = self._online()
+        return online[0] if online else self.address
+
+    def _dispatch(self, gcmd, method):
+        address = gcmd.get_int(
+            "ADDRESS", self._default_address(), minval=1, maxval=4)
+        if self.fixed_address is not None and address != self.fixed_address:
+            raise gcmd.error(
+                "box_cfs_runtime is limited to CFS %d (address option)"
+                % self.fixed_address)
+        online = self._online()
+        if online is not None and address not in online:
+            raise gcmd.error("CFS %d is not online" % address)
+        if online is not None and len(online) > 1:
+            gcmd.respond_info("CFS %d:" % address)
+        getattr(self._unit(address), method)(gcmd)
 
     def _connect(self):
         # A CFS fresh from power-on answers at 0xFE until [box] has
@@ -374,14 +447,19 @@ class BoxCfsRuntime:
             self._start_contact(self.reactor.monotonic() + 1.0)
 
     def _box_ready(self, *args):
-        box = self.printer.lookup_object("box", None)
-        drivers = getattr(box, "drivers", None) or {}
-        if self.address not in drivers:
-            logging.info(
-                "box_cfs_runtime: CFS address %d is not online after "
-                "enumeration; not probed", self.address)
-            return
-        self._start_contact(self.reactor.monotonic())
+        online = self._online() or []
+        if self.fixed_address is not None:
+            if self.fixed_address not in online:
+                logging.info(
+                    "box_cfs_runtime: CFS address %d is not online after "
+                    "enumeration; not probed", self.fixed_address)
+                return
+            targets = [self.fixed_address]
+        else:
+            targets = online
+        now = self.reactor.monotonic()
+        for address in targets:
+            self._unit(address)._start_contact(now)
 
     def _start_contact(self, waketime):
         # A new contact supersedes retries still pending from an earlier one.
@@ -876,6 +954,18 @@ class BoxCfsRuntime:
                     bool(self.override_mask & (1 << spec.param_id))))
 
     def get_status(self, eventtime):
+        status = self._unit(self._default_address())._unit_status()
+        status["boxes"] = {
+            str(address): {
+                key: value for key, value in unit._unit_status().items()
+                if key not in ("auto_apply", "configured_overrides")
+            }
+            for address, unit in sorted(self.units.items())
+            if unit.supported is not None or unit.last_error
+        }
+        return status
+
+    def _unit_status(self):
         return {
             "supported": self.supported,
             "address": self.address,
