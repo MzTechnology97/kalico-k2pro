@@ -6,7 +6,9 @@ BoxRfidEstimates is a mixin of Box (self is the Box): spool identity keys,
 the estimate seeded from the tag, the CFS percentage and the profile or
 material length, its update during printing (CFS encoder, else
 print_stats), persistence by spool identity and restore at startup. The
-methods moved here from box.py unchanged.
+methods moved here from box.py unchanged. On CFS firmware that keeps the
+remaining percentage live while printing, the CFS value leads and the local
+estimate is the fallback (_apply_reported_remaining).
 """
 
 import logging
@@ -153,6 +155,7 @@ class BoxRfidEstimates:
             "total_mm": total_mm,
             "remaining_mm": remaining_mm,
             "length_source": saved.get("length_source"),
+            "cfs_percent": saved.get("cfs_percent"),
         }
         self.rfid_percent[slot] = 100.0 * remaining_mm / total_mm
         return True
@@ -214,6 +217,7 @@ class BoxRfidEstimates:
             "fingerprint": fingerprint,
             "total_mm": total_mm,
             "remaining_mm": remaining_mm,
+            "cfs_percent": saved.get("cfs_percent"),
         }
         if total_mm and remaining_mm is not None:
             self.rfid_percent[slot] = 100.0 * remaining_mm / total_mm
@@ -241,20 +245,55 @@ class BoxRfidEstimates:
         self.store.set_setting("rfid_spool_serial", serial)
         return serial
 
+    def _cfs_live_remaining(self, slot):
+        """Whether the CFS of this slot updates its remaining while printing.
+
+        Only firmware box_cfs_runtime identifies as such
+        (LIVE_REMAINING_FIRMWARE), and only with [box] cfs_live_remaining.
+        """
+        printer = getattr(self, "printer", None)
+        if printer is None or not getattr(self, "cfs_live_remaining", True):
+            return False
+        runtime = printer.lookup_object("box_cfs_runtime", None)
+        live = getattr(runtime, "live_remaining", None)
+        if live is None:
+            return False
+        address, _local = self._address_slot(slot)
+        return bool(live(address))
+
     def _apply_reported_remaining(self, slot, value):
+        """Merge a CFS remaining percentage into the slot estimate.
+
+        On firmware that keeps the percentage live while printing, the CFS
+        leads: each time its value changes, up or down, the estimate
+        restarts from it (cfs_percent, persisted with the estimate), and
+        between its 1 % steps the encoder/print_stats consumption keeps
+        lowering it. Elsewhere the CFS value is the one measured at load, so
+        it can only lower the estimate. No value (255, e.g. after a CFS
+        restart) changes nothing: the local estimate is the fallback.
+        """
+        spool = self.rfid_spools.get(slot)
         if not isinstance(value, int) or not 0 <= value <= 100:
+            if spool:
+                spool["remaining_source"] = "kalico"
             return
         self.rfid_reported_percent[slot] = value
-        spool = self.rfid_spools.get(slot)
         if not spool or not spool.get("total_mm"):
             self.rfid_percent[slot] = float(value)
             return
         hardware_mm = spool["total_mm"] * value / 100.0
         remaining = spool.get("remaining_mm")
-        if remaining is None:
-            remaining = hardware_mm
+        if self._cfs_live_remaining(slot):
+            if remaining is None or value != spool.get("cfs_percent"):
+                remaining = hardware_mm
+                spool["cfs_percent"] = value
+            spool["remaining_source"] = "cfs"
         else:
-            remaining = min(float(remaining), hardware_mm)
+            spool["remaining_source"] = "kalico"
+            if remaining is None:
+                remaining = hardware_mm
+            else:
+                remaining = min(float(remaining), hardware_mm)
         spool["remaining_mm"] = max(0.0, remaining)
         self.rfid_percent[slot] = (
             100.0 * spool["remaining_mm"] / spool["total_mm"])
@@ -280,6 +319,8 @@ class BoxRfidEstimates:
             }
             if spool.get("length_source"):
                 persisted[key]["length_source"] = spool["length_source"]
+            if spool.get("cfs_percent") is not None:
+                persisted[key]["cfs_percent"] = int(spool["cfs_percent"])
         # Per-insertion estimates (generic tags) end with their bay
         # occupancy: drop those no slot or live spool refers to any more.
         live = set(self._rfid_slot_keys().values())
@@ -345,7 +386,8 @@ class BoxRfidEstimates:
             self._set_rfid_slot_key(slot, key)
         spool["remaining_mm"] = float(spool["total_mm"]) * percent / 100.0
         self.rfid_percent[slot] = percent
-        self.rfid_reported_percent.pop(slot, None)
+        # A live CFS takes over again only at its next step.
+        spool["cfs_percent"] = self.rfid_reported_percent.pop(slot, None)
         self.rfid_estimate_dirty = True
         self._persist_rfid_estimates(force=True)
         self._info(
