@@ -1295,6 +1295,9 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         # K2-OpenHost: warn at print start when a mapped spool sits in a CFS
         # more humid than its material tolerates (DEFAULT_HUMIDITY_LIMIT_PCT).
         self.humidity_warnings = config.getboolean("humidity_warnings", True)
+        # K2-OpenHost: follow the CFS remaining percentage on firmware that
+        # updates it live while printing; False keeps the local estimate.
+        self.cfs_live_remaining = config.getboolean("cfs_live_remaining", True)
         try:
             self.humidity_limits = dict(DEFAULT_HUMIDITY_LIMIT_PCT)
             self.humidity_limits.update(
@@ -1970,6 +1973,7 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             "rfid_total_m": None if total_mm is None else round(total_mm / 1000.0, 3),
             "rfid_remaining_m": None if remaining_mm is None else round(remaining_mm / 1000.0, 3),
             "rfid_usage_source": None if external else spool.get("usage_source"),
+            "rfid_remaining_source": None if external else spool.get("remaining_source"),
             "nominal_length_m": profile.get("nominal_length_m"),
             "orca_filament_id": self.store.orca_filament_id(
                 profile.get("filament_id"), profile.get("material")),

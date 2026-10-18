@@ -290,6 +290,23 @@ def firmware_family(identity):
     return "creality-or-unknown"
 
 
+# Firmware whose CFS keeps the remaining percentage of type-4 spools live
+# while printing (stock odometer accounting past the secure-chip gate), as
+# (0x7A revision, CONFIG_V2_INFO features). Box then follows the CFS value
+# and keeps its own consumption estimate as fallback (box_rfid_estimates).
+LIVE_REMAINING_FIRMWARE = frozenset((
+    ("v323-cfg5t", 0xE5),  # CFG5 Type4 lab build
+))
+
+
+def live_remaining_firmware(identity, features):
+    return (is_k2oh(identity)
+            and identity.get("variant") == 4
+            and identity.get("version") == "cfs0_000_153"
+            and (identity.get("revision"), features)
+            in LIVE_REMAINING_FIRMWARE)
+
+
 class CfsRuntimeConfigError(RuntimeError):
     pass
 
@@ -601,6 +618,12 @@ class BoxCfsRuntime:
             unit.units = self.units
             self.units[address] = unit
         return unit
+
+    def live_remaining(self, address):
+        """Whether the CFS at address keeps type-4 remaining live (Box)."""
+        unit = self.units.get(address)
+        return unit is not None and live_remaining_firmware(
+            unit.identity, unit.firmware_features)
 
     def _online(self):
         """Sorted CFS addresses [box] has online; None without [box]."""
@@ -1343,6 +1366,8 @@ class BoxCfsRuntime:
             "k2oh": is_k2oh(self.identity),
             "opencfs": is_opencfs(self.identity),
             "firmware_family": firmware_family(self.identity),
+            "live_remaining": live_remaining_firmware(
+                self.identity, self.firmware_features),
             "apply_state": self.apply_state,
             "values": dict(self.last_values),
             "last_error": self.last_error,
