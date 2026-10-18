@@ -113,6 +113,9 @@ class CfsDriver:
     def info_v2(self, timeout=1.0):
         return self.probe(timeout)
 
+    def identity(self, timeout=0.5):
+        return None
+
     def set_v1(self, *args):
         self.writes.append(("set_v1",) + args)
 

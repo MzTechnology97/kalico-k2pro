@@ -51,6 +51,32 @@ The six v1 speed settings and 21 advanced examples in `config/k2/macros/box.cfg`
 - Still unvalidated: repeated/long-term physical power-cycle stability, real load/unload/RFID motion under physical load, direct MCU-boundary rejection bypassing host checks and alternative CFS generations. EEPROM persistence is intentionally absent.
 - If the CFS fails to boot or responds with `0xFFFF`, stop bench operations and use the installer helper's v3.13 candidate or the Creality recovery updater. Do not continue writing or moving the CFS during a fault.
 
+## K2-OpenHost firmware identity and when values are written
+
+From this version Kalico writes runtime values **only to K2-OpenHost firmware, and only at the first contact**.
+
+**Identity.** At each contact Kalico reads command `0x7A`. Its reply has the OpenCFS layout: magic, format, variant, bench level, flags, revision and Creality version.
+
+| Answer | Firmware | Values written |
+| --- | --- | --- |
+| `"K2OH"`, format 1, and `CONFIG_V2_INFO` features `0xC7` | v3.23 K2-OpenHost | yes |
+| `"K2OH"` with another feature byte | an incomplete v3.23 build (for example step 1, still `0xD7`) | no |
+| `"OCFS"` | OpenCFS | no |
+| no answer | stock, v3.13-v3.22 | no |
+
+**When.** Values are written at the first contact after `box:ready`, which is sent at Klipper start and when the CFS comes back. They are skipped while the printer is printing or paused, and applied at the next contact. Each value is read back and must match. A busy CFS is retried. `auto_apply: false` turns writing off.
+
+**Console.** Only `BOX_CFS_CONFIG_INFO`, `DIAG` and `SNAPSHOT` remain, and they are read-only. There is no SET, RESET or APPLY command: values come only from `[box_cfs_runtime]`. `INFO` also prints the identity and the result of the last apply (`apply_state` in the status, together with `identity` and `k2oh`).
+
+**v3.23 contract** (`K2OH_PARAMETERS`; the firmware converts every value to its stock unit):
+
+- **Times are in milliseconds.** `insert_sensor_timeout_ms` defaults to 7000; the earlier catalogue used 10 ms steps, so it showed 700. `feed_total_timeout_ms` defaults to 25000 and `odometer_stall_timeout_ms` to 500; they replace the 20 ms tick options, and the old `*_20ms_ticks` names are still accepted and converted. `rfid_pre_measure_settle_ms` defaults to the stock 400 ms; the old catalogue said 10.
+- **Writable:** IDs 1-3, 5 (hub speeds), 6 (reverse de-tooth), 7-9, 11-24 and 27.
+- **Read-only:** IDs 0 and 4, because the feeders are driven on/off and a speed has no effect, and IDs 10, 25 and 26, because their stock code never runs. A read-only option in the config is ignored with a warning and listed in `ignored_options`; it does not stop Klipper.
+- A value outside the limits, such as the old `insert_sensor_timeout_ms: 700`, is a config error.
+
+The firmware side is tracked in k2-cfs-rfid-tools `firmware/v3.23-k2oh` (draft #57). Tests: `test/test_box_cfs_runtime_k2oh.py`.
+
 ## Several CFS units
 
 `[box]` enumerates up to four CFS units (addresses 1-4). `box_cfs_runtime` follows it:

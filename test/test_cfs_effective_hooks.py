@@ -123,25 +123,46 @@ def test_reference_cfg_does_not_enable_fictitious_knobs():
     import re
     from pathlib import Path
 
+    module = _load_module()
     root = Path(__file__).resolve().parents[1]
-    specs = {p.name for p in _load_module().PARAMETERS}
+    writable = {
+        p.name
+        for p in module.K2OH_PARAMETERS
+        if p.flags & module.FLAG_K2OH_WRITABLE
+    }
+    read_only = {p.name for p in module.K2OH_PARAMETERS} - writable
+    assert read_only == {
+        "feeder_forward_speed",
+        "feeder_reverse_speed",
+        "unload_sensor_timeout_ms",
+        "buffer_fill_timeout_ms",
+        "transition_detect_timeout_ms",
+    }
     for path in (
         root / "config/k2/macros/box.cfg",
         root / "config/k2/reference/k2pro-cm5/macros/box.cfg",
     ):
         text = path.read_text()
-        start = text.index("# Runtime CFS parameter reference")
+        start = text.index("# CFS runtime parameters (box_cfs_runtime)")
         end = text.index("# CFS event notifications", start)
         block = text[start:end]
-        names = re.findall(r"^# ([a-z0-9_]+):", block, re.M)
-        assert len(names) == 28
-        assert set(names) == specs
-        assert "auto_apply: false" in block
-        assert "auto_apply: true" not in block
+        # Modifiable on v3.23: "#name: value  # IDn ..." with the stock value.
+        modifiable = re.findall(
+            r"^#([a-z0-9_]+): (\S+)\s+# ID(\d+)", block, re.M
+        )
+        assert {name for name, _, _ in modifiable} == writable
+        for name, value, pid in modifiable:
+            spec = module.K2OH_BY_NAME[name]
+            assert spec.param_id == int(pid), name
+            if spec.value_type != "bool":
+                assert int(value) == spec.default, name
+        # Not modifiable: listed apart, never in the uncomment-ready form.
+        listed = set(re.findall(r"^#   ([a-z0-9_]+):", block, re.M))
+        assert listed == read_only
+        assert "#[box_cfs_runtime]" in block
+        # Nothing is enabled in the distributed profile.
         for line in block.splitlines():
-            if ": " not in line or line.lstrip().startswith("#"):
-                continue
-            assert line.startswith("auto_apply: false"), line
+            assert not line.strip() or line.lstrip().startswith("#"), line
 
 
 if __name__ == "__main__":
