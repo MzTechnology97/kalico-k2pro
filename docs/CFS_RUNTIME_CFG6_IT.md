@@ -41,4 +41,22 @@ Restano scrivibili anche gli ID precedenti 1/2/3/5 (velocità hub), 7/8 (tempi h
 
 I test Kalico sono simulati e non inviano comandi alla macchina. Conservare CFG5T e v3.22 per il recupero.
 
-[Guida inglese](CFS_RUNTIME_CFG6_EN.md) | [Sorgenti firmware CFG6](https://github.com/MzTechnology97/k2-cfs-rfid-tools/tree/feat/cfg6-full-hooks-lab/firmware/v3.25-cfg6-lab)
+[Guida inglese](CFS_RUNTIME_CFG6_EN.md) | [Sorgenti firmware CFG6](https://github.com/MzTechnology97/k2-cfs-rfid-tools/tree/main/firmware/v3.25-cfg6-lab)
+
+## Prima verifica fisica CFG6 — 18 ottobre 2026
+
+La CFS G32/APP153, aggiornata manualmente, è stata identificata con `K2OH / v323-cfg6 / 0xE3`, API2 e 28 ID. Con stampante ferma (`standby`), CFS `IDLE` e senza assi referenziati, `auto_apply: True` è stato abilitato nel `box.cfg` del CM5. Al riavvio del solo Klipper l'extra ha riportato **`applied 23 value(s)`**, senza errori né opzioni ignorate. Una successiva diagnostica `BOX_CFS_CONFIG_DIAG ALL=1` ha letto **28/28 valori validi**, con tutti i 23 override corrispondenti ai GET del firmware.
+
+Sono state confermate anche le personalizzazioni: `hub_transition_speed=220`, `hub_insert_speed=100`, `hub_reverse_speed=150`, `rfid_measure_speed=150`, `rfid_neighbor_retry_count=1` e `load_retry_count=1`. Gli ID 0, 4, 10, 25, 26 rimangono in sola lettura.
+
+**Non sono stati eseguiti G28, homing Z, spostamenti né movimenti filamento.** Alla prima inizializzazione dopo il flash il bus aveva richiesto un secondo tentativo di enumerazione dei motori con errori timeout/CRC; al successivo riavvio con `auto_apply` i motori sono risultati pronti al primo tentativo, con un timeout broadcast. Pertanto questa prova conferma il protocollo e la persistenza temporanea in RAM, **non la stabilità RS-485 a lungo termine, il funzionamento dinamico RFID/carico/scarico o il residuo type 4 in una stampa reale**.
+
+Il template rimane interamente commentato per impedire scritture accidentali sulle nuove installazioni. Su una CFS CFG6 già verificata si può abilitare nel file attivo:
+
+```ini
+[box_cfs_runtime]
+auto_apply: True
+# Inserire i 23 valori del template CFG6, lasciando esclusi 0/4/10/25/26.
+```
+
+Conservare CFG5T e v3.22 come rollback.
