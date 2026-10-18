@@ -9,7 +9,7 @@
 - A **timeout** affects failure/recovery deadlines, not speed. A **delay** changes waiting time; a **count** changes loop repetitions.
 - Overrides live in **volatile CFS RAM** and are re-applied on Kalico startup only after firmware identity verification and `auto_apply: True`. Do not change values during a print.
 - The "CM5" values reflect the **18 Oct 2026** readback, not recommendations. "Stock" indicates OEM defaults.
-- IDs **0, 4, 10, 25, 26** are GET-only: 10/25/26 lack reachable OEM hook paths; feeders 0/4 have no proportional speed control.
+- IDs **0, 4, 10, 25, 26** are GET-only: 10/25/26 have **no effective CFG6 patch**, which does not prove that every original OEM path is unreachable; feeders 0/4 have no proportional speed control.
 
 ## Complete catalogue
 
@@ -98,7 +98,7 @@ Pause after the hub push, before continuing along the buffer path. Shortening it
 
 ### ID 08 — `insert_sensor_timeout_ms`
 
-Maximum sensor/insert-path waiting window during a loading stage. Expiry follows the stock failure/recovery path; it does not raise movement speed.
+Maximum sensor/insert-path waiting window during a loading stage. Expiry follows the stock failure/recovery path; it does not raise movement speed. **This CFG6 hook covers one 700-poll stock callsite, not every other OEM path with the same constant.**
 
 **Boundaries and evidence:** CFG in milliseconds; firmware converts to 10ms ticks. (hook: `0x080112CA`.) Stock: **7000**; accepted range: **1000–50000 ms, step 10**; CM5 value: **7000**; SET: **yes**.
 
@@ -110,7 +110,7 @@ Time limit for the pullback/buffer stage during unloading. Too short a value may
 
 ### ID 10 — `unload_sensor_timeout_ms`
 
-Catalogue entry for an unload sensor timeout whose identified stock execution path is unreachable in this variant. Writing it would have no proven effect.
+CFG6 catalogue-only entry with no active patch. An OEM sensor path counts 1000 polls of 10 ms each (about 10 seconds), so the catalogue `_ms` label is misleading for this raw stock constant. CFG6 cannot change that timeout.
 
 **Boundaries and evidence:** SET/RESET blocked. Stock: **1000**; accepted range: **100–5000 ms**; CM5 value: **GET-only**; SET: **no**.
 
@@ -164,7 +164,7 @@ Timing constant for the motion/positioning step used when detecting an adjacent 
 
 ### ID 19 — `rfid_neighbor_settle_ms`
 
-Pause after searching the neighbouring spool/slot; allows settling before continuing or retrying.
+The specific 100ms OEM pause after neighbouring spool/slot motion, allowing settling before continuing or retrying. A different stock 500ms delay is unaffected by ID19.
 
 **Boundaries and evidence:** Hook in delay call `0x08013078`. (hook: `0x08013078`.) Stock: **100**; accepted range: **10–1000 ms**; CM5 value: **100**; SET: **yes**.
 
@@ -206,7 +206,7 @@ Catalogue buffer-fill timeout but with no reachable hooked stock code. It does n
 
 ### ID 26 — `transition_detect_timeout_ms`
 
-Transition-detection timeout present only as a catalogue field, with no effective stock hook in this build.
+A catalogue-only field not hooked by CFG6. The OEM code includes one 300-count sensor wait in 10ms polls (about 3 seconds), plus a separate retry path. Raw 300 does not mean 300 ms; neither path is configurable in CFG6.
 
 **Boundaries and evidence:** Not exposed to SET/RESET. Stock: **300**; accepted range: **50–5000 ms**; CM5 value: **GET-only**; SET: **no**.
 
@@ -234,3 +234,7 @@ Number of forward/backward pretension cycles in the loading path. It is not the 
 [builder](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/firmware/v3.25-cfg6-lab/build-v3_23.py) · [ARM wrappers](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/firmware/v3.25-cfg6-lab/handler-v3_23.S) · [automated tests](https://github.com/MzTechnology97/k2-cfs-rfid-tools/blob/main/firmware/v3.25-cfg6-lab/test_all_offline.py)
 
 [Kalico integration guide](https://github.com/MzTechnology97/kalico-k2pro/blob/k2-pro-openhost/docs/CFS_RUNTIME_CFG6_EN.md) · [Versione italiana](CFS_RUNTIME_CFG6_PARAMETERS_IT.md)
+
+## GET-only unit caveat
+
+IDs **10 and 26** are GET-only and retain historical `_ms` names, but some OEM sensor routines run in **10ms polls**: 1000 polls ≈ **10s** for the ID10-related site; 300 polls ≈ **3s** for one ID26 candidate. These are **not tunable CFG6 timeouts**. Writable ID8 uses real host milliseconds converted by `/10` inside the firmware, but affects only the patched OEM callsite. Source: [OEM ROM source audit of polling units and GPIO feeders](https://github.com/MzTechnology97/k2-cfs-rfid-tools/pull/53).
