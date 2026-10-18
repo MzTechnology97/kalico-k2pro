@@ -238,3 +238,7 @@ Numero dei cicli di pretensione avanti/indietro nel percorso di caricamento. Non
 ## Nota sulle unità dei campi non operativi
 
 Gli ID **10 e 26** sono GET-only e mantengono un catalogo storico con suffisso `_ms`. Nell'eseguibile OEM, però, alcune chiamate sensore lavorano in **poll da 10 ms**: `1000` poll ≈ **10 s** (ID10) e `300` poll ≈ **3 s** (candidato ID26). Questi numeri **non sono timeout configurabili in CFG6**. Per ID8, invece, l'extra espone millisecondi reali e il firmware usa una conversione `/10`, ma modifica soltanto il callsite effettivamente agganciato. Riferimento: [audit ROM OEM dei tick e dei feeder](https://github.com/MzTechnology97/k2-cfs-rfid-tools/pull/53).
+
+## Sicurezza: issue MCU ancora aperta (18 ottobre 2026)
+
+La [issue firmware #9](https://github.com/MzTechnology97/k2-cfs-rfid-tools/issues/9) **non è risolta**: in una precedente prova fisica il campo MCU `BOX_STATE=IDLE` risultava vero durante `feeding_to_buffer`, con `box.operation.active=true`. La CFG6 è stata provata per SET/GET **soltanto a stampante ferma**; l'identità corretta, `auto_apply: True` all'avvio e il readback 23/23 **non dimostrano un interlock atomico di stop motori in MCU**. Non inviare SET/RESET diretti durante carico/scarico o movimenti; conservare i controlli Kalico e il rollback. La qualificazione di sicurezza richiede una verifica separata dello stato dei task/motori e delle possibili race RTOS.
