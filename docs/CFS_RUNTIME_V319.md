@@ -51,6 +51,16 @@ The six v1 speed settings and 21 advanced examples in `config/k2/macros/box.cfg`
 - Still unvalidated: repeated/long-term physical power-cycle stability, real load/unload/RFID motion under physical load, direct MCU-boundary rejection bypassing host checks and alternative CFS generations. EEPROM persistence is intentionally absent.
 - If the CFS fails to boot or responds with `0xFFFF`, stop bench operations and use the installer helper's v3.13 candidate or the Creality recovery updater. Do not continue writing or moving the CFS during a fault.
 
+## Several CFS units
+
+`[box]` enumerates up to four CFS units (addresses 1-4). `box_cfs_runtime` follows it:
+
+- **Without `address:`**, every CFS that `[box]` brings online gets its own runtime unit: its own probe, feature byte, values and errors. The first contact runs on `box:ready`, after each enumeration and rediscovery. The configured overrides are offered to every unit, and each unit decides by its own firmware. A v3.19-v3.22 build or the stock firmware refuses them as described above, so different firmware on different units is fine.
+- **With `address: N`** only that CFS is handled, as before; the other units are left alone.
+- **Commands** take `ADDRESS=<1-4>`, for example `BOX_CFS_CONFIG_INFO ADDRESS=2`. The default is the configured address, or the first CFS online. With several units online, the reply starts with `CFS N:`. An offline address, or one outside `address:`, is refused.
+- **Status:** the top-level fields describe the default unit, as before, and `boxes` lists every unit that has answered or failed, by address.
+- The CFS management itself (enumeration, slots, loads) stays in `[box]` and is not changed by this.
+
 ## Experimental builds after v3.19 (v3.20-v3.22)
 
 The CFS on the reference printer has since run later experimental builds, which `box_cfs_runtime.py` recognises by their feature byte. The firmware images are not published yet; the labels are the ones the code uses.
