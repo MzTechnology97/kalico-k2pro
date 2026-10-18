@@ -1,8 +1,10 @@
 # Kalico CFG6 - Funzioni avanzate (italiano)
 
-**Sviluppo sperimentale. Non installare il firmware CFG6 per stampe di produzione.** La CFS reale resta con CFG5T e l'extra attivo non viene sostituito.
+**Firmware CFG6 sperimentale attualmente installato e verificato in SET/GET sul CM5.** Le prove dinamiche di carico/scarico, RFID e stabilità prolungata sono ancora necessarie prima dell'uso in produzione.
 
 Identità richiesta dalla controparte firmware: K2OH, revisione v323-cfg6, feature 0xE3, API v2, 28 parametri. Le scritture vengono autorizzate soltanto dopo l'esatta verifica di tutti questi campi. OpenCFS (OCFS), Creality originale, CFG4 e CFG5T non ricevono SET CFG6.
+
+**[Documentazione completa di tutti i 28 parametri: funzione reale, range, valori CM5 e rischi](CFS_RUNTIME_CFG6_PARAMETERS_IT.md).**
 
 ## Parametri scrivibili
 
@@ -19,10 +21,10 @@ Restano scrivibili anche gli ID precedenti 1/2/3/5 (velocità hub), 7/8 (tempi h
 - Nessun comando SET, RESET o APPLY dalla console; soltanto configurazione dalla sezione box_cfs_runtime al riavvio, con auto_apply abilitato consapevolmente.
 - Il residuo type 4 live della CFG5T rimane presente, con stima G-code di riserva; un test reale è ancora necessario.
 
-## Esempio (tutto commentato finché non viene qualificato)
+## Esempio (su macchina non ancora verificata, lasciare disabilitato)
 
     [box_cfs_runtime]
-    auto_apply: False
+    auto_apply: False # Attivare solo dopo avere confermato la firma CFG6 e il bus
     #reverse_detooth_enable: True
     #hub_pullback_timeout_ms: 5000
     #rfid_seek_speed: 160
@@ -60,3 +62,6 @@ auto_apply: True
 ```
 
 Conservare CFG5T e v3.22 come rollback.
+
+
+Approfondimento tecnico ID0–27: [riferimento completo IT](CFS_RUNTIME_CFG6_PARAMETERS_IT.md) e [EN](CFS_RUNTIME_CFG6_PARAMETERS_EN.md).
