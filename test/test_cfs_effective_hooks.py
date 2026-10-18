@@ -126,44 +126,50 @@ def test_reference_cfg_does_not_enable_fictitious_knobs():
 
     module = _load_module()
     root = Path(__file__).resolve().parents[1]
-    writable = {
+    # IDs the v3.23 CFG5T firmware (v323-cfg5t, 0xE5) actually applies; the
+    # other catalogue entries have no firmware SET hook and stay comments.
+    effective = {
         p.name
         for p in module.K2OH_PARAMETERS
-        if p.flags & module.FLAG_K2OH_WRITABLE
+        if p.param_id in (1, 2, 3, 5, 7, 8, 20, 22)
     }
-    read_only = {p.name for p in module.K2OH_PARAMETERS} - writable
-    assert read_only == {
-        "feeder_forward_speed",
-        "feeder_reverse_speed",
-        "unload_sensor_timeout_ms",
-        "buffer_fill_timeout_ms",
-        "transition_detect_timeout_ms",
-    }
-    for path in (
-        root / "config/k2/macros/box.cfg",
-        root / "config/k2/reference/k2pro-cm5/macros/box.cfg",
-    ):
-        text = path.read_text()
-        start = text.index("# CFS runtime parameters (box_cfs_runtime)")
-        end = text.index("# CFS event notifications", start)
-        block = text[start:end]
-        # Modifiable on v3.23: "#name: value  # IDn ..." with the stock value.
-        modifiable = re.findall(
-            r"^#([a-z0-9_]+): (\S+)\s+# ID(\d+)", block, re.M
+    reference_only = {p.name for p in module.K2OH_PARAMETERS} - effective
+
+    def runtime_block(path):
+        text = (root / path).read_text()
+        start = re.search(
+            r"^# CFS runtime (configuration|parameters)", text, re.M
         )
-        assert {name for name, _, _ in modifiable} == writable
-        for name, value, pid in modifiable:
+        end = text.index("# CFS event notifications", start.start())
+        return text[start.start() : end]
+
+    def check_listing(block):
+        # Effective: "#name: value  # IDn ...", within the catalogue limits.
+        listed = re.findall(r"^#?([a-z0-9_]+): (\S+)\s+# ID(\d+)", block, re.M)
+        assert {name for name, _, _ in listed} == effective
+        for name, value, pid in listed:
             spec = module.K2OH_BY_NAME[name]
             assert spec.param_id == int(pid), name
             if spec.value_type != "bool":
-                assert int(value) == spec.default, name
-        # Not modifiable: listed apart, never in the uncomment-ready form.
-        listed = set(re.findall(r"^#   ([a-z0-9_]+):", block, re.M))
-        assert listed == read_only
-        assert "#[box_cfs_runtime]" in block
-        # Nothing is enabled in the distributed profile.
-        for line in block.splitlines():
-            assert not line.strip() or line.lstrip().startswith("#"), line
+                assert spec.minval <= int(value) <= spec.maxval, name
+        # The others: "# name: value  # IDn ...", never in active form.
+        others = set(re.findall(r"^# ([a-z0-9_]+): ", block, re.M))
+        assert others == reference_only
+
+    # Distributed profile: nothing enabled.
+    block = runtime_block("config/k2/macros/box.cfg")
+    check_listing(block)
+    assert "#[box_cfs_runtime]" in block
+    for line in block.splitlines():
+        assert not line.strip() or line.lstrip().startswith("#"), line
+
+    # Reference machine: only effective options may be active.
+    block = runtime_block("config/k2/reference/k2pro-cm5/macros/box.cfg")
+    check_listing(block)
+    active = dict(re.findall(r"^([a-z0-9_]+):\s*(\S+)", block, re.M))
+    assert active.pop("auto_apply", "false").lower() in ("true", "false")
+    active.pop("address", None)
+    assert set(active) <= effective, set(active) - effective
 
 
 if __name__ == "__main__":
