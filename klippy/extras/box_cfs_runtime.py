@@ -157,6 +157,121 @@ PARAM_BY_NAME = {p.name: p for p in PARAMETERS}
 PARAM_BY_ID = {p.param_id: p for p in PARAMETERS}
 
 
+# K2-OpenHost firmware identity (command 0x7A, OpenCFS-compatible layout).
+# Runtime values are written only to a CFS that answers with this magic and
+# format, and that reports K2OH_FEATURES in CONFIG_V2_INFO: the v3.23
+# contract below (every time in milliseconds, the firmware converting to its
+# stock unit). OpenCFS ("OCFS"), the stock firmware and v3.13-v3.22 get no
+# writes.
+CMD_BUILD_INFO = 0x7A
+K2OH_MAGIC = "K2OH"
+K2OH_FORMAT = 1
+K2OH_FEATURES = 0xC7
+FLAG_K2OH_WRITABLE = 1 << 5
+
+
+def _k(name, param_id, default, minval, maxval, value_type, writable,
+       description):
+    flags = FLAG_K2OH_WRITABLE if writable else 0
+    return ParamSpec(
+        name, param_id, default, minval, maxval, value_type, flags, description)
+
+
+# v3.23 K2-OpenHost catalogue. IDs 0 and 4 are read-only (the feeders are
+# driven on/off, a speed has no effect); 10, 25 and 26 are read-only (their
+# stock code is never executed).
+K2OH_PARAMETERS = (
+    _k('feeder_forward_speed', 0, 255, 1, 255, 'int', False,
+       'Feeder forward speed; read-only, the feeders are on/off.'),
+    _k('hub_forward_speed', 1, 100, 1, 255, 'int', True,
+       'Hub forward speed; stock 100.'),
+    _k('hub_transition_speed', 2, 200, 1, 255, 'int', True,
+       'Hub transition speed; stock 200.'),
+    _k('hub_insert_speed', 3, 155, 1, 255, 'int', True,
+       'Hub insert speed; stock 155.'),
+    _k('feeder_reverse_speed', 4, 255, 1, 255, 'int', False,
+       'Feeder reverse speed; read-only, the feeders are on/off.'),
+    _k('hub_reverse_speed', 5, 80, 1, 255, 'int', True,
+       'Hub reverse speed; stock 80.'),
+    _k('reverse_detooth_enable', 6, 1, 0, 1, 'bool', True,
+       'Reverse de-tooth switch; stock on.'),
+    _k('hub_transition_wait_ms', 7, 3200, 100, 10000, 'int', True,
+       'Wait after the hub push before the buffer path, ms; stock 3200.'),
+    _k('insert_sensor_timeout_ms', 8, 7000, 1000, 50000, 'int', True,
+       'Time allowed for the hub sensor during insertion, ms; stock 7000.'),
+    _k('hub_pullback_timeout_ms', 9, 5000, 500, 15000, 'int', True,
+       'Buffer wait while unloading, ms; stock 5000.'),
+    _k('unload_sensor_timeout_ms', 10, 1000, 100, 5000, 'int', False,
+       'Read-only: stock code never executed.'),
+    _k('rfid_seek_speed', 11, 160, 1, 255, 'int', True,
+       'Hub speed while locating the tag; stock 160.'),
+    _k('rfid_measure_speed', 12, 120, 1, 255, 'int', True,
+       'Hub speed while measuring the spool; stock 120.'),
+    _k('rfid_reposition_speed', 13, 100, 1, 255, 'int', True,
+       'Hub speed while repositioning for a read; stock 100.'),
+    _k('rfid_seek_move_ms', 14, 800, 100, 5000, 'int', True,
+       'Tag locate move, ms; stock 800.'),
+    _k('rfid_seek_settle_ms', 15, 200, 10, 2000, 'int', True,
+       'Pause after a locate move, ms; stock 200.'),
+    _k('rfid_post_auth_wait_ms', 16, 1000, 100, 5000, 'int', True,
+       'Reverse between read attempts, ms; stock 1000.'),
+    _k('rfid_pre_measure_settle_ms', 17, 400, 1, 2000, 'int', True,
+       'Pause before reading the tag, ms; stock 400.'),
+    _k('rfid_neighbor_detect_delay_ms', 18, 400, 50, 2000, 'int', True,
+       'Neighbour spool move, ms; stock 400.'),
+    _k('rfid_neighbor_settle_ms', 19, 100, 10, 1000, 'int', True,
+       'Pause after the neighbour move, ms; stock 100.'),
+    _k('feed_total_timeout_ms', 20, 25000, 5000, 60000, 'int', True,
+       'Stage-4 feed time limit, ms; stock 25000.'),
+    _k('feed_recovery_timeout_ms', 21, 3000, 500, 10000, 'int', True,
+       'Stage-4 recovery time limit, ms; stock 3000.'),
+    _k('odometer_stall_timeout_ms', 22, 500, 100, 2000, 'int', True,
+       'Odometer stall limit, ms; stock 500.'),
+    _k('rfid_neighbor_retry_count', 23, 3, 1, 10, 'int', True,
+       'Tag locate attempts; stock 3.'),
+    _k('reverse_detooth_timeout_ms', 24, 1000, 100, 10000, 'int', True,
+       'Reverse de-tooth delay, ms; stock 1000.'),
+    _k('buffer_fill_timeout_ms', 25, 30000, 1000, 60000, 'int', False,
+       'Read-only: stock code never executed.'),
+    _k('transition_detect_timeout_ms', 26, 300, 50, 5000, 'int', False,
+       'Read-only: stock code never executed.'),
+    _k('load_retry_count', 27, 3, 1, 10, 'int', True,
+       'Pretension in/out cycles; stock 3.'),
+)
+K2OH_BY_NAME = {p.name: p for p in K2OH_PARAMETERS}
+K2OH_BY_ID = {p.param_id: p for p in K2OH_PARAMETERS}
+# Earlier option names in 20 ms ticks, still accepted (converted to ms).
+K2OH_LEGACY_TICKS = {
+    'feed_total_timeout_20ms_ticks': 'feed_total_timeout_ms',
+    'odometer_stall_20ms_ticks': 'odometer_stall_timeout_ms',
+}
+
+
+def parse_identity(payload):
+    """Decode a 32-byte 0x7A reply, or None."""
+    payload = bytes(payload)
+    if len(payload) != 32:
+        return None
+
+    def text(raw):
+        return raw.rstrip(b"\0").decode("ascii", "replace")
+
+    return {
+        "magic": text(payload[0:4]),
+        "format": payload[4],
+        "variant": payload[5],
+        "bench_level": payload[6],
+        "flags": payload[7],
+        "revision": text(payload[8:20]),
+        "version": text(payload[20:32]),
+    }
+
+
+def is_k2oh(identity):
+    return bool(identity) and identity.get("magic") == K2OH_MAGIC \
+        and identity.get("format") == K2OH_FORMAT
+
+
 class CfsRuntimeConfigError(RuntimeError):
     pass
 
@@ -173,6 +288,22 @@ class CfsRuntimeDriver:
     def __init__(self, serial, address):
         self.serial = serial
         self.address = address
+
+    def identity(self, timeout=0.5):
+        """The 0x7A build identity, or None (no answer, refused, malformed)."""
+        body = build_485_body(
+            self.address, CMD_BUILD_INFO, b"", header_byte=0xFF)
+        frame = self.serial.cmd_send_data_with_response(body, timeout)
+        if not frame:
+            return None
+        try:
+            reply = box_protocol.decode_reply(
+                frame, self.address, CMD_BUILD_INFO, context="build_info")
+        except box_protocol.ProtocolError:
+            return None
+        if reply.status != STATUS_OK:
+            return None
+        return parse_identity(reply.payload)
 
     def _exchange(self, payload, timeout=1.0):
         body = build_485_body(
@@ -330,10 +461,11 @@ RUNTIME_COMMANDS = (
     ("BOX_CFS_CONFIG_INFO", "cmd_info"),
     ("BOX_CFS_CONFIG_DIAG", "cmd_diag"),
     ("BOX_CFS_CONFIG_SNAPSHOT", "cmd_snapshot"),
-    ("BOX_CFS_CONFIG_APPLY", "cmd_apply"),
-    ("BOX_CFS_CONFIG_SET", "cmd_set"),
-    ("BOX_CFS_CONFIG_RESET", "cmd_reset"),
 )
+# No console write command: values come only from the config, and are
+# written only at the first contact (Klipper start, or the CFS coming back
+# while the printer is not printing). cmd_set/cmd_reset/cmd_apply are kept
+# for the v3.19-v3.22 bench tests but are not registered.
 
 
 class BoxCfsRuntime:
@@ -354,9 +486,35 @@ class BoxCfsRuntime:
         # Only options that actually exist in the config are sent to the CFS.
         # A commented/omitted option therefore leaves the Creality stock value
         # untouched.
+        # The values follow the v3.23 K2-OpenHost catalogue (times in ms):
+        # only that firmware ever receives them (see _apply_block_reason).
         self.overrides = {}
-        for spec in PARAMETERS:
+        self.ignored_options = []
+        for legacy, name in sorted(K2OH_LEGACY_TICKS.items()):
+            if config.get(legacy, None) is None:
+                continue
+            if config.get(name, None) is not None:
+                raise config.error(
+                    "box_cfs_runtime: set %s or %s, not both" % (name, legacy))
+            spec = K2OH_BY_NAME[name]
+            ticks = config.getint(legacy, minval=1)
+            value = ticks * 20
+            if not spec.minval <= value <= spec.maxval:
+                raise config.error(
+                    "box_cfs_runtime: %s=%d (%d ms) outside %d..%d ms"
+                    % (legacy, ticks, value, spec.minval, spec.maxval))
+            logging.info("box_cfs_runtime: %s is now %s (ms): %d ticks = %d ms",
+                         legacy, name, ticks, value)
+            self.overrides[spec.param_id] = value
+        for spec in K2OH_PARAMETERS:
             if config.get(spec.name, None) is None:
+                continue
+            if not spec.flags & FLAG_K2OH_WRITABLE:
+                config.get(spec.name)  # accepted, so not an unknown option
+                self.ignored_options.append(spec.name)
+                logging.warning(
+                    "box_cfs_runtime: %s is read-only on the CFS; ignored",
+                    spec.name)
                 continue
             if spec.value_type == "bool":
                 value = 1 if config.getboolean(spec.name) else 0
@@ -364,6 +522,8 @@ class BoxCfsRuntime:
                 value = config.getint(
                     spec.name, minval=spec.minval, maxval=spec.maxval)
             self.overrides[spec.param_id] = value
+        self.identity = None
+        self.apply_state = None
 
         self.serial = None
         self.supported = None
@@ -390,8 +550,8 @@ class BoxCfsRuntime:
                 desc=self.cmd_RUNTIME_help)
 
     cmd_RUNTIME_help = (
-        "CFS runtime configuration; ADDRESS=<1-4> selects the CFS "
-        "(default: the configured one, or the first online)")
+        "CFS runtime configuration (read-only); ADDRESS=<1-4> selects the "
+        "CFS (default: the configured one, or the first online)")
 
     def _unit(self, address):
         """The runtime unit of one CFS address, created on first use."""
@@ -406,6 +566,9 @@ class BoxCfsRuntime:
             unit.address = address
             unit.auto_apply = self.auto_apply
             unit.overrides = self.overrides
+            unit.ignored_options = self.ignored_options
+            unit.identity = None
+            unit.apply_state = None
             unit.serial = self.serial
             unit.supported = None
             unit.protocol_version = None
@@ -494,17 +657,16 @@ class BoxCfsRuntime:
         self.reactor.register_callback(run, waketime)
 
     def _first_contact(self, eventtime):
-        if self.auto_apply and self.overrides:
-            self._auto_apply(eventtime)
-        else:
-            self._probe_status(eventtime)
+        self._probe_status(eventtime)
 
     def _probe_status(self, eventtime):
-        # No override to apply: read the API version and feature byte so
-        # the status is right from the start.
+        # Read the API version, the feature byte and the 0x7A identity; then
+        # apply the configured values if, and only if, this is K2-OpenHost
+        # firmware and the printer is not printing.
         self._auto_attempt += 1
         try:
-            self._probe(self._driver())
+            driver = self._driver()
+            meta = self._probe(driver)
         except CfsRuntimeConfigError as exc:
             self.last_error = str(exc)
             if ("timed out" in str(exc).lower()
@@ -514,10 +676,77 @@ class BoxCfsRuntime:
                 return
             self.supported = False
             logging.warning("box_cfs_runtime: %s", exc)
+            return
         except Exception as exc:
             self.last_error = str(exc)
             self.supported = False
             logging.exception("box_cfs_runtime: probe failed")
+            return
+        try:
+            self.identity = driver.identity()
+        except Exception as exc:
+            self.identity = None
+            logging.info("box_cfs_runtime: no 0x7A identity: %s", exc)
+        self._auto_attempt = 0
+        self._apply_at_contact(driver, meta, eventtime)
+
+    def _apply_block_reason(self, meta):
+        if not self.auto_apply:
+            return "auto_apply is off"
+        if not self.overrides:
+            return "no values configured"
+        if not is_k2oh(self.identity):
+            return ("not K2-OpenHost firmware (0x7A identity %s)"
+                    % ((self.identity or {}).get("magic") or "none"))
+        if meta.get("version") != 2 or meta.get("features") != K2OH_FEATURES:
+            return ("K2-OpenHost firmware without the v3.23 contract "
+                    "(features 0x%02X)" % meta.get("features", 0))
+        stats = self.printer.lookup_object("print_stats", None)
+        if stats is not None:
+            state = stats.get_status(self.reactor.monotonic()).get("state")
+            if state in ("printing", "paused"):
+                return "printer is %s" % state
+        return None
+
+    def _apply_at_contact(self, driver, meta, eventtime):
+        reason = self._apply_block_reason(meta)
+        if reason is not None:
+            self.apply_state = "skipped: " + reason
+            logging.info("box_cfs_runtime: CFS %d: values not applied: %s",
+                         self.address, reason)
+            return
+        try:
+            applied = {}
+            for param_id, value in sorted(self.overrides.items()):
+                driver.set_v2(param_id, value)
+                readback = driver.get_v2(param_id)
+                if readback != value:
+                    raise CfsRuntimeConfigError(
+                        "%s readback %d, expected %d"
+                        % (K2OH_BY_ID[param_id].name, readback, value))
+                applied[K2OH_BY_ID[param_id].name] = readback
+        except CfsRuntimeBusy as exc:
+            self.apply_state = "waiting: " + str(exc)
+            self._auto_attempt += 1
+            if self._auto_attempt < self.AUTO_RETRY_LIMIT:
+                self._schedule(
+                    lambda e: self._apply_at_contact(driver, meta, e),
+                    eventtime + self.AUTO_RETRY_INTERVAL)
+            else:
+                self.apply_state = "failed: CFS stayed busy"
+                logging.warning("box_cfs_runtime: CFS %d stayed busy; "
+                                "values not applied", self.address)
+            return
+        except Exception as exc:
+            self.apply_state = "failed: %s" % exc
+            self.last_error = str(exc)
+            logging.warning("box_cfs_runtime: CFS %d: apply failed: %s",
+                            self.address, exc)
+            return
+        self.last_values.update(applied)
+        self.apply_state = "applied %d value(s)" % len(applied)
+        logging.info("box_cfs_runtime: CFS %d: applied %s",
+                     self.address, applied)
 
     def _transport(self):
         if self.serial is None:
@@ -740,6 +969,15 @@ class BoxCfsRuntime:
             meta, values = self._read_all()
         except Exception as exc:
             raise gcmd.error(str(exc))
+        ident = self.identity
+        if ident:
+            gcmd.respond_info(
+                "CFS identity: %s format %d variant %d revision %s version %s"
+                % (ident["magic"], ident["format"], ident["variant"],
+                   ident["revision"], ident["version"]))
+        else:
+            gcmd.respond_info("CFS identity: none (no 0x7A answer)")
+        gcmd.respond_info("Runtime values: %s" % (self.apply_state or "-"))
         gcmd.respond_info(self._format_groups(meta, values))
 
     def cmd_diag(self, gcmd):
@@ -1018,9 +1256,13 @@ class BoxCfsRuntime:
             "override_mask": self.override_mask,
             "firmware_features": self.firmware_features,
             "configured_overrides": {
-                PARAM_BY_ID[param_id].name: value
+                K2OH_BY_ID[param_id].name: value
                 for param_id, value in sorted(self.overrides.items())
             },
+            "ignored_options": list(self.ignored_options),
+            "identity": dict(self.identity) if self.identity else None,
+            "k2oh": is_k2oh(self.identity),
+            "apply_state": self.apply_state,
             "values": dict(self.last_values),
             "last_error": self.last_error,
         }
