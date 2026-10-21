@@ -10,6 +10,10 @@ what K2-OpenHost needs on top of it:
 
 * automatic mapping of ordinary Moonraker/Orca starts (``auto_map_prints``),
   installed into the native engine map when the file is loaded;
+* the slot map chosen in OrcaSlicer (K2-OpenHost CFS plugin), written at the
+  top of the G-code as ``; K2OH_TOOL_MAP = tool:slot,...``: it replaces the
+  automatic one when it covers every used tool with a loaded slot, also with
+  ``auto_map_prints`` off; otherwise it is ignored with a message;
 * the mapping suggestion shown by the Mainsail dialog after BOX_PRINT_INFO;
 * warnings for the chosen map: a spool that may run out (RFID estimate below
   the slicer length) or a base material on a filled variant (PETG on
@@ -29,12 +33,42 @@ what K2-OpenHost needs on top of it:
 
 import logging
 import os
+import re
 
 from extras.box_auto_mapping import (
     evaluate_mapping, live_filament_check, suggest_mapping_report)
 from extras.box_gcode import read_metadata
 
 LIVE_CHECK_INTERVAL = 60.0
+# Slicer map line written by the K2-OpenHost OrcaSlicer plugin near the top
+# of the file (after the first line, before any thumbnail).
+TOOL_MAP_RE = re.compile(rb"^;[ \t]*K2OH_TOOL_MAP[ \t]*=[ \t]*([^\r\n]*)", re.M)
+TOOL_MAP_HEAD = 256 * 1024
+
+
+def read_tool_map(path):
+    """{tool: slot} from a file's K2OH_TOOL_MAP line, or None without one.
+
+    Raises ValueError for a malformed line.
+    """
+    with open(path, "rb") as stream:
+        head = stream.read(TOOL_MAP_HEAD)
+    match = TOOL_MAP_RE.search(head)
+    if match is None:
+        return None
+    mapping = {}
+    for entry in match.group(1).decode("ascii", "replace").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        tool, sep, slot = entry.partition(":")
+        if not sep:
+            raise ValueError(entry)
+        tool, slot = int(tool), int(slot)
+        if tool in mapping or not 0 <= tool <= 255 or slot < 0:
+            raise ValueError(entry)
+        mapping[tool] = slot
+    return mapping
 
 
 class BoxPrintMapping:
@@ -110,7 +144,8 @@ class BoxPrintMapping:
     # ------------------------------------------------------------------
 
     def _reset_auto_mapping(self, *args):
-        self.auto_mapping = {"state": "idle", "map": {}, "unresolved": [], "warnings": []}
+        self.auto_mapping = {"state": "idle", "source": None, "map": {},
+                             "unresolved": [], "warnings": []}
         self.mapping_warnings = []
         self.filament_check = {"active": False, "tools": []}
         self._live_warned = set()
@@ -213,6 +248,7 @@ class BoxPrintMapping:
         mapping, unresolved = report["map"], report["unresolved"]
         self.auto_mapping = {
             "state": "unresolved" if unresolved else "ready",
+            "source": "auto",
             "map": {str(tool): slot for tool, slot in mapping.items()},
             "unresolved": unresolved,
             "warnings": report["warnings"],
@@ -269,9 +305,31 @@ class BoxPrintMapping:
         plr = self.printer.lookup_object("power_loss_recovery", None)
         return bool(getattr(plr, "recovering", False))
 
+    def _file_tool_map(self, path, tools):
+        """(map, None) for a usable slicer map, (None, reason) otherwise.
+
+        (None, None) when the file has no map. The map is cut to the tools
+        the file uses; each must have a slot that is loaded (or the
+        external spool).
+        """
+        try:
+            mapping = read_tool_map(path)
+        except (OSError, ValueError):
+            return None, "the K2OH_TOOL_MAP line is malformed"
+        if mapping is None or not tools:
+            return None, None
+        slots = {slot.get("index") for slot in self._slots()}
+        used = sorted({int(tool["tool"]) for tool in tools})
+        for tool in used:
+            if tool not in mapping:
+                return None, "T%d has no slot" % tool
+            if mapping[tool] not in slots:
+                return None, "%s is empty or offline" % self.box.slot_label(mapping[tool])
+        return {tool: mapping[tool] for tool in used}, None
+
     def _handle_file_loaded(self, *args):
         self._reset_auto_mapping()
-        if (self._explicit_start_in_progress or not self.auto_map_prints
+        if (self._explicit_start_in_progress
                 or getattr(self.box, "observation_mode", False)
                 or self._recovery_in_progress()):
             return
@@ -288,8 +346,26 @@ class BoxPrintMapping:
         except OSError:
             return
         tools = metadata.get("tools", [])
+        file_map, reason = self._file_tool_map(path, tools)
+        if reason:
+            self.gcode.respond_info(
+                "[BOX]: Slot map from the slicer ignored: %s.%s" % (
+                    reason, " Using the automatic mapping."
+                    if self.auto_map_prints else ""))
+        if file_map is None and not self.auto_map_prints:
+            return
         self.box.print_info = {"filename": filename, "tools": tools}
-        mapping, unresolved = self._suggest_mapping(tools)
+        if file_map is not None:
+            mapping, unresolved = file_map, []
+            self.auto_mapping = {
+                "state": "ready", "source": "slicer",
+                "map": {str(tool): slot for tool, slot in mapping.items()},
+                "unresolved": [],
+                "warnings": evaluate_mapping(
+                    tools, self._slots(), mapping, self._swap_enabled()),
+            }
+        else:
+            mapping, unresolved = self._suggest_mapping(tools)
         if not tools:
             return
         if unresolved:
