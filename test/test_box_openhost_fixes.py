@@ -486,7 +486,25 @@ def test_manual_order_wins_over_rfid_remaining(tmp_path):
     box = white_pla_box(tmp_path)
     box.rfid_percent = {1: 10.0, 2: 80.0}
     assert runout_chain(box, 0b0111) == [1, 2]
-    box.store.set_setting("runout_order", [2])
+    box.store.set_setting("runout_order", [2, 1, 0])
+    assert runout_chain(box, 0b0111) == [2, 1]
+
+
+def test_stale_manual_order_falls_back_to_lowest_remaining(tmp_path):
+    # The panels save a whole group. An order that misses a spool of the
+    # group was saved before that spool came in: the group is automatic.
+    box = white_pla_box(tmp_path)
+    box.rfid_percent = {0: 50.0, 1: 35.0, 2: 60.0}
+    box.store.set_setting("runout_order", [2, 0])
+    snap = BoxSnapshot(slot_mask=0b0111, loaded_slot=-1)
+    pla = [group for group in box._runout_groups(box._slot_statuses(snap))
+           if group["material"] == "PLA"][0]
+    assert pla["slots"] == [1, 0, 2]
+    assert pla["strategy"] == "lowest_remaining_first"
+    statuses = {item["index"]: item for item in box._slot_statuses(snap)}
+    assert statuses[2]["runout_rank"] is None
+    assert runout_chain(box, 0b0111) == [1, 2]
+    box.store.set_setting("runout_order", [2, 0, 1])  # saved again
     assert runout_chain(box, 0b0111) == [2, 1]
 
 
