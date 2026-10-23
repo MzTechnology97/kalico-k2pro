@@ -1880,7 +1880,17 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         return hashlib.sha256(bytes(uid)).hexdigest()[:12]
 
     def _slot_statuses(self, snap):
-        return [self._slot_status(slot, snap) for slot in self.physical_slots]
+        statuses = [self._slot_status(slot, snap) for slot in self.physical_slots]
+        # runout_rank only for spools whose identical group follows the
+        # manual order (see _manual_order_applies).
+        groups = {}
+        for item in statuses:
+            groups.setdefault(self._identical_key(item), []).append(item)
+        for key, items in groups.items():
+            if key is None or not self._manual_order_applies(items):
+                for item in items:
+                    item["runout_rank"] = None
+        return statuses
 
     def _box_unit_statuses(self):
         """K2-OpenHost: one entry per online CFS for multi-unit frontends.
@@ -2225,10 +2235,26 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         order = self.runout_order
         return order.index(slot) if slot in order else None
 
-    def _runout_sort_key(self, item):
+    @staticmethod
+    def _identical_key(item):
+        """(material, colour) of a loaded slot: identical spools share it."""
+        material = str(item.get("material") or "").strip().upper()
+        color = str(item.get("color") or "").strip().upper()
+        if not item.get("present") or not material or not color:
+            return None
+        return material, color
+
+    def _manual_order_applies(self, items):
+        # The panels save the order of a whole group, so a group whose spools
+        # are not all in it gained a spool since: its order is stale, and the
+        # group is automatic until the order is saved again.
+        return bool(items) and all(
+            self._runout_rank(item["index"]) is not None for item in items)
+
+    def _runout_sort_key(self, item, manual=True):
         # A manual order wins; otherwise the lowest known RFID remaining is
         # used up first, then slot order.
-        rank = self._runout_rank(item["index"])
+        rank = self._runout_rank(item["index"]) if manual else None
         return (
             rank is None,
             0 if rank is None else rank,
@@ -2238,8 +2264,8 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             item["index"],
         )
 
-    def _runout_strategy(self, items):
-        if any(self._runout_rank(item["index"]) is not None for item in items):
+    def _runout_strategy(self, items, manual=True):
+        if manual and any(self._runout_rank(item["index"]) is not None for item in items):
             return "manual_order"
         if any(item.get("rfid_percent") is not None for item in items):
             return "lowest_remaining_first"
@@ -2462,16 +2488,15 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
     def _runout_groups(self, physical_slots):
         groups = {}
         for item in physical_slots:
-            material = str(item.get("material") or "").strip().upper()
-            color = str(item.get("color") or "").strip().upper()
-            if not item.get("present") or not material or not color:
-                continue
-            groups.setdefault((material, color), []).append(item)
+            key = self._identical_key(item)
+            if key is not None:
+                groups.setdefault(key, []).append(item)
         result = []
         for (material, color), items in groups.items():
             if len(items) < 2:
                 continue
-            items.sort(key=self._runout_sort_key)
+            manual = self._manual_order_applies(items)
+            items.sort(key=lambda item, manual=manual: self._runout_sort_key(item, manual))
             result.append({
                 "material": material,
                 "color": color,
@@ -2481,7 +2506,7 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
                     "percent": item.get("rfid_percent"),
                     "rfid": bool(item.get("rfid_active")),
                 } for item in items],
-                "strategy": self._runout_strategy(items),
+                "strategy": self._runout_strategy(items, manual),
             })
         result.sort(key=lambda item: (item["material"], item["color"]))
         return result
@@ -2502,7 +2527,8 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
                 if item["index"] != source and item["present"]
                 and item["material"] == material and item["color"] == color
             ]
-        candidates.sort(key=self._runout_sort_key)
+        manual = self._manual_order_applies([profile] + candidates)
+        candidates.sort(key=lambda item: self._runout_sort_key(item, manual))
         chain = [item["index"] for item in candidates]
         detail = [{
             "slot": item["index"],
@@ -2514,7 +2540,7 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             "chain": chain,
             "chain_detail": detail,
             "sequence": [source] + chain,
-            "strategy": self._runout_strategy(candidates),
+            "strategy": self._runout_strategy(candidates, manual),
         }
 
     def runout_recovery(self):
