@@ -329,11 +329,16 @@ class HostFan:
     # Events
     def _handle_connect(self):
         # Mainsail reads min_temp/max_temp of a temperature_fan from the
-        # config settings; this object has no section of that name.
+        # config settings; this object has no section of that name. pin and
+        # sensor_type are there because every real temperature_fan has them:
+        # Mobileraker before 2.9.14 drops the whole printer config when a
+        # temperature_fan section has no pin.
         configfile = self.printer.lookup_object("configfile")
         configfile.status_settings.setdefault(
             self.object_name,
             {
+                "pin": "hwmon:" + self.hwmon_name,
+                "sensor_type": "temperature_host",
                 "min_temp": self.min_temp,
                 "max_temp": self.max_temp,
                 "target_temp": self.target,

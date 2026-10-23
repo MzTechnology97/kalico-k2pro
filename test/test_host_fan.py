@@ -232,6 +232,9 @@ def test_published_as_temperature_fan(tmp_path):
         "temperature_fan cm5"
     ]
     assert settings["max_temp"] == 100.0 and settings["min_temp"] == 0.0
+    # Mobileraker before 2.9.14 needs a pin string in every temperature_fan.
+    assert settings["pin"] == "hwmon:pwmfan"
+    assert settings["sensor_type"] == "temperature_host"
     status = fan.get_status(0.0)
     assert status["temperature"] == 54.0 and status["rpm"] == 2600
     assert status["target"] == 55.0 and status["control"] == "target"
