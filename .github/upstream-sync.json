@@ -1,0 +1,17 @@
+{
+  "target": "k2-pro-openhost",
+  "upstreams": [
+    {
+      "name": "jacob",
+      "repo": "Jacob10383/kalico",
+      "branch": "main"
+    },
+    {
+      "name": "kalico",
+      "repo": "KalicoCrew/kalico",
+      "branch": "main",
+      "via": "jacob"
+    }
+  ],
+  "decisions": {}
+}

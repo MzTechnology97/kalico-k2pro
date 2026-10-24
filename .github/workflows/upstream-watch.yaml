@@ -1,0 +1,133 @@
+name: Upstream watch
+
+# Weekly read-only check of Jacob10383/kalico and KalicoCrew/kalico against
+# k2-pro-openhost: scripts/upstream_sync.py classifies the new upstream
+# commits and tries the merge, the report goes to the open issue labelled
+# upstream-sync, and a merge without conflicts is tested. Nothing is merged
+# or pushed. See docs/UPSTREAM_SYNC_EN.md.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      issue: ${{ steps.issue.outputs.number }}
+      jacob_clean: ${{ steps.report.outputs.jacob_clean }}
+      jacob_sha: ${{ steps.report.outputs.jacob_sha }}
+      kalico_clean: ${{ steps.report.outputs.kalico_clean }}
+      kalico_sha: ${{ steps.report.outputs.kalico_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: k2-pro-openhost
+          fetch-depth: 0
+
+      - name: Compare with the upstreams
+        id: report
+        run: >
+          python3 scripts/upstream_sync.py report --fetch
+          --markdown report.md --json report.json --github-output
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: upstream-sync-report
+          path: |
+            report.md
+            report.json
+
+      - name: Update the upstream-sync issue
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create upstream-sync --color 0e8a16 \
+            --description "Weekly upstream sync report" --force
+          number=$(gh issue list --label upstream-sync --state open \
+            --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file report.md
+          else
+            url=$(gh issue create --label upstream-sync --body-file report.md \
+              --title "Upstream sync: Jacob10383/kalico and KalicoCrew/kalico")
+            number=${url##*/}
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+  trial-merge:
+    needs: report
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [jacob, kalico]
+    env:
+      CLEAN: ${{ needs.report.outputs[format('{0}_clean', matrix.upstream)] }}
+      SHA: ${{ needs.report.outputs[format('{0}_sha', matrix.upstream)] }}
+    steps:
+      - uses: actions/checkout@v7
+        if: env.CLEAN == 'true'
+        with:
+          ref: k2-pro-openhost
+          fetch-depth: 0
+
+      - name: Merge the upstream
+        if: env.CLEAN == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python3 scripts/upstream_sync.py fetch
+          git merge --no-edit --no-ff "$SHA"
+
+      # Same image as the Build test workflow; rebuilt when the merge
+      # changes what the image is built from
+      - name: Prepare the build image
+        if: env.CLEAN == 'true'
+        run: |
+          image=$(grep -o 'dangerklippers/klipper-build@sha256:[0-9a-f]*' \
+            .github/workflows/ci-build_test.yaml | head -1)
+          docker pull "$image"
+          docker tag "$image" dangerklippers/klipper-build:latest
+          if git diff --name-only HEAD^1 HEAD | grep -qE \
+            '^(src/|lib/|Makefile|pyproject.toml|test/configs/|scripts/(Dockerfile-build|buildcommands.py|check-gcc.sh))'
+          then
+            docker build --progress=plain -f scripts/Dockerfile-build \
+              -t dangerklippers/klipper-build:latest .
+          fi
+
+      - name: Test Klippy (Python 3.11, as on the reference CM5)
+        id: tests
+        if: env.CLEAN == 'true'
+        run: >
+          docker run -v $PWD:/klipper dangerklippers/klipper-build:latest
+          --python 3.11 py.test -n auto
+
+      - name: Comment the result on the issue
+        if: always() && env.CLEAN == 'true' && needs.report.outputs.issue != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.report.outputs.issue }}
+          UPSTREAM: ${{ matrix.upstream }}
+          OUTCOME: ${{ steps.tests.outcome }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$OUTCOME" = success ]; then
+            result="Klippy tests pass (Python 3.11)"
+          else
+            result="Klippy tests: $OUTCOME"
+          fi
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body \
+            "Trial merge of **$UPSTREAM** at \`${SHA:0:8}\`: $result. [Run]($RUN)"
