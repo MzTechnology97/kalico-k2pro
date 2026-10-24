@@ -453,6 +453,7 @@ class BoxRfidEstimates:
 
         if source == "cfs_encoder":
             previous = self.rfid_last_encoder_mm
+            previous_used = self.rfid_last_filament_used
             self.rfid_last_encoder_mm = encoder
             self.rfid_last_filament_used = used
         else:
@@ -463,6 +464,8 @@ class BoxRfidEstimates:
         if previous is None:
             return
         delta = value - previous
+        if source == "cfs_encoder":
+            delta *= self._encoder_feed_sign(delta, used, previous_used)
 
         # A negative CFS delta is reverse motion or a counter reset; neither
         # consumes new spool. Large jumps are treated as counter resets.
@@ -483,6 +486,24 @@ class BoxRfidEstimates:
         if eventtime - self.last_rfid_estimate_save >= RFID_REFRESH:
             self._persist_rfid_estimates()
             self.last_rfid_estimate_save = eventtime
+
+    def _encoder_feed_sign(self, encoder_delta, used, previous_used):
+        """+1 or -1: the direction the CFS encoder counts while feeding.
+
+        The encoder of the reference CFS (G32, CFG6 firmware) counts down
+        while the print draws filament. The direction is learned from the
+        extruder: filament_used only grows while printing, so encoder motion
+        during extrusion is evidence of the feed direction. The evidence is
+        summed, so one buffer pull-back does not flip it.
+        """
+        evidence = getattr(self, "rfid_encoder_feed_evidence", 0.0)
+        if previous_used is not None:
+            used_delta = used - previous_used
+            if used_delta > 1.0 and 1.0 < abs(encoder_delta) <= 5000.0:
+                step = min(abs(encoder_delta), used_delta)
+                evidence += step if encoder_delta > 0 else -step
+                self.rfid_encoder_feed_evidence = evidence
+        return -1.0 if evidence < 0 else 1.0
 
     def _read_rfid_remaining(self, slot):
         address, local = self._address_slot(slot)
