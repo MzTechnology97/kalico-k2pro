@@ -196,6 +196,36 @@ def test_cfs_encoder_is_preferred_over_print_stats(tmp_path):
     assert box.rfid_spools[1]["usage_source"] == "cfs_encoder"
 
 
+def test_encoder_counting_down_while_feeding_is_consumption(tmp_path):
+    # Reference CFS (CFG6): position_mm goes -495145 -> -495169 -> ...
+    # while filament_used grows by the same amount.
+    box, stats = make_tracking_box(tmp_path)
+    box.drivers = {1: object()}
+    box.rfid_last_encoder_mm = None
+    box.rfid_last_usage_source = None
+
+    stats.filament_used = 7390.0
+    box._track_rfid_usage(
+        1.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=-495145.0))
+    stats.filament_used = 7417.0
+    box._track_rfid_usage(
+        2.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=-495169.0))
+    stats.filament_used = 7441.0
+    box._track_rfid_usage(
+        3.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=-495192.0))
+
+    assert box.rfid_spools[1]["remaining_mm"] == 50000.0 - 47.0
+    # A short pull-back of the buffer does not flip the learned direction.
+    stats.filament_used = 7445.0
+    box._track_rfid_usage(
+        4.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=-495187.0))
+    assert box.rfid_spools[1]["remaining_mm"] == 50000.0 - 47.0
+    stats.filament_used = 7470.0
+    box._track_rfid_usage(
+        5.0, BoxSnapshot(loaded_slot=1, tracking=True, encoder_mm=-495212.0))
+    assert box.rfid_spools[1]["remaining_mm"] == 50000.0 - 72.0
+
+
 def test_encoder_reset_does_not_add_or_consume_filament(tmp_path):
     box, stats = make_tracking_box(tmp_path)
     box.drivers = {1: object()}
