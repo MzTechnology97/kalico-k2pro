@@ -96,6 +96,8 @@ nav:
   - Releases: https://github.com/KalicoCrew/kalico/releases
   - Config_Changes.md
   - K2 Pro OpenHost: K2_PRO_OPENHOST.md
+  - K2 Pro upstream sync (EN): UPSTREAM_SYNC_EN.md
+  - K2 Pro allineamento upstream (IT): UPSTREAM_SYNC_IT.md
   - K2 Pro CFS third-party RFID: CFS_RFID_BAMBU.md
   - K2 Pro CFS v3.19 RAM bench: CFS_RUNTIME_V319.md
   - K2 Pro CFS v3.23 CFG4 and OpenCFS: CFS_RUNTIME_V323_CFG4.md
