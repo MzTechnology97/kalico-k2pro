@@ -73,6 +73,37 @@ Prefer Jacob's `main` for Kalico changes he already merged, since he
 reconciled them with the K2 code. Take a Kalico commit directly when Jacob
 has not merged it yet and it fixes something we need.
 
+## Rules for a sync merge
+
+A merge of Jacob's `main` brings his versions of the K2 modules too: since
+"Add K2 extras" (2026-10-19) his tree carries `box*.py`, `motor_control.py`,
+`prtouch.py`, `serial_485.py`, `z_align.py` and the others, written for the
+K2 Plus. On a sync branch:
+
+1. Merge with `git merge --no-ff --no-commit`.
+2. Keep ours, even where git merged on its own: `README.md`, `config/k2/`
+   and the K2 modules (the K2 paths in `scripts/upstream_sync.py`).
+3. Do not take Jacob's K2 Plus config files (`config/k2/box.cfg`,
+   `macros.cfg`, `motor_control.cfg`, `start_print.cfg`), the prebuilt
+   `klippy/chelper/c_helper.so`, or modules for hardware the K2 Pro does not
+   have (`belt_mdl.py`). Never copy K2 Plus values (bed size, wastebin,
+   pins) into the K2 Pro profile.
+4. Check that our K2 modules still find every core name they use: the core
+   moves internals around (in October `toolhead.*_flush_time` moved to
+   `motion_queuing`, `stepper_enable.motor_debug_enable` became
+   `set_motors_enable`). Adapt them in the same pull request.
+5. List what Jacob changed in his K2 modules and is worth having: those
+   become separate ports with tests.
+
+## MCU dictionaries
+
+The K2 MCUs run Creality firmware, whose data dictionaries exist only on the
+printer. `[save_mcu_dictionaries]` (in `config/k2/macros/system.cfg`) adds
+`SAVE_MCU_DICTIONARIES`. While the printer is idle, run it and copy
+`~/printer_data/mcu_dictionaries/*.dict` into `test/dictionaries/k2pro/`.
+With them a test can load the K2 Pro profile in CI and catch an upstream
+change that breaks it. Save them again after a firmware update.
+
 ## Recording decisions
 
 Every pending commit ends with a decision, so the next report only shows new
