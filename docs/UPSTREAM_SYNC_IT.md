@@ -73,6 +73,40 @@ di Jacob, perché le ha già riconciliate con il codice K2. Un commit di Kalico
 si prende direttamente quando Jacob non l'ha ancora unito e corregge qualcosa
 che ci serve.
 
+## Regole per un merge di allineamento
+
+Un merge del `main` di Jacob porta anche le sue versioni dei moduli K2: da
+"Add K2 extras" (19/10/2026) il suo albero contiene `box*.py`,
+`motor_control.py`, `prtouch.py`, `serial_485.py`, `z_align.py` e gli altri,
+scritti per la K2 Plus. Sul branch di allineamento:
+
+1. Merge con `git merge --no-ff --no-commit`.
+2. Si tengono i nostri, anche dove git ha unito da solo: `README.md`,
+   `config/k2/` e i moduli K2 (i percorsi K2 in `scripts/upstream_sync.py`).
+3. Non si prendono i file di configurazione K2 Plus di Jacob
+   (`config/k2/box.cfg`, `macros.cfg`, `motor_control.cfg`,
+   `start_print.cfg`), la `klippy/chelper/c_helper.so` già compilata né i
+   moduli per hardware che la K2 Pro non ha (`belt_mdl.py`). Mai copiare
+   valori della K2 Plus (dimensioni del piano, cestino, pin) nel profilo
+   K2 Pro.
+4. Si controlla che i nostri moduli K2 trovino ancora ogni nome del nucleo
+   che usano: il nucleo sposta parti interne (a ottobre
+   `toolhead.*_flush_time` è passato a `motion_queuing`,
+   `stepper_enable.motor_debug_enable` è diventato `set_motors_enable`). Si
+   adattano nella stessa pull request.
+5. Si elenca cosa Jacob ha cambiato nei suoi moduli K2 e vale la pena avere:
+   diventano port separati, con test.
+
+## Dizionari delle MCU
+
+Le MCU della K2 usano il firmware Creality, i cui dizionari dati esistono
+solo sulla stampante. `[save_mcu_dictionaries]` (in
+`config/k2/macros/system.cfg`) aggiunge `SAVE_MCU_DICTIONARIES`. A stampante
+ferma lo si esegue e si copiano `~/printer_data/mcu_dictionaries/*.dict` in
+`test/dictionaries/k2pro/`. Con questi file un test può caricare il profilo
+K2 Pro nella CI e accorgersi di una modifica upstream che lo rompe. Vanno
+salvati di nuovo dopo un aggiornamento firmware.
+
 ## Registrare le decisioni
 
 Ogni commit in sospeso finisce con una decisione, così il report successivo
