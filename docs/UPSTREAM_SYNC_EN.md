@@ -54,8 +54,10 @@ Flags in the last column:
 
 Red matters because the K2 MCUs run Creality's firmware, not this tree's
 `src/`. A host change that expects new MCU behaviour can pass CI and still
-fail on the printer. The CI image is pinned for the same reason (see
-`ci-build_test.yaml`).
+fail on the printer. For the same reason CI builds its image, with the MCU
+dictionaries, from this tree on every run (`ci-build_test.yaml`), and
+`test/test_k2_profile.py` loads the K2 Pro profile with the dictionaries
+saved from the reference printer.
 
 ## From the report to `k2-pro-openhost`
 
