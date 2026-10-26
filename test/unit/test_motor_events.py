@@ -63,7 +63,9 @@ class Rig:
             run_script=lambda s: None,
         )
         self.print_stats = SimpleNamespace(state=print_state)
-        stepper_enable = SimpleNamespace(motor_debug_enable=lambda *a: None)
+        stepper_enable = SimpleNamespace(
+            set_motors_enable=lambda names, enable: False
+        )
         m.printer = SimpleNamespace(
             lookup_object=lambda name, default=None: {
                 "print_stats": self.print_stats,
