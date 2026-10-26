@@ -19,6 +19,13 @@ DICTS = ROOT / "test" / "dictionaries" / "k2pro"
 # config/k2/reference/ is a partial snapshot for the docs, not loadable
 CONFIG = ROOT / "config" / "k2" / "printer.cfg"
 
+FATAL = (
+    "Config error",
+    "Internal error",
+    "Unhandled exception",
+    "Transition to shutdown state",
+)
+
 # The profile opens the RS-485 bus and talks to the T113: on a printer host
 # Klippy would use the real devices next to the running Klipper.
 pytestmark = pytest.mark.skipif(
@@ -60,4 +67,7 @@ def test_k2_profile_loads(tmp_path):
     )
     log = proc.stdout + proc.stderr
     assert proc.returncode == 0, log[-6000:]
-    assert "Traceback" not in log, log[-6000:]
+    # Hardware the CI lacks (RS-485, T113) only logs handled errors; these
+    # mean Klippy itself failed, e.g. a K2 module out of step with the core.
+    for marker in FATAL:
+        assert marker not in log, log[-6000:]
