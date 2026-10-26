@@ -11,7 +11,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -23,29 +23,12 @@ jobs:
               - 'pyproject.toml'
               - 'scripts/klippy-requirements.txt'
               - 'scripts/requirements_dev.txt'
-            klipper:
-              - 'pyproject.toml'
-              - 'Makefile'
-              - 'src/**'
-              - 'lib/**'
-              - 'test/configs/**'
-              - 'scripts/Dockerfile-build'
-              - 'scripts/buildcommands.py'
-              - 'scripts/check-gcc.sh'
 
-      # The upstream image carries MCU data dictionaries built from upstream
-      # Kalico; :latest moves with upstream firmware commands (2026-10-08:
-      # indx_set_control_params gained i_window/i_limit) and then fails the
-      # Klippy tests of this fork. Pin the last image built from sources
-      # compatible with this branch, tagged :latest for the steps below.
-      # Move the digest when the fork syncs with upstream.
-      - name: Pull docker image
-        run: |
-          docker pull dangerklippers/klipper-build@sha256:c173e078c18eafb15a154c96a9178446953e6646056d0163833e303fe8f7adfb
-          docker tag dangerklippers/klipper-build@sha256:c173e078c18eafb15a154c96a9178446953e6646056d0163833e303fe8f7adfb dangerklippers/klipper-build:latest
-
-      - name: Test Klipper build (changes to the firmware)
-        if: steps.changes.outputs.klipper == 'true'
+      # The image carries the MCU data dictionaries the Klippy tests load,
+      # built from this tree's src/. A prebuilt image drifts from it after
+      # every upstream sync (2026-10: indx_set_control_params gained
+      # i_window/i_limit), so build it on every run.
+      - name: Build docker image (firmware and dictionaries)
         run: |
           set -o pipefail
           # Clean up docker output so that github ::group: instructions

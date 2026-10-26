@@ -54,7 +54,10 @@ Le sigle nell'ultima colonna:
 Il rosso conta perché le MCU della K2 usano il firmware Creality, non il
 `src/` di questo albero. Una modifica host che si aspetta un comportamento
 nuovo delle MCU può passare la CI e rompersi lo stesso sulla stampante. Per
-lo stesso motivo l'immagine della CI è bloccata (vedi `ci-build_test.yaml`).
+lo stesso motivo la CI costruisce la sua immagine, con i dizionari delle MCU,
+da questo albero a ogni esecuzione (`ci-build_test.yaml`), e
+`test/test_k2_profile.py` carica il profilo K2 Pro con i dizionari salvati
+dalla stampante di riferimento.
 
 ## Dal report a `k2-pro-openhost`
 
