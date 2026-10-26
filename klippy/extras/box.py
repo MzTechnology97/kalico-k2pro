@@ -1768,17 +1768,19 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         return status
 
     def _helix_compat_status(self, physical, snap):
-        """Expose stock K2-style box fields consumed by upstream HelixScreen.
+        """Top-level stock K2-style box fields read by HelixScreen.
 
-        K2-OpenHost keeps its richer flat slots API, but HelixScreen currently
-        parses the stock nested T1..T4 unit objects. Publishing both shapes is
-        additive and avoids maintaining a separate HelixScreen fork.
+        HelixScreen drives this module through the flat `slots` schema with
+        api_version 1 (its "Fork" dialect). The stock nested T1..T4 unit
+        objects are not published: since HelixScreen 1.0.6 any frame carrying
+        a T{n} key switches it to the stock schema, which drops the flat state
+        and disables the Fork controls (slot selection when printing from the
+        screen).
         """
         by_slot = {item["index"]: item for item in physical}
         mapping = self._helix_tool_map()
         compat_map = {}
         same_groups = {}
-        units = {}
 
         for slot in self.physical_slots:
             source = self._slot_to_tnn(slot)
@@ -1787,10 +1789,6 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
                 compat_map[source] = target
 
         for address in sorted(self.drivers):
-            colors = []
-            materials = []
-            remain = []
-            vendors = []
             for local in range(SLOTS_PER_BOX):
                 slot = self._global_slot(address, local)
                 item = by_slot.get(slot, {})
@@ -1803,7 +1801,6 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
                     legacy_color = "unknown"
                 else:
                     legacy_color = "-1"
-                colors.append(legacy_color)
 
                 raw_code = str(item.get("rfid_code") or "").strip().upper()
                 filament_id = str(item.get("filament_id") or "").strip().upper()
@@ -1819,7 +1816,6 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
                     legacy_material = "K2O%02d" % slot
                 else:
                     legacy_material = "unknown"
-                materials.append(legacy_material)
 
                 if present and material and legacy_material not in ("-1", "unknown"):
                     tnn = self._slot_to_tnn(slot)
@@ -1828,34 +1824,6 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
                         {"material": material, "slots": [], "color": legacy_color})
                     if tnn:
                         group["slots"].append(tnn)
-
-                remaining = item.get("rfid_remaining_m")
-                remain.append(
-                    "-1" if remaining is None
-                    else ("%.3f" % float(remaining)).rstrip("0").rstrip("."))
-                vendor = str(item.get("brand") or "").strip()
-                vendors.append(vendor if vendor else "unknown")
-
-            active = "None"
-            if self.is_physical_slot(snap.loaded_slot):
-                active_address, active_local = self._address_slot(snap.loaded_slot)
-                if active_address == address:
-                    active = chr(ord("A") + active_local)
-
-            known_uid = self.store.known_addresses.get(address)
-            units["T%d" % address] = {
-                "state": str(snap.state_code if snap.state_code is not None else 0),
-                "version": "K2-OpenHost",
-                "sn": self._public_unit_id(known_uid),
-                "temperature": ("None" if snap.temp_c is None else str(snap.temp_c)),
-                "dry_and_humidity": (
-                    "None" if snap.humidity_pct is None else str(snap.humidity_pct)),
-                "color_value": colors,
-                "material_type": materials,
-                "remain_len": remain,
-                "vender": vendors,
-                "filament": active,
-            }
 
         same_material = [
             [code, group["color"], group["slots"], group["material"]]
@@ -1869,15 +1837,7 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             "map": compat_map,
             "same_material": same_material,
         }
-        result.update(units)
         return result
-
-    @staticmethod
-    def _public_unit_id(uid):
-        """Stable per-unit identifier that does not expose the CFS UniID."""
-        if not uid:
-            return "-1"
-        return hashlib.sha256(bytes(uid)).hexdigest()[:12]
 
     def _slot_statuses(self, snap):
         statuses = [self._slot_status(slot, snap) for slot in self.physical_slots]
