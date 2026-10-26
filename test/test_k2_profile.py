@@ -16,10 +16,8 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DICTS = ROOT / "test" / "dictionaries" / "k2pro"
-CONFIGS = [
-    ROOT / "config" / "k2" / "printer.cfg",
-    ROOT / "config" / "k2" / "reference" / "k2pro-cm5" / "printer.cfg",
-]
+# config/k2/reference/ is a partial snapshot for the docs, not loadable
+CONFIG = ROOT / "config" / "k2" / "printer.cfg"
 
 # The profile opens the RS-485 bus and talks to the T113: on a printer host
 # Klippy would use the real devices next to the running Klipper.
@@ -28,12 +26,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.mark.parametrize(
-    "config", CONFIGS, ids=lambda p: str(p.relative_to(ROOT).parent)
-)
-def test_k2_profile_loads(config, tmp_path):
+def test_k2_profile_loads(tmp_path):
     home = tmp_path / "home"
-    for sub in ("config", "gcodes", "logs"):
+    # macros/: the save_variables file of START_PRINT lives there
+    for sub in ("config/macros", "gcodes", "logs"):
         (home / "printer_data" / sub).mkdir(parents=True)
     gcode = tmp_path / "test.gcode"
     gcode.write_text("G4 P100\n")
@@ -41,7 +37,7 @@ def test_k2_profile_loads(config, tmp_path):
         sys.executable,
         "-m",
         "klippy",
-        str(config),
+        str(CONFIG),
         "-i",
         str(gcode),
         "-o",
