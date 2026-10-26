@@ -243,7 +243,8 @@ class ZAlign:
         z_tilt.z_helper.adjust_steppers = adjust
         self._z_tilt = z_tilt
 
-    def _handle_motor_off(self, _print_time):
+    def _handle_motor_off(self, *_args):
+        # older cores passed print_time, motion_queuing cores send nothing
         self._learn_delta = None
         self._bottom_anchor = None
 
