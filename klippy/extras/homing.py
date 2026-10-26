@@ -739,8 +739,19 @@ class PrinterHoming:
     def is_homing_abort_in_progress(self):
         return self._abort_in_progress or self._abort_cleanup_pending
 
-    def _is_probe_model_ready(self):
+    def _scanner_homes_z(self):
+        # With register_as_probe: False (mixed mode) Z homes on the default
+        # probe, e.g. prtouch: the Cartographer model and link do not matter.
         scanner = self.printer.lookup_object("cartographer", None)
+        if scanner is None:
+            return None
+        general = getattr(getattr(scanner, "config", None), "general", None)
+        if not getattr(general, "register_as_probe", True):
+            return None
+        return scanner
+
+    def _is_probe_model_ready(self):
+        scanner = self._scanner_homes_z()
         if scanner is None:
             return True
         scan_mode = getattr(scanner, "scan_mode", None)
@@ -753,7 +764,7 @@ class PrinterHoming:
         return True
 
     def _check_scanner_connected(self):
-        scanner = self.printer.lookup_object("cartographer", None)
+        scanner = self._scanner_homes_z()
         if (
             scanner is not None
             and hasattr(scanner, "_check_mcu_disconnected")
