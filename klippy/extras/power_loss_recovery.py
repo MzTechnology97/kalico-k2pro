@@ -900,6 +900,7 @@ class PowerLossRecovery:
             "nozzle_standby", 140.0, minval=0.0)
 
         self.v_sd = self.toolhead = self.gcode_move = self.print_stats = None
+        self.motion_queuing = None
         self.z_align = None
         self.motion_mcus = ()
         self.proxy = None
@@ -965,6 +966,9 @@ class PowerLossRecovery:
                 raise RuntimeError(self.store.status()["last_error"])
             self.v_sd = self.printer.lookup_object("virtual_sdcard")
             self.toolhead = self.printer.lookup_object("toolhead")
+            # flush times moved from the toolhead to motion_queuing (Kalico
+            # motion_queuing/steppersync)
+            self.motion_queuing = self.printer.lookup_object("motion_queuing")
             self.gcode_move = self.printer.lookup_object("gcode_move")
             self.print_stats = self.printer.lookup_object("print_stats")
             self.z_align = self._z_reference_object()
@@ -1251,12 +1255,12 @@ class PowerLossRecovery:
 
     def _attach_watermark(self, candidate):
         move = self.toolhead.lookahead.get_last()
-        delay = float(self.toolhead.kin_flush_delay)
+        delay = float(self.motion_queuing.get_kin_flush_delay())
         if move is None:
             candidate["target"] = float(self.toolhead.print_time)
             candidate["flush_target"] = min(
                 candidate["target"] + delay,
-                float(self.toolhead.need_flush_time))
+                float(self.motion_queuing.need_flush_time))
             return
 
         def scheduled(end_time, candidate=candidate, delay=delay):
@@ -1321,7 +1325,7 @@ class PowerLossRecovery:
         flush_target = candidate.get("flush_target")
         if target is None or flush_target is None:
             return False
-        if self.toolhead.last_flush_time < flush_target:
+        if self.motion_queuing.last_flush_time < flush_target:
             return False
         if "flushed_at" not in candidate:
             candidate["flushed_at"] = float(eventtime)
