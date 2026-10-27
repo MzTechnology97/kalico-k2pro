@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import struct
+import time
 
 from extras import box_rfid_diag as diag
 from extras import box_rfid_fallback
@@ -30,6 +31,10 @@ BAMBU_REQUIRED_BLOCKS = (1, 2, 4, 5, 6, 14)
 BAMBU_CAPTURE1_MAGIC = b"K2C3"
 BAMBU_CAPTURE2_MAGIC = b"K2D3"
 BAMBU_STOCK_MASK = 0x07
+# Right after an insertion or a reread the stock CFS RFID task is still
+# retrying the tag (it cannot read a Bambu tag with Creality keys): wait for it.
+STOCK_IDLE_TIMEOUT = 15.0
+STOCK_IDLE_POLL = 0.5
 
 
 class BambuRfidError(RuntimeError):
@@ -42,6 +47,10 @@ class BambuRfidUnsupported(BambuRfidError):
 
 class BambuTagNotRecognised(BambuRfidError):
     """The stock read ran, but the tag is not a Bambu tag."""
+
+
+class BambuStockBusy(BambuRfidError):
+    """The stock CFS RFID task is still busy on a slot."""
 
 
 def _decoded_tag_message(tag, source):
@@ -413,11 +422,30 @@ class BoxRfidBambu:
         except Exception:
             pass
 
-    def _read_tag_stock_capture(self, global_slot, address=None):
-        """Use API7 to run Bambu Key A through Creality's original RFID task."""
-        auto_addr, local_slot = self._slot_address(global_slot)
-        address = auto_addr if address is None else address
+    def _wait(self, delay):
+        # serial_485's rule: pause the reactor greenlet, sleep in other threads.
+        import greenlet
 
+        if hasattr(greenlet.getcurrent(), "timer"):
+            reactor = self.printer.get_reactor()
+            reactor.pause(reactor.monotonic() + delay)
+        else:
+            time.sleep(delay)
+
+    def _arm_when_stock_idle(self, global_slot, address, local_slot):
+        # Each try is its own RS-485 session, so the bus stays free between
+        # polls (motor control and the CFS share it).
+        reactor = self.printer.get_reactor()
+        deadline = reactor.monotonic() + STOCK_IDLE_TIMEOUT
+        while True:
+            try:
+                return self._arm_stock_capture(global_slot, address, local_slot)
+            except BambuStockBusy:
+                if reactor.monotonic() >= deadline:
+                    raise
+                self._wait(STOCK_IDLE_POLL)
+
+    def _arm_stock_capture(self, global_slot, address, local_slot):
         with self._transport().request_session() as transport:
             driver = RfidDiagDriver(transport, address)
             info = driver.info(timeout=1.0)
@@ -442,7 +470,7 @@ class BoxRfidBambu:
             if state is None:
                 raise BambuRfidError("CFS RFID STOCK_STATE timed out")
             if state.busy:
-                raise BambuRfidError(
+                raise BambuStockBusy(
                     "CFS stock RFID manager is busy on logical slot %d"
                     % state.active_slot)
             target = driver.internal_record(local_slot, timeout=1.0)
@@ -458,6 +486,12 @@ class BoxRfidBambu:
                     "CFS API7 ARM_KEYS failed: %s" % status)
             self.last_candidate = BambuCandidate(
                 global_slot, uid, atqa, sak, keys)
+
+    def _read_tag_stock_capture(self, global_slot, address=None):
+        """Use API7 to run Bambu Key A through Creality's original RFID task."""
+        auto_addr, local_slot = self._slot_address(global_slot)
+        address = auto_addr if address is None else address
+        self._arm_when_stock_idle(global_slot, address, local_slot)
 
         box = self.printer.lookup_object("box", None)
         box_driver = None if box is None else getattr(box, "drivers", {}).get(address)
