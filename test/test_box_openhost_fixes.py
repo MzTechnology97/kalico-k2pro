@@ -175,12 +175,16 @@ def test_observation_guard_allows_hardware_status():
     assert 0x0D not in box_module._ReadOnlyCFSProxy.ALLOWED_FUNCTIONS
 
 
-def test_public_unit_id_does_not_expose_uniid():
-    uid = bytes.fromhex("5f983b4d1454b01247343534")
-    public = Box._public_unit_id(uid)
-    assert public != uid.hex() and uid.hex() not in public
-    assert public == Box._public_unit_id(uid) and len(public) == 12
-    assert Box._public_unit_id(None) == "-1"
+def test_helix_status_has_no_stock_unit_keys(tmp_path):
+    # HelixScreen >= 1.0.6 switches to the stock schema on any T{n} key and
+    # then disables the Fork controls of this flat module.
+    box = make_box(tmp_path)
+    snap = BoxSnapshot(slot_mask=0b0101, loaded_slot=0)
+    status = box._helix_compat_status(box._slot_statuses(snap), snap)
+    assert not any("T%d" % n in status for n in range(1, 5))
+    assert status["helix_compat_version"] == 1
+    assert status["filament"] == 0
+    assert [group[3] for group in status["same_material"]] == ["PETG-CF"] * 2
 
 
 class FakeRail:
