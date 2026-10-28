@@ -156,8 +156,8 @@ def live_filament_check(tools, slots, mapping, swap, used_m, progress):
         results.append({
             "tool": tool_id,
             "slot": int(slot["index"]),
-            "needed_m": round(left, 2),
-            "available_m": None if have is None else round(have, 2),
+            "needed_m": round(left, 1),
+            "available_m": None if have is None else round(have, 1),
             "includes_swap": bool(
                 swap and have is not None and have != _remaining_m(slot)),
             "estimated": not single,

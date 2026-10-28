@@ -221,6 +221,10 @@ def _parse_retry_moves(text, error):
     return tuple(moves)
 
 
+def _round1(value):
+    return None if value is None else round(value, 1)
+
+
 def _spool_id_from_reserve(value):
     value = str(value or "").strip()
     # Some stock spools have 1 in this field, so it can't be used as a spool ID.
@@ -1937,11 +1941,14 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             "rfid_unknown_code": "" if unknown is None else str(
                 unknown.get("raw_code") or unknown.get("code") or "").strip().upper(),
             "rfid_unknown_color": unknown_color or "",
-            "rfid_percent": None if external else self.rfid_percent.get(slot),
+            # One decimal on the live estimate: every change of a published
+            # value is a new box frame for every client, and the estimate moved
+            # in the 14th decimal during a print. The state keeps full precision.
+            "rfid_percent": None if external else _round1(self.rfid_percent.get(slot)),
             "rfid_reported_percent": None if external else self.rfid_reported_percent.get(slot),
-            "rfid_estimated_percent": None if external else self.rfid_percent.get(slot),
+            "rfid_estimated_percent": None if external else _round1(self.rfid_percent.get(slot)),
             "rfid_total_m": None if total_mm is None else round(total_mm / 1000.0, 3),
-            "rfid_remaining_m": None if remaining_mm is None else round(remaining_mm / 1000.0, 3),
+            "rfid_remaining_m": None if remaining_mm is None else round(remaining_mm / 1000.0, 1),
             "rfid_usage_source": None if external else spool.get("usage_source"),
             "rfid_remaining_source": None if external else spool.get("remaining_source"),
             "nominal_length_m": profile.get("nominal_length_m"),
