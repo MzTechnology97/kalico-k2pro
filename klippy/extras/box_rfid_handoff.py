@@ -161,6 +161,7 @@ class RfidHandoff:
         self.units = {}
         self.manual_addresses = set()
         self.busy_addresses = set()
+        self.geometry_dirty = False
         self.last_error = None
         self._timer = self.reactor.register_timer(self._periodic)
 
@@ -232,6 +233,10 @@ class RfidHandoff:
             self.busy_addresses.discard(address)
             if claimed:
                 release()
+            if self.geometry_dirty and not self.busy_addresses:
+                self.geometry_dirty = False
+                self.reactor.update_timer(
+                    self.owner._timer, self.reactor.monotonic())
 
     def _contact(self, address, allow_config=False):
         unit = self._unit(address)
@@ -378,6 +383,7 @@ class RfidHandoff:
             applied = box._apply_third_party_rfid_tag(
                 slot, tag, note="RFID tag read in one CFS cycle")
         if applied:
+            self.geometry_dirty = True
             from extras.box_rfid_fallback import remember_manual_read
             remember_manual_read(self.printer, decoder, tag)
             return decoder.RFID_DECODER_NAME

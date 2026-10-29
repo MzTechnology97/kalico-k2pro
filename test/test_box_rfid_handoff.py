@@ -604,3 +604,24 @@ def test_auto_timer_does_not_borrow_another_readers_guard():
     owner.handoff._periodic(10.25)
     assert len(device.wire_calls) == before
     assert device.keys == 0 and box.rfid_read_owner == "legacy helper"
+
+
+def test_geometry_reconciliation_is_rescheduled_when_read_owner_releases():
+    owner, box, geometry, stats, device, provider = setup()
+    box.acquire_rfid_read = RealBox.acquire_rfid_read.__get__(box)
+    box.release_rfid_read = RealBox.release_rfid_read.__get__(box)
+    box._rfid_read_guard = RealBox._rfid_read_guard.__get__(box)
+    box._force_rfid_results_locked = RealBox._force_rfid_results_locked.__get__(box)
+    original = box._apply_bambu_rfid_tag
+
+    def apply_while_reconcile_timer_fires(slot, tag, note=None):
+        result = original(slot, tag, note)
+        now = box.printer.reactor.monotonic()
+        box.printer.reactor.update_timer(owner._timer, owner._service(now))
+        assert owner._timer[1] > now  # writes are deferred while read-owned
+        return result
+
+    box._apply_bambu_rfid_tag = apply_while_reconcile_timer_fires
+    assert RealBox._force_rfid_results(box, 1, box.drivers[1], 1, "manual RH1") == {0}
+    assert box.rfid_read_owner is None
+    assert owner._timer[1] == box.printer.reactor.monotonic()
