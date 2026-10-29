@@ -277,6 +277,20 @@ class BoxRfidEstimates:
             if spool:
                 spool["remaining_source"] = "kalico"
             return
+        printer = getattr(self, "printer", None)
+        geometry = (printer.lookup_object("box_spool_profiles", None)
+                    if printer is not None else None)
+        if geometry is not None:
+            try:
+                calibrated = geometry.allows_cfs_remaining(slot, value)
+            except Exception as exc:
+                _klog("CFS spool geometry validation failed: %s", exc,
+                      level=logging.warning)
+                calibrated = False
+            if not calibrated:
+                if spool:
+                    spool["remaining_source"] = "kalico"
+                return
         self.rfid_reported_percent[slot] = value
         if not spool or not spool.get("total_mm"):
             self.rfid_percent[slot] = float(value)
@@ -606,6 +620,13 @@ class BoxRfidEstimates:
         spool["length_source"] = length_source
         self._read_rfid_remaining(slot)
         if spool.get("remaining_mm") is None:
+            printer = getattr(self, "printer", None)
+            geometry = (printer.lookup_object("box_spool_profiles", None)
+                        if printer is not None else None)
+            if geometry is not None and geometry.manages_slot(slot):
+                # An uncalibrated CFS reading is not evidence of a full spool.
+                # Keep the amount unknown until the acquired measure is bound.
+                return
             spool["remaining_mm"] = float(spool["total_mm"])
             self.rfid_percent[slot] = 100.0
             self.rfid_estimate_dirty = True

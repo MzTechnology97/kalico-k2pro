@@ -166,6 +166,16 @@ class BoxRfidVendors:
                 return dict(filament)
         return None
 
+    def _spool_geometry_decoded(self, slot, vendor, uid):
+        geometry = self.printer.lookup_object("box_spool_profiles", None)
+        if geometry is None:
+            return
+        try:
+            geometry.on_tag_decoded(slot, vendor, uid)
+        except Exception as exc:
+            _klog("spool geometry metadata failed for slot %d: %s", slot, exc,
+                  level=logging.warning)
+
     def _apply_bambu_rfid_tag(self, slot, tagdata, note=None):
         if tagdata is None:
             return False
@@ -273,6 +283,7 @@ class BoxRfidVendors:
             "reserve": "",
         }
         self._remember_rfid_spool(slot, fields)
+        self._spool_geometry_decoded(slot, "bambu", uid)
         self.rfid_live_slots.add(slot)
         self._clear_rfid_watch(slot)
         self._start_third_party_estimate(slot, length_source)
@@ -420,6 +431,7 @@ class BoxRfidVendors:
             "reserve": "",
         }
         self._remember_rfid_spool(slot, fields)
+        self._spool_geometry_decoded(slot, vendor, uid)
         self.rfid_live_slots.add(slot)
         self._clear_rfid_watch(slot)
         self._start_third_party_estimate(slot, length_source)
@@ -443,6 +455,12 @@ class BoxRfidVendors:
         if (not self.is_physical_slot(slot)
                 or getattr(self, "observation_mode", False)):
             return None
+        geometry = self.printer.lookup_object("box_spool_profiles", None)
+        if geometry is not None:
+            handled, result = geometry.handoff.fallback_result(slot)
+            if handled:
+                # Reuse CAP from the completed cycle, or keep its failure.
+                return result
         try:
             return self.rfid_fallback.run(slot, automatic)
         except Exception as exc:
