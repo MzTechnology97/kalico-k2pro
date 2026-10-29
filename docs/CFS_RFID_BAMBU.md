@@ -16,6 +16,8 @@ The API7 path does not issue direct host RF reads. It:
 6. clears the override;
 7. applies or creates the matching Bambu filament profile.
 
+Step 3 needs the stock CFS RFID task to be idle. While the CFS is still reading a slot (the read after an insertion, or a reread from another path), the Bambu read polls the stock state every 0.5 s, each poll in its own RS-485 session so the bus stays free, for up to 15 s, instead of failing at once. After that it fails with `CFS stock RFID manager is busy on logical slot <n>`. On the reference printer the stock task once stayed busy for minutes (2026-10-28, on CFG4 v3.23 as on CFG6); a CFS power cycle cleared it.
+
 The stock CFS remaining path is **not** authoritative for Bambu API7 tags. Hardware tests show `CMD_RFID_REMAINING (0x03)` returning `0xFF` for Bambu spools, including PLA Matte, PETG HF and PETG Basic. I therefore treat `0xFF` as unavailable rather than as a percentage.
 
 API7 v3.3 does not currently capture Bambu block 14. I am using the tag UID as the persistent spool identity and investigating a read-only path for nominal length plus CFS-encoder-based consumption without writing the tag.
