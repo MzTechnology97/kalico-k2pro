@@ -621,9 +621,22 @@ class BoxSpoolProfiles:
         default = self.fixed_address or (online[0] if online else 1)
         address = gcmd.get_int("ADDRESS", default, minval=1, maxval=4)
         slot = gcmd.get_int("SLOT", 0, minval=0, maxval=3)
+        detail = gcmd.get_int("DETAIL", 0, minval=0, maxval=1)
+        extra = ""
         try:
             with self._transport().request_session() as transport:
                 sample = self._driver(transport, address).snapshot(slot)
+                if detail:
+                    from extras.box_rfid_diag import RfidDiagDriver, MemoryReply
+                    record = RfidDiagDriver(transport, address).internal_record(
+                        slot, timeout=0.5)
+                    if (not isinstance(record, MemoryReply) or record.status
+                            or len(record.data) != 76):
+                        raise SpoolGeometryError(
+                            "passive internal record is unavailable or malformed")
+                    # Only metadata byte75 is exposed; bytes4..19 can contain
+                    # capture/key scratch and must never be printed here.
+                    extra = " record_byte75=%d" % record.data[75]
         except Exception as exc:
             raise gcmd.error("CFS spool status failed: %s" % exc)
         gcmd.respond_info(
@@ -633,7 +646,7 @@ class BoxSpoolProfiles:
             % (address, slot, sample.current_uid.hex().upper(),
                sample.raw_circumference_mm, sample.generation, sample.flags,
                sample.profile_id, sample.applied_revision, sample.total_mm,
-               sample.used_mm, sample.initial_percent, sample.percent))
+               sample.used_mm, sample.initial_percent, sample.percent) + extra)
 
 
 def load_config(config):
