@@ -33,6 +33,24 @@ def _klog(msg, *args, level=logging.info):
     level("box: " + msg, *args)
 
 
+def _cfs_precise_token(value):
+    if not isinstance(value, (tuple, list)) or len(value) != 6:
+        return None
+    uid, generation, revision, total, initial, used = value
+    try:
+        identity = bytes.fromhex(uid) if isinstance(uid, str) else b""
+    except ValueError:
+        return None
+    if (len(identity) != 4 or not any(identity)
+            or any(type(n) is not int for n in value[1:])
+            or not 1 <= generation <= 0xFFFFFFFF
+            or not 1 <= revision <= 0xFFFFFFFF
+            or not 10000 <= total <= 2000000
+            or not 0 <= initial <= total or not 0 <= used <= 0xFFFFFFFF):
+        return None
+    return (identity.hex().upper(), generation, revision, total, initial, used)
+
+
 class BoxRfidEstimates:
     """Remaining-filament estimates of RFID spools (mixin of Box)."""
 
@@ -157,6 +175,9 @@ class BoxRfidEstimates:
             "length_source": saved.get("length_source"),
             "cfs_percent": saved.get("cfs_percent"),
         }
+        token = _cfs_precise_token(saved.get("cfs_precise_token"))
+        if token is not None:
+            self.rfid_spools[slot]["cfs_precise_token"] = token
         self.rfid_percent[slot] = 100.0 * remaining_mm / total_mm
         return True
 
@@ -219,6 +240,9 @@ class BoxRfidEstimates:
             "remaining_mm": remaining_mm,
             "cfs_percent": saved.get("cfs_percent"),
         }
+        token = _cfs_precise_token(saved.get("cfs_precise_token"))
+        if token is not None:
+            self.rfid_spools[slot]["cfs_precise_token"] = token
         if total_mm and remaining_mm is not None:
             self.rfid_percent[slot] = 100.0 * remaining_mm / total_mm
             percent = self.rfid_percent[slot]
@@ -264,6 +288,10 @@ class BoxRfidEstimates:
     def _apply_reported_remaining(self, slot, value):
         """Merge a CFS remaining percentage into the slot estimate.
 
+        A supported SGP1 sample seeds from the geometry's mm anchor and
+        consumed mm, without quantizing the initial quantity to whole percent.
+        Repeated counters preserve intervening local odometer consumption.
+
         On firmware that keeps the percentage live while printing, the CFS
         leads: each time its value changes, up or down, the estimate
         restarts from it (cfs_percent, persisted with the estimate), and
@@ -280,9 +308,14 @@ class BoxRfidEstimates:
         printer = getattr(self, "printer", None)
         geometry = (printer.lookup_object("box_spool_profiles", None)
                     if printer is not None else None)
+        precise = None
         if geometry is not None:
             try:
-                calibrated = geometry.allows_cfs_remaining(slot, value)
+                read = getattr(geometry, "read_cfs_remaining", None)
+                if read is None:
+                    calibrated = geometry.allows_cfs_remaining(slot, value)
+                else:
+                    calibrated, precise = read(slot, value)
             except Exception as exc:
                 _klog("CFS spool geometry validation failed: %s", exc,
                       level=logging.warning)
@@ -295,12 +328,24 @@ class BoxRfidEstimates:
         if not spool or not spool.get("total_mm"):
             self.rfid_percent[slot] = float(value)
             return
-        hardware_mm = spool["total_mm"] * value / 100.0
+        hardware_mm = (float(precise.remaining_mm) if precise is not None
+                       else spool["total_mm"] * value / 100.0)
         remaining = spool.get("remaining_mm")
         if self._cfs_live_remaining(slot):
-            if remaining is None or value != spool.get("cfs_percent"):
+            if precise is not None:
+                token = precise.token
+                previous = _cfs_precise_token(spool.get("cfs_precise_token"))
+                # A repeated/replayed counter cannot rewind the local odometer.
+                advanced = (previous is None or token[:-1] != previous[:-1]
+                            or token[-1] > previous[-1])
+                if remaining is None or advanced:
+                    remaining = hardware_mm
+                    spool["cfs_precise_token"] = token
+                spool["cfs_percent"] = value
+            elif remaining is None or value != spool.get("cfs_percent"):
                 remaining = hardware_mm
                 spool["cfs_percent"] = value
+                spool.pop("cfs_precise_token", None)
             spool["remaining_source"] = "cfs"
         else:
             spool["remaining_source"] = "kalico"
@@ -335,6 +380,9 @@ class BoxRfidEstimates:
                 persisted[key]["length_source"] = spool["length_source"]
             if spool.get("cfs_percent") is not None:
                 persisted[key]["cfs_percent"] = int(spool["cfs_percent"])
+            token = _cfs_precise_token(spool.get("cfs_precise_token"))
+            if token is not None:
+                persisted[key]["cfs_precise_token"] = list(token)
         # Per-insertion estimates (generic tags) end with their bay
         # occupancy: drop those no slot or live spool refers to any more.
         live = set(self._rfid_slot_keys().values())
