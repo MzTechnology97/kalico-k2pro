@@ -17,6 +17,10 @@ belongs on the host side and no tag-write primitive is exposed here.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
+import json
+import math
+import struct
+import time
 
 from extras import box_protocol
 from extras.serial_485 import build_485_body
@@ -526,6 +530,86 @@ def decode_clear_keys(frame, address):
     return reply
 
 
+
+def decode_cfs_diag2_payload(payload, expected_slot=None):
+    """Decode the fixed RDG2 snapshot; never perform device operations."""
+    data = bytes(payload)
+    if len(data) != 64:
+        raise RfidDiagError("RDG2 requires 64 payload bytes, got %d" % len(data))
+    if data[:4] != b"RDG2" or data[63] != 2:
+        raise RfidDiagError("Unsupported CFS snapshot magic/version; expected RDG2/2")
+    slot = data[4]
+    if slot > 3 or (expected_slot is not None and slot != expected_slot):
+        raise RfidDiagError("CFS RDG2 response slot does not match the request")
+    if data[59] != 0:
+        raise RfidDiagError("CFS RDG2 reserved byte must be zero")
+    used, total = struct.unpack_from("<II", data, 12)
+    checkpoint, raw = struct.unpack_from("<ff", data, 20)
+    current = None
+    if math.isfinite(raw):
+        try:
+            current = -struct.unpack("<f", struct.pack(
+                "<f", raw * 0.0007886413368396461))[0]
+        except (OverflowError, struct.error):
+            pass
+    checkpoint_finite = checkpoint if math.isfinite(checkpoint) else None
+    current = current if current is not None and math.isfinite(current) else None
+    delta = (current - checkpoint_finite
+             if current is not None and checkpoint_finite is not None else None)
+    ipsr = struct.unpack_from("<H", data, 60)[0]
+    mask, control = data[38], data[39]
+    privileged = ipsr != 0 or not (control & 1)
+    early_skip = data[32] != 1 and data[33] == slot
+    proxy_valid = bool(data[8] != 0 and data[9] == 4 and total >= 10000
+                       and 1 <= data[28] <= 100)
+    if early_skip:
+        hint = "early_filter_returns_ff"
+    elif data[30] == 0 and not proxy_valid:
+        hint = "no_stock_marker_or_valid_proxy_runtime"
+    elif data[30] == 0:
+        hint = "proxy_valid_but_stock_getter_returns_zero"
+    elif proxy_valid:
+        hint = "runtime_valid_and_table_value_available"
+    else:
+        hint = "stock_record_validation_needed"
+    return {
+        "format": "RDG2", "slot_zero_based": slot, "physical_slot": slot + 1,
+        "active_accounting_slot_zero_based": data[5], "box_state": data[6],
+        "hardware_flag": data[7], "runtime_valid": data[8],
+        "runtime_type": data[9], "runtime_mode": data[10],
+        "runtime_dirty": data[11], "used_mm": used, "total_mm": total,
+        "checkpoint_mm": checkpoint_finite,
+        "cached_raw_odometer": raw if math.isfinite(raw) else None,
+        "checkpoint_bits_hex": data[20:24].hex(),
+        "raw_odometer_bits_hex": data[24:28].hex(),
+        "current_odometer_approx_mm": current,
+        "delta_since_checkpoint_approx_mm": delta,
+        "initial_percent": data[28], "percent_table": data[29],
+        "selected_stock_marker": data[30], "internal_type": data[31],
+        "rf_manager_flag": data[32], "rf_manager_slot_zero_based": data[33],
+        "stock_markers": list(data[34:38]),
+        "primask_before": mask, "control": control, "ipsr": ipsr,
+        "primask_during_snapshot": data[62],
+        "privileged_context": bool(privileged),
+        "configurable_interrupts_masked": bool(data[62] == 1),
+        "snapshot_mask_validated": bool(privileged and data[62] == 1),
+        "stock_usage_state_hex": data[40:44].hex(),
+        "tick_count": struct.unpack_from("<I", data, 44)[0],
+        "unload_start_tick": struct.unpack_from("<I", data, 48)[0],
+        "global_usage_mm": struct.unpack_from("<I", data, 52)[0],
+        "k2rl_latch_present": bool(data[56]),
+        "internal_record_first_byte": data[57],
+        "runtime_record_first_byte": data[58],
+        "cmd03_early_filter_would_skip": bool(early_skip),
+        "runtime_alternative_validity": proxy_valid,
+        "cmd03_path_hint_at_snapshot": hint,
+        "raw_payload_hex": data.hex(),
+        "limits": ["NMI, faults and DMA are not excluded by PRIMASK.",
+                   "Gate values describe this snapshot, not execution counters.",
+                   "A later CMD03 request may observe a different state.",
+                   "Slot-error polling and full native-record validation are not modeled by the hint."],
+    }
+
 class RfidDiagDriver:
     """Policy-free transport client for opcode 0x57 on one CFS address."""
 
@@ -540,6 +624,22 @@ class RfidDiagDriver:
             index=index, key_a=key_a, uid=uid, total_mm=total_mm,
             initial_percent=initial_percent)
         return self.serial.cmd_send_data_with_response(body, timeout)
+
+    def diag2_snapshot(self, slot, timeout=1.0):
+        """One read-only query. No info probe, retries, fallback or RF operation."""
+        if not isinstance(slot, int) or not 0 <= slot <= 3:
+            raise RfidDiagError("RDG2 SLOT must be a local index from 0 to 3")
+        body = build_485_body(
+            self.address, CMD_RFID_DIAG, bytes((0x15, slot)), header_byte=0xFF)
+        frame = self.serial.cmd_send_data_with_response(body, timeout)
+        if not frame:
+            raise RfidDiagError("CFS RDG2 snapshot timed out")
+        reply = _diag_reply(frame, self.address)
+        if not _require_ok_payload(reply, 64, "CFS RDG2"):
+            raise RfidDiagError(
+                "CFS RDG2 unsupported/refused (%s); requires the matching DIAG2 firmware"
+                % STATUS_NAMES[reply.status])
+        return decode_cfs_diag2_payload(reply.payload, expected_slot=slot)
 
     def info(self, timeout=1.0):
         frame = self._exchange(SUB_INFO, timeout=timeout)
@@ -634,6 +734,7 @@ class BoxRfidDiag:
         self.printer.register_event_handler("serial_485:ready", self._serial_ready)
         commands = (
             ("BOX_RFID_DIAG_INFO", self.cmd_info),
+            ("BOX_CFS_DIAG2", self.cmd_diag2_snapshot),
             ("BOX_RFID_DIAG_STATE", self.cmd_state),
             ("BOX_RFID_DIAG_CACHE", self.cmd_cache),
             ("BOX_RFID_DIAG_INTERNAL", self.cmd_internal),
@@ -824,6 +925,24 @@ class BoxRfidDiag:
             % (label, result.uid.hex().upper(), result.atqa.hex().upper(),
                result.sak, result.cl1.hex().upper(), result.cl2.hex().upper(),
                result.bcc, result.payload.hex().upper()))
+
+    def cmd_diag2_snapshot(self, gcmd):
+        address, slot = self._address_param(gcmd), self._slot_param(gcmd)
+        try:
+            with self._transport().request_session() as transport:
+                result = RfidDiagDriver(transport, address).diag2_snapshot(slot)
+            result["address"] = address
+            result["received_at_unix"] = time.time()
+            self.last_diag2_snapshot = result
+            self.last_result = {"command": "diag2_snapshot", "status": 0,
+                                "status_name": "OK"}
+            self.last_error = None
+        except Exception as exc:
+            self.last_diag2_snapshot = None
+            self._remember("diag2_snapshot", error=exc)
+            raise gcmd.error("CFS RDG2 query failed: %s" % exc)
+        gcmd.respond_info("CFS RDG2 " + json.dumps(result, sort_keys=True,
+                                                 allow_nan=False))
 
     def cmd_info(self, gcmd):
         address = self._address_param(gcmd)
@@ -1344,6 +1463,7 @@ class BoxRfidDiag:
             "transport_ready": self.serial is not None,
             "last_result": self.last_result,
             "last_error": self.last_error,
+            "last_diag2_snapshot": getattr(self, "last_diag2_snapshot", None),
             "api_version": None if self.last_info is None else self.last_info.api_version,
             "api_capabilities": None if self.last_info is None else self.last_info.capabilities,
         }

@@ -84,3 +84,15 @@ and `macros/box_rfid_mifare.cfg` (commented out in the generic profile; see
 `cfs_filaments.json` (custom filament library, `library_path`) and
 `k2_rfid_custom_materials.json` (K2-RFID import, `material_database_path`) are
 this machine's libraries. On the printer both live in `~/printer_data/config/`.
+
+
+## CFS overlay updated 29 October 2026
+
+The base snapshot above retains its other machine-specific settings. The RFID
+geometry overlay now includes `macros/box_spool_profiles.cfg` for CFG6 SGF1/RH1
+R3, BIN SHA `a6dec25c74e7d259eec0387193548a0c3cc78ec9fc4ddc35824f0fe0965385b8`.
+The active reference Bambu geometry is `bambu = 1, 260.8, 508.3`: approximately
+83 mm bare cardboard outer diameter and a measured full-spool circumference.
+It replaces the provisional nearly-empty anchor. With the retained generation1
+measurements, CFS reported slot2=100% and slot4=12%, without another scan.
+See [the calibration procedure](../../../../docs/CFS_SPOOL_CALIBRATION.md).
