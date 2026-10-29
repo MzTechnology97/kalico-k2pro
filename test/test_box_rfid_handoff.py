@@ -687,3 +687,95 @@ def test_status_shows_transient_per_cfs_error_without_querying_again(monkeypatch
     assert status["cfs"][1]["configured"] is True
     assert status["cfs"][1]["error"] == "simulated POLL timeout"
     assert status["last_error"] == "simulated POLL timeout"
+
+
+def test_periodic_configures_before_first_scan_with_real_box_read_guard():
+    owner, box, geometry, stats, device, provider = setup()
+    box.acquire_rfid_read = RealBox.acquire_rfid_read.__get__(box)
+    box.release_rfid_read = RealBox.release_rfid_read.__get__(box)
+    observed = []
+    exchange = device.cmd_send_data_with_response
+
+    def send(body, timeout):
+        observed.append((body[4], box.rfid_read_owner))
+        return exchange(body, timeout)
+
+    device.cmd_send_data_with_response = send
+    owner.handoff._periodic(10.0)
+    assert owner.handoff.units[1]["configured"] is True
+    assert device.wire_calls == [rh.INFO, rh.CONFIG, rh.POLL]
+    assert all(reader == "box_rfid_handoff" for sub, reader in observed)
+    assert box.rfid_read_owner is None
+    assert device.starts == device.keys == 0
+    assert owner._can_mutate()
+    # Geometry writers continue to see the real coordinator as a reader.
+    from extras.box_spool_profiles import SpoolGeometryBusy
+    with owner.handoff._operation(1):
+        assert not owner._can_mutate()
+        with pytest.raises(SpoolGeometryBusy):
+            with owner._write_guard():
+                raise AssertionError("geometry write entered during RFID ownership")
+
+
+@pytest.mark.parametrize("activity", ["printing", "paused", "load", "reader", "observation"])
+def test_periodic_real_guard_defers_config_and_retries_after_idle(activity):
+    owner, box, geometry, stats, device, provider = setup()
+    box.acquire_rfid_read = RealBox.acquire_rfid_read.__get__(box)
+    box.release_rfid_read = RealBox.release_rfid_read.__get__(box)
+    if activity in ("printing", "paused"):
+        stats.state = activity
+    elif activity == "load":
+        box.operation_depth = 1
+        box.operation_progress = {"kind": "load"}
+    elif activity == "reader":
+        box.acquire_rfid_read("other reader")
+    else:
+        box.observation_mode = True
+    owner.handoff._periodic(10.0)
+    assert rh.CONFIG not in device.wire_calls and rh.POLL not in device.wire_calls
+    assert device.starts == device.keys == 0
+    assert not owner.handoff.units.get(1, {}).get("configured")
+    if activity == "reader":
+        assert box.rfid_read_owner == "other reader"
+        box.release_rfid_read()
+    stats.state = "standby"
+    box.operation_depth = 0
+    box.operation_progress = None
+    box.observation_mode = False
+    owner.handoff._periodic(10.25)
+    assert owner.handoff.units[1]["configured"]
+    assert device.wire_calls.count(rh.CONFIG) == 1
+    assert device.wire_calls[-1] == rh.POLL
+    assert box.rfid_read_owner is None
+    assert device.starts == device.keys == 0
+
+
+@pytest.mark.parametrize("activity", ["printing", "load"])
+def test_config_rechecks_idle_after_info_yields_to_host_activity(activity):
+    owner, box, geometry, stats, device, provider = setup()
+    box.acquire_rfid_read = RealBox.acquire_rfid_read.__get__(box)
+    box.release_rfid_read = RealBox.release_rfid_read.__get__(box)
+    exchange = device.cmd_send_data_with_response
+
+    def send(body, timeout):
+        result = exchange(body, timeout)
+        if body[4] == rh.INFO:
+            if activity == "printing":
+                stats.state = "printing"
+            else:
+                box.operation_depth = 1
+                box.operation_progress = {"kind": "load"}
+        return result
+
+    device.cmd_send_data_with_response = send
+    owner.handoff._periodic(10.0)
+    assert device.wire_calls == [rh.INFO]
+    assert not owner.handoff.units[1]["configured"]
+    stats.state = "standby"
+    box.operation_depth = 0
+    box.operation_progress = None
+    owner.handoff._periodic(10.25)
+    assert device.wire_calls == [rh.INFO, rh.CONFIG, rh.POLL]
+    assert owner.handoff.units[1]["configured"]
+    assert box.rfid_read_owner is None
+    assert device.starts == device.keys == 0
