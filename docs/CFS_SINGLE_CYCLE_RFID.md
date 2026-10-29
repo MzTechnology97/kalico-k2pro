@@ -1,7 +1,7 @@
 # CFS vendor geometry and single-cycle RFID candidate
 
 This is an offline-tested host candidate for the paired CFS firmware SGF1
-with SLOT_LENGTH (INFO feature 0x10) and RH1. Hardware qualification of the paired single-cycle path is still pending.
+with SLOT_LENGTH (INFO feature 0x10) and RH1. The paired R3 single-cycle path and RAM geometry binding have been verified on the reference CFS in two Bambu PETG HF slots; broader qualification and R3 print consumption remain pending.
 
 ## Configuration
 
@@ -164,3 +164,14 @@ For a targeted passive UID-length investigation, add `DETAIL=1` to the status
 command. It also reads the selected slot's API7 INTERNAL_RECORD and prints
 only `record_byte75`, with no authentication keys or capture scratch. It does
 not start RF activity. A missing or malformed 76-byte record is rejected.
+
+
+## Reference R3 hardware result, 29 October 2026
+
+Physical slots2/4 decoded Bambu PETG HF in24.60s/20.47s through RH1, each with one request and flags0x13. The missing-length metadata byte75 remained0. Measured circumferences were508.253mm for the operator-declared new spool and302.823mm for the nearly empty spool.
+
+The active reference configuration uses `bambu = 1, 302.8, 508.3` as a provisional two-point calibration. These values are circumferences, not diameters, and remain operator configuration rather than shipped defaults. The lower anchor includes the small amount of filament still present.
+
+After a host restart, profile1/revision1 was uploaded to RAM, both UID-specific lengths became327000mm and BIND recalculated the retained generation1 measurements. The new session had request0: no second scan was needed. CFS and Kalico reported100%/327m for slot2 and1%/3.27m for slot4. Other slots are not classified as Bambu merely because a manually selected filament profile has that brand.
+
+The CFS returned to IDLE and all23 CFG6 overrides were applied without error. This run does not establish R3 print-time consumption or physical auto-insertion/reconnect behavior; their offline tests remain part of the suite.
