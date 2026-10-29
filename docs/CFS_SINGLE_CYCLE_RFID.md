@@ -20,7 +20,7 @@ handoff_wait_ms: 3000
 handoff_lease_ms: 10000
 reconcile_interval: 5.0
 vendor_geometries:
-    bambu = 1, 260.8, 508.3
+    bambu = 1, 284.7, 508.3
 ```
 
 The core value is pi times the operator's approximate 83 mm empty refill
@@ -182,7 +182,7 @@ Physical slots2/4 decoded Bambu PETG HF in24.60s/20.47s through RH1, each with o
 
 The first provisional calibration used the nearly-empty spool as a lower
 anchor. The operator then supplied the bare cardboard outer diameter of about
-83 mm, refining the active profile to `bambu = 1, 260.8, 508.3`. After a host
+83 mm, refining the active profile to `bambu = 1, 284.7, 508.3`. After a host
 restart, catalog1/revision2 and both327000mm UID lengths were applied to the
 retained generation1 measurements, with RH1 request0 and no extra scan. Slot2
 reported100%/327m; slot4 reported12%/39.24m. Both retained flags0x13 and used0.
@@ -193,3 +193,5 @@ The CFS returned to IDLE and all23 CFG6 overrides were applied without error.
 The core diameter is approximate. This run does not establish R3 print-time
 consumption or physical auto-insertion/reconnect behavior; their offline
 regressions remain part of the suite.
+
+The effective core was subsequently refined to 284.7 mm after physical slot 4 ran out with 19655 mm counted and 6% still reported. The full reference remains 508.3 mm. See the calibration guide for derivation, uncertainty and protected-runtime restrictions; the new coefficient awaits another physical cycle.

@@ -339,6 +339,11 @@ def make_engine(box):
     engine.calls = []
     engine.change = lambda gcmd, target, flush=True, logical_tool=None: (
         engine.calls.append((target, flush, logical_tool)) or True)
+    engine.printing = False
+    engine._is_print_file_command = lambda: engine.printing
+    engine._is_print_active = lambda: engine.printing
+    engine.infos = []
+    engine._info = lambda gcmd, message: engine.infos.append(message)
     return engine
 
 
@@ -359,6 +364,49 @@ def test_tool_with_print_map_uses_native_map():
     engine.tool_map, engine.mapping_filename = {0: 3}, "part.gcode"
     engine.select_tool(FlushGcmd(), 0)
     assert engine.calls == [(3, True, 0)]
+
+
+class FakeRunoutBox(FakeMappingBox):
+    """Slots 1 and 3 hold identical spools; the runout order starts from 3."""
+
+    def runout_start_slot(self, slot):
+        return 3 if slot in (1, 3) else slot
+
+
+def test_print_tool_starts_from_runout_order_over_slicer_map():
+    engine = make_engine(FakeRunoutBox())
+    engine.tool_map, engine.mapping_filename = {0: 1}, "part.gcode"
+    engine.printing = True
+    engine.select_tool(FlushGcmd(), 0)
+    assert engine.calls == [(3, True, 0)]
+    assert engine.tool_map == {0: 3}
+    assert engine.infos == ["T0: Box 1, slot 4 instead of Box 1, slot 2, following the runout order"]
+
+
+def test_print_tool_starts_from_runout_order_over_helix_map():
+    engine = make_engine(FakeRunoutBox(helix={0: 1}))
+    engine.printing = True
+    engine.select_tool(FlushGcmd(), 0)
+    assert engine.calls == [(3, True, None)]
+
+
+def test_console_tool_keeps_the_mapped_slot():
+    engine = make_engine(FakeRunoutBox(helix={0: 1}))
+    engine.select_tool(FlushGcmd(), 0)
+    assert engine.calls == [(1, True, None)] and engine.infos == []
+
+
+def test_runout_start_slot_follows_order_and_keeps_loaded_spool(tmp_path):
+    box = make_box(tmp_path)  # slots 0 and 2: identical PETG-CF
+    box.store.set_setting("runout_order", [2, 0])
+    box.snapshot = BoxSnapshot(slot_mask=0b0101, loaded_slot=-1)
+    assert box.runout_start_slot(0) == 2
+    assert box.runout_start_slot(1) == 1  # no identical spool
+    box.snapshot = BoxSnapshot(slot_mask=0b0101, loaded_slot=0)
+    assert box.runout_start_slot(0) == 0  # one of the group is already loaded
+    box.snapshot = BoxSnapshot(slot_mask=0b0101, loaded_slot=-1)
+    box.store.set_setting("runout_swap_enabled", False)
+    assert box.runout_start_slot(0) == 0
 
 
 def test_runout_swap_moves_every_tool_of_the_empty_slot():
