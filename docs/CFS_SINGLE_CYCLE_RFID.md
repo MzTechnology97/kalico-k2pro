@@ -1,6 +1,6 @@
-# CFS vendor geometry and single-cycle RFID candidate
+# CFS vendor geometry and single-cycle RFID
 
-This is an offline-tested host candidate for the paired CFS firmware SGF1
+This extra pairs with CFS CFG6 SGF1/RH1 R3, including SGF1
 with SLOT_LENGTH (INFO feature 0x10) and RH1. The paired R3 single-cycle path and RAM geometry binding have been verified on the reference CFS in two Bambu PETG HF slots; broader qualification and R3 print consumption remain pending.
 
 ## Configuration
@@ -9,20 +9,30 @@ The optional extra is loaded with [box_spool_profiles]. It uses the existing
 serial_485 owned request queue. It never keeps a serial request or session
 open while waiting for Kalico's reactor or the CFS mechanical cycle.
 
-The shipped example is disabled and contains no calibration values:
+The ready-to-include K2 macro contains the reference Bambu geometry:
 
-    [box_spool_profiles]
-    enabled: False
-    single_cycle_rfid: True
-    handoff_wait_ms: 3000
-    handoff_lease_ms: 10000
-    reconcile_interval: 5.0
-    vendor_geometries:
+```ini
+[box_spool_profiles]
+serial: serial485
+enabled: True
+single_cycle_rfid: True
+handoff_wait_ms: 3000
+handoff_lease_ms: 10000
+reconcile_interval: 5.0
+vendor_geometries:
+    bambu = 1, 260.8, 508.3
+```
 
-To enable RH1 for future insertions/manual reads, set enabled to True.
-An empty vendor_geometries list enables no geometric correction. It can still
-negotiate the single-cycle reader and collect the CFS raw measurement.
-No startup RF read is issued merely to restore a cached spool estimate.
+The core value is pi times the operator's approximate 83 mm empty refill
+cardboard outer diameter. The full value is the measured 508.253 mm new PETG
+HF spool, rounded to0.1mm. The generic K2 profile keeps this optional include
+commented; the reference CM5 includes it. The standalone example contains the
+same numbers but remains disabled until enabled. Include exactly one copy.
+
+See [installation and calibration](CFS_SPOOL_CALIBRATION.md) for file paths,
+measurement procedure and how to choose a different vendor reference. An empty
+vendor list enables RH1 without geometric correction. No startup scan is added
+solely to recover the cached remaining estimate.
 
 After physical calibration, each geometry line has this syntax:
 
@@ -30,8 +40,8 @@ After physical calibration, each geometry line has this syntax:
 
 There are up to four numeric IDs, each assigned to one vendor. Bambulab and
 Bambu Lab normalize to bambu. The values are circumferences in millimeters,
-not diameters or spool flange dimensions. No example measurements are shipped
-as active Bambu values. The synthetic 300/510 values appear only in tests.
+not diameters or spool flange dimensions. The shipped Bambu reference values are measured starting values, not universal
+spool specifications. The synthetic 300/510 values appear only in tests.
 
 Material, color, and filament preset do not select a geometry. The nominal
 filament length remains per spool: tag, selected filament profile, then
@@ -126,9 +136,9 @@ One handoff tries one decoder key plan. Known UID hints/cache take priority.
 For explicit discovery involving several unknown key plans, the existing
 legacy path remains available by setting single_cycle_rfid to False.
 
-Hardware timing, real stack margins, antenna behavior and actual vendor
-geometry remain to be qualified. No firmware flash, Kalico restart, motion
-or scan was performed by this host implementation step.
+Reference hardware evidence covers two manual Bambu reads, UID quality, RAM
+geometry binding and catalog replacement. Stack high-water, additional
+hardware/antenna variants and R3 print consumption remain outside that run.
 
 ## Passive calibration readout
 
@@ -144,13 +154,13 @@ Use a fresh valid measurement of the reference spool to establish calibration;
 the test constants must not be copied as measured Bambu geometry.
 
 Paired firmware source: https://github.com/MzTechnology97/k2-cfs-rfid-tools/pull/64
-Firmware candidate SHA-256: 27cd264f36a217a98552351578f37fb4060e3d631793cc801242c0deaa6ec046
+Firmware R3 SHA-256: a6dec25c74e7d259eec0387193548a0c3cc78ec9fc4ddc35824f0fe0965385b8
 
 ## Firmware negotiation diagnostics
 
 The Moonraker `box_spool_profiles.handoff` status is cached and passive. Its per-CFS entries expose `supported`, `configured`, `session`, `request`, `pending_capture_count` and `error`. Reading it sends no frame and does not renew a lease. `single_cycle_rfid=True` describes configuration; it alone does not establish that the CFS supports RH1. Unsupported INFO/CONFIG responses are retained in the per-CFS error. Keys, offers and raw capture data are never included in this status.
 
-Use the paired firmware **SGF1/RH1 R2**. The earlier `b7cd0ab3…` image is withdrawn because its handoff extension used nominal instead of physical native-call addresses. R2 corrects these calls without changing the host wire contract.
+Use the paired firmware **SGF1/RH1 R3**. The earlier `b7cd0ab3…` image is withdrawn because its handoff extension used nominal instead of physical native-call addresses. R2 corrected those calls; R3 also repairs both missing-length UID observations without changing the host wire contract.
 
 
 Startup CONFIG eligibility is checked before the coordinator claims its own
@@ -170,8 +180,16 @@ not start RF activity. A missing or malformed 76-byte record is rejected.
 
 Physical slots2/4 decoded Bambu PETG HF in24.60s/20.47s through RH1, each with one request and flags0x13. The missing-length metadata byte75 remained0. Measured circumferences were508.253mm for the operator-declared new spool and302.823mm for the nearly empty spool.
 
-The active reference configuration uses `bambu = 1, 302.8, 508.3` as a provisional two-point calibration. These values are circumferences, not diameters, and remain operator configuration rather than shipped defaults. The lower anchor includes the small amount of filament still present.
+The first provisional calibration used the nearly-empty spool as a lower
+anchor. The operator then supplied the bare cardboard outer diameter of about
+83 mm, refining the active profile to `bambu = 1, 260.8, 508.3`. After a host
+restart, catalog1/revision2 and both327000mm UID lengths were applied to the
+retained generation1 measurements, with RH1 request0 and no extra scan. Slot2
+reported100%/327m; slot4 reported12%/39.24m. Both retained flags0x13 and used0.
+Brand text in a manually mapped filament profile alone did not assign Bambu
+geometry to another slot.
 
-After a host restart, profile1/revision1 was uploaded to RAM, both UID-specific lengths became327000mm and BIND recalculated the retained generation1 measurements. The new session had request0: no second scan was needed. CFS and Kalico reported100%/327m for slot2 and1%/3.27m for slot4. Other slots are not classified as Bambu merely because a manually selected filament profile has that brand.
-
-The CFS returned to IDLE and all23 CFG6 overrides were applied without error. This run does not establish R3 print-time consumption or physical auto-insertion/reconnect behavior; their offline tests remain part of the suite.
+The CFS returned to IDLE and all23 CFG6 overrides were applied without error.
+The core diameter is approximate. This run does not establish R3 print-time
+consumption or physical auto-insertion/reconnect behavior; their offline
+regressions remain part of the suite.
