@@ -4051,6 +4051,11 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         self._info(
             self.gcode, "Reading RFID for Box %d slot %s (%s)" % (
                 address, ", ".join(str(local + 1) for local in selected), reason))
+        geometry = self.printer.lookup_object("box_spool_profiles", None)
+        if geometry is not None:
+            handled = geometry.handoff.read_slots(address, selected)
+            if handled is not None:
+                return handled
         applied = set()
         pending = set(tools)
         # Manual rereads only: a tag a vendor decoder identified before goes
