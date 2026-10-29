@@ -2445,6 +2445,20 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
     def get_cut_sensor_state(self):
         return bool(self.cut_sensor_state)
 
+    def runout_start_slot(self, slot):
+        """K2-OpenHost: the slot a print tool starts from when its slot has
+        identical spools: the one of them already loaded, else the first in
+        the runout order, so the swap chain uses them up in that order."""
+        if not self.runout_swap_enabled or not self.is_physical_slot(slot):
+            return slot
+        snap = self.snapshot
+        for group in self._runout_groups(self._slot_statuses(snap)):
+            if slot in group["slots"]:
+                if snap.loaded_slot in group["slots"]:
+                    return snap.loaded_slot
+                return group["slots"][0]
+        return slot
+
     def _runout_groups(self, physical_slots):
         groups = {}
         for item in physical_slots:
