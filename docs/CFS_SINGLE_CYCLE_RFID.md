@@ -151,3 +151,10 @@ Firmware candidate SHA-256: 27cd264f36a217a98552351578f37fb4060e3d631793cc801242
 The Moonraker `box_spool_profiles.handoff` status is cached and passive. Its per-CFS entries expose `supported`, `configured`, `session`, `request`, `pending_capture_count` and `error`. Reading it sends no frame and does not renew a lease. `single_cycle_rfid=True` describes configuration; it alone does not establish that the CFS supports RH1. Unsupported INFO/CONFIG responses are retained in the per-CFS error. Keys, offers and raw capture data are never included in this status.
 
 Use the paired firmware **SGF1/RH1 R2**. The earlier `b7cd0ab3…` image is withdrawn because its handoff extension used nominal instead of physical native-call addresses. R2 corrects these calls without changing the host wire contract.
+
+
+Startup CONFIG eligibility is checked before the coordinator claims its own
+RFID read guard, then checked again after INFO can yield to a host operation.
+The guard remains held during the wire requests and still blocks geometry
+writers. Tests exercise the actual Box acquire/release methods, deferred
+startup during print/load/other reads, and activity beginning during INFO.

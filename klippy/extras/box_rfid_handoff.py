@@ -251,7 +251,8 @@ class RfidHandoff:
                 return None
             unit["supported"] = True
         if not unit["configured"]:
-            if not allow_config:
+            # INFO may yield to another host operation before CONFIG.
+            if not allow_config or not self._host_idle_for_job(address):
                 return None
             try:
                 self._exchange(address, "configure", unit["session"], True,
@@ -565,8 +566,12 @@ class RfidHandoff:
             if address in self.manual_addresses or address in self.busy_addresses:
                 continue
             try:
+                # Check before claiming our own RFID guard: geometry writers
+                # must continue to treat that guard as busy. No yield occurs
+                # between this check and claiming the reader.
+                allow_config = self.owner._can_mutate()
                 with self._operation(address):
-                    state = self._contact(address, self.owner._can_mutate())
+                    state = self._contact(address, allow_config)
                     self.last_error = None
                     if state is not None:
                         self._advance(address, state)
