@@ -464,6 +464,35 @@ class BoxRfidMifare:
             target = driver.internal_record(local_slot, timeout=1.0)
             return _internal_candidate(target)
 
+    def rfid_handoff_keys(self, uid):
+        plan = self._key_plan(bytes(uid))
+        # One handoff accepts one key plan. A known UID selects its decoder;
+        # multiple unknown plans retain the explicit legacy helper path.
+        keys = {key for _decoder, key in plan}
+        return next(iter(keys)) * 3 if len(keys) == 1 else None
+
+    def rfid_handoff_decode(self, global_slot, address):
+        """Decode only the capture already produced by the CFS RH1 cycle."""
+        _auto_addr, local = self._slot_address(global_slot)
+        with self._transport().request_session() as transport:
+            driver = RfidDiagDriver(transport, address)
+            target = driver.internal_record(local, timeout=0.5)
+            cap1 = driver.internal_record((local + 2) % 4, timeout=0.5)
+            cap2 = driver.internal_record((local + 3) % 4, timeout=0.5)
+            capture = _decode_capture(global_slot, target, cap1, cap2)
+            # Successful RH1 authentication already wipes its one-shot keys;
+            # leave capture scratch for the coordinator to consume safely.
+        if not capture.complete:
+            raise ThirdPartyRfidError("RH1 capture is incomplete")
+        for decoder, _key in self._key_plan(capture.uid):
+            tag = decoder.parse(capture)
+            if tag is not None:
+                self.last_tag, self.last_decoder = tag, decoder.name
+                self.last_error = None
+                self._remember_hint(tag.uid, decoder.name)
+                return tag
+        raise ThirdPartyRfidError("RH1 capture does not match a vendor decoder")
+
     def _capture(self, global_slot, address, key_a):
         _auto_addr, local_slot = self._slot_address(global_slot)
         if len(key_a) != 6:

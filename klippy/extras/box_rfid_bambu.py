@@ -487,6 +487,25 @@ class BoxRfidBambu:
             self.last_candidate = BambuCandidate(
                 global_slot, uid, atqa, sak, keys)
 
+    def rfid_handoff_keys(self, uid):
+        # Derivation is a candidate attempt, not manufacturer identification.
+        return derive_bambu_key_a(uid)[1] * 3
+
+    def rfid_handoff_decode(self, global_slot, address):
+        """Decode an already completed RH1 capture; no reread or RF request."""
+        _auto_addr, local = self._slot_address(global_slot)
+        with self._transport().request_session() as transport:
+            driver = RfidDiagDriver(transport, address)
+            target = driver.internal_record(local, timeout=0.5)
+            cap1 = driver.internal_record((local + 2) % 4, timeout=0.5)
+            cap2 = driver.internal_record((local + 3) % 4, timeout=0.5)
+            tag = parse_bambu_stock_capture(global_slot, target, cap1, cap2)
+            # RH1 has already erased the one-shot keys. CLEAR here could erase
+            # another slot's capture after the autonomous worker moved on.
+        self.last_tag = tag
+        self.last_error = self.last_unsupported = None
+        return tag
+
     def _read_tag_stock_capture(self, global_slot, address=None):
         """Use API7 to run Bambu Key A through Creality's original RFID task."""
         auto_addr, local_slot = self._slot_address(global_slot)
