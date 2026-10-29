@@ -668,3 +668,71 @@ def test_sgf_snapshot_uses_existing_diag_envelope_and_exact_subcommand():
     d, wire = driver(snapshot_bytes())
     assert d.snapshot(0).slot == 0
     assert wire.requests == [(bytes.fromhex("0105FF571700"), 0.5)]
+
+
+def test_status_detail_reads_only_passive_internal_metadata_and_hides_scratch():
+    extra, box, fw, stats = manager()
+    messages, requests = [], []
+    private = b"PRIVATE_RFID_SCRATCH"
+    record = bytearray(76)
+    record[:len(private)] = private
+    record[75] = 4
+    transport = extra._transport()
+
+    def exchange(body, timeout):
+        assert transport.active
+        requests.append((bytes(body), timeout))
+        return frame(bytes(record))
+
+    transport.cmd_send_data_with_response = exchange
+
+    class Command:
+        def get_int(self, name, default, **bounds):
+            return {"DETAIL": 1, "SLOT": 1}.get(name, default)
+
+        def respond_info(self, text):
+            messages.append(text)
+
+        def error(self, text):
+            return RuntimeError(text)
+
+    extra.cmd_status(Command())
+    assert fw.calls == [("snapshot", 1)]
+    assert requests == [(bytes.fromhex("0106FF57060001"), 0.5)]
+    assert len(messages) == 1 and "record_byte75=4" in messages[0]
+    assert private.decode() not in messages[0]
+    assert private.hex().upper() not in messages[0]
+    assert "raw=" not in messages[0]
+
+
+@pytest.mark.parametrize("response", [
+    None,
+    frame(status=1),
+    frame(bytes(75)),
+])
+def test_status_detail_rejects_missing_failed_or_truncated_record(response):
+    extra, box, fw, stats = manager()
+    requests, messages = [], []
+    transport = extra._transport()
+
+    def exchange(body, timeout):
+        requests.append(bytes(body))
+        return response
+
+    transport.cmd_send_data_with_response = exchange
+
+    class Command:
+        def get_int(self, name, default, **bounds):
+            return 1 if name == "DETAIL" else default
+
+        def respond_info(self, text):
+            messages.append(text)
+
+        def error(self, text):
+            return RuntimeError(text)
+
+    with pytest.raises(RuntimeError, match="CFS spool status failed"):
+        extra.cmd_status(Command())
+    assert requests == [bytes.fromhex("0106FF57060000")]
+    assert fw.calls == [("snapshot", 0)]
+    assert not messages

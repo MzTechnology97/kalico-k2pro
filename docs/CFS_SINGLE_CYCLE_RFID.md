@@ -158,3 +158,9 @@ RFID read guard, then checked again after INFO can yield to a host operation.
 The guard remains held during the wire requests and still blocks geometry
 writers. Tests exercise the actual Box acquire/release methods, deferred
 startup during print/load/other reads, and activity beginning during INFO.
+
+
+For a targeted passive UID-length investigation, add `DETAIL=1` to the status
+command. It also reads the selected slot's API7 INTERNAL_RECORD and prints
+only `record_byte75`, with no authentication keys or capture scratch. It does
+not start RF activity. A missing or malformed 76-byte record is rejected.
