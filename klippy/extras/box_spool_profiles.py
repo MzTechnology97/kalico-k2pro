@@ -19,6 +19,7 @@ CMD = 0x57
 SLOT_LENGTH = 0x10
 INFO, READ, SET_CATALOG, GET_CATALOG, BIND = range(0x16, 0x1B)
 GET_LENGTH, SET_LENGTH = 0x1B, 0x1C
+READ_PRECISE = 0x1D
 
 
 class SpoolGeometryError(RuntimeError):
@@ -164,6 +165,20 @@ class Snapshot:
                 and 50.0 <= self.raw_circumference_mm <= 2000.0)
 
 
+@dataclass(frozen=True)
+class PreciseSnapshot:
+    sample: Snapshot
+    precise_valid: bool
+    initial_mm: int
+    remaining_mm: int
+
+    @property
+    def token(self):
+        s = self.sample
+        return (s.current_uid.hex().upper(), s.generation, s.applied_revision,
+                s.total_mm, self.initial_mm, s.used_mm)
+
+
 def decode_info(p):
     if (len(p) != 12 or p[:4] != b"SGF1"
             or p[4:7] != bytes((1, 4, 4))
@@ -221,6 +236,29 @@ def decode_snapshot(p, expected_slot):
     return result
 
 
+def decode_precise_snapshot(p, expected_slot):
+    if len(p) != 72 or p[:4] != b"SGP1" or p[7] not in (0, 1):
+        raise box_protocol.ProtocolError("invalid SGP1 precision reply")
+    legacy = bytearray(p[:64])
+    legacy[:4] = b"SGD1"
+    legacy[7] = 0
+    sample = decode_snapshot(legacy, expected_slot)
+    initial, remaining = struct.unpack_from("<II", p, 64)
+    if p[7]:
+        if (not sample.usable_measurement or not sample.profile_id
+                or not sample.catalog_enabled or not sample.binding_matches_uid
+                or not sample.applied_revision or not sample.valid
+                or sample.runtime_type != 4 or sample.hardware_flag
+                or not 10000 <= sample.total_mm <= 2000000
+                or not 1 <= sample.initial_percent <= 100
+                or not 0 <= initial <= sample.total_mm
+                or remaining != max(0, initial - sample.used_mm)):
+            raise box_protocol.ProtocolError("inconsistent SGP1 precision anchor")
+    elif initial or remaining:
+        raise box_protocol.ProtocolError("unavailable SGP1 has nonzero quantities")
+    return PreciseSnapshot(sample, bool(p[7]), initial, remaining)
+
+
 class SpoolGeometryDriver:
     """Bounded exchanges through the existing owned RS-485 request queue."""
 
@@ -254,6 +292,11 @@ class SpoolGeometryDriver:
     def snapshot(self, slot):
         _integer(slot, 0, 3, "slot")
         return decode_snapshot(self._exchange(bytes((READ, slot))), slot)
+
+    def precise_snapshot(self, slot):
+        _integer(slot, 0, 3, "slot")
+        return decode_precise_snapshot(
+            self._exchange(bytes((READ_PRECISE, slot))), slot)
 
     def catalog(self, profile_id):
         _integer(profile_id, 1, 4, "profile ID")
@@ -451,7 +494,10 @@ class BoxSpoolProfiles:
                         == (geometry.core_c10, geometry.full_c10, 0)):
                     entry = self._replace_catalog(driver, entry, geometry)
                 revisions[geometry.profile_id] = entry.revision
-        self.units[address] = {"supported": True, "revisions": revisions}
+        unit = self.units.setdefault(address, {})
+        if unit.get("revisions") != revisions:
+            unit.pop("precision_supported", None)
+        unit.update(supported=True, revisions=revisions)
 
     def on_tag_decoded(self, slot, vendor, uid, total_mm=None):
         vendor = vendor_name(vendor)
@@ -559,12 +605,15 @@ class BoxSpoolProfiles:
         return vendor_name(code) in self.geometries
 
     def allows_cfs_remaining(self, slot, value=None):
-        """A passive proof before a CFS value may replace a saved estimate."""
+        return self.read_cfs_remaining(slot, value)[0]
+
+    def read_cfs_remaining(self, slot, value=None):
+        """Authorize one CFS sample, preferring its read-only mm extension."""
         if not self.enabled:
-            return True
+            return True, None
         identity = self._identity(slot)
         if identity is None:
-            return not self.manages_slot(slot)
+            return not self.manages_slot(slot), None
         _key, vendor, uid = identity
         geometry = self.geometries[vendor]
         box = self._box()
@@ -572,18 +621,35 @@ class BoxSpoolProfiles:
         unit = self.units.get(address, {})
         revision = unit.get("revisions", {}).get(geometry.profile_id)
         if not revision:
-            return False
+            return False, None
         total = box.rfid_spools.get(slot, {}).get("total_mm")
         if not isinstance(total, (int, float)) or not math.isfinite(total):
-            return False
+            return False, None
         try:
             with self._transport().request_session() as transport:
-                sample = self._driver(transport, address).snapshot(local)
-            return self._anchor_matches(
+                driver = self._driver(transport, address)
+                if unit.get("precision_supported") is not False:
+                    try:
+                        precise = driver.precise_snapshot(local)
+                    except SpoolGeometryUnsupported:
+                        # Only an explicit unsupported status selects R3 fallback.
+                        unit["precision_supported"] = False
+                    else:
+                        unit["precision_supported"] = True
+                        sample = precise.sample
+                        allowed = (precise.precise_valid
+                                   and self._anchor_matches(
+                                       sample, geometry, uid, int(round(total)), revision)
+                                   and (value is None or sample.percent == value))
+                        return allowed, precise if allowed else None
+                sample = driver.snapshot(local)
+            allowed = self._anchor_matches(
                 sample, geometry, uid, int(round(total)), revision) and (
                     value is None or sample.percent == value)
+            return allowed, None
         except (SpoolGeometryError, box_protocol.ProtocolError, RuntimeError, OSError):
-            return False
+            # A missing/malformed precise sample must not reseed from integer %.
+            return False, None
 
     def _service(self, eventtime):
         if not self.enabled:
@@ -622,10 +688,19 @@ class BoxSpoolProfiles:
         address = gcmd.get_int("ADDRESS", default, minval=1, maxval=4)
         slot = gcmd.get_int("SLOT", 0, minval=0, maxval=3)
         detail = gcmd.get_int("DETAIL", 0, minval=0, maxval=1)
+        precision = gcmd.get_int("PRECISION", 0, minval=0, maxval=1)
         extra = ""
         try:
             with self._transport().request_session() as transport:
-                sample = self._driver(transport, address).snapshot(slot)
+                driver = self._driver(transport, address)
+                if precision:
+                    precise = driver.precise_snapshot(slot)
+                    sample = precise.sample
+                    extra = (" precise_valid=%d initial_mm=%d remaining_mm=%d"
+                             % (precise.precise_valid, precise.initial_mm,
+                                precise.remaining_mm))
+                else:
+                    sample = driver.snapshot(slot)
                 if detail:
                     from extras.box_rfid_diag import RfidDiagDriver, MemoryReply
                     record = RfidDiagDriver(transport, address).internal_record(
@@ -636,7 +711,7 @@ class BoxSpoolProfiles:
                             "passive internal record is unavailable or malformed")
                     # Only metadata byte75 is exposed; bytes4..19 can contain
                     # capture/key scratch and must never be printed here.
-                    extra = " record_byte75=%d" % record.data[75]
+                    extra += " record_byte75=%d" % record.data[75]
         except Exception as exc:
             raise gcmd.error("CFS spool status failed: %s" % exc)
         gcmd.respond_info(
