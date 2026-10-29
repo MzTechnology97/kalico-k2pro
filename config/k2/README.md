@@ -136,3 +136,17 @@ The chamber exhaust fans keep their temperature control. `generic_fan: True` on 
 - K2-OpenHost integration: MzTechnology97 project work validated on the actual K2 Pro.
 
 K2 Plus dimensions, service coordinates and hardware mappings must not be assumed to apply unchanged to K2 Pro. The repository remains experimental until the mapped CFS print path, direct-USB Cartographer and a complete supervised print path are validated.
+
+## CFS R3 vendor geometry
+
+[`macros/box_spool_profiles.cfg`](macros/box_spool_profiles.cfg) contains the
+reference Bambu profile: `bambu = 1, 260.8, 508.3` (core/full circumferences in
+millimeters). It requires the paired CFS SGF1/RH1 R3 image and the Bambu RFID
+decoder. Its include is commented in the generic printer profile; enable it
+once when installing the matching firmware. The CM5 reference profile includes
+it. The standalone example remains disabled until explicitly enabled.
+
+See [calibration and installation](../../docs/CFS_SPOOL_CALIBRATION.md) and
+[protocol/operation](../../docs/CFS_SINGLE_CYCLE_RFID.md). Geometry is selected
+from the decoded RFID vendor; material/color do not choose the geometry, and
+nominal filament length remains per UID/slot.
