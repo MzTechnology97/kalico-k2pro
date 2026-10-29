@@ -613,7 +613,8 @@ class BoxSpoolProfiles:
                 "cfs": {address: dict(unit) for address, unit in self.units.items()},
                 "last_error": self.last_error,
                 "single_cycle_rfid": self.handoff.enabled,
-                "handoff_error": self.handoff.last_error}
+                "handoff_error": self.handoff.last_error,
+                "handoff": self.handoff.get_status(eventtime)}
 
     def cmd_status(self, gcmd):
         online = self._online()

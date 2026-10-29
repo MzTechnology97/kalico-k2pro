@@ -625,3 +625,65 @@ def test_geometry_reconciliation_is_rescheduled_when_read_owner_releases():
     assert RealBox._force_rfid_results(box, 1, box.drivers[1], 1, "manual RH1") == {0}
     assert box.rfid_read_owner is None
     assert owner._timer[1] == box.printer.reactor.monotonic()
+
+
+def test_status_is_passive_and_distinguishes_unprobed_from_unsupported():
+    owner, box, geometry, stats, device, provider = setup()
+    before = list(device.wire_calls)
+    status = owner.get_status(10.0)
+    assert status["single_cycle_rfid"] is True
+    assert status["handoff"] == {
+        "enabled": True, "cfs": {}, "last_error": None}
+    assert device.wire_calls == before
+
+    device.supported = False
+    owner.handoff._periodic(10.0)
+    before = list(device.wire_calls)
+    result = owner.get_status(10.25)["handoff"]["cfs"][1]
+    assert result["supported"] is False
+    assert result["configured"] is False
+    assert result["request"] == 0 and result["pending_capture_count"] == 0
+    assert "unsupported" in result["error"].lower()
+    assert device.wire_calls == before
+
+
+def test_status_whitelists_scalars_and_never_exposes_keys_or_capture_data():
+    import json
+    owner, box, geometry, stats, device, provider = setup()
+    unit = owner.handoff._unit(1)
+    secret = b"SENSITIVE_AUTH_KEY!"
+    raw_capture = b"PRIVATE_CAPTURE_BYTES"
+    unit.update(supported=True, configured=True, session=123, request=9,
+                error="capture pending")
+    unit["offers"][(123, 1)] = (provider, secret)
+    unit["captures"][(123, 1)] = raw_capture
+    unit["pending"][(123, 1)] = {"keys": secret, "raw": raw_capture}
+    unit["pending"][(123, 2)] = {"raw": raw_capture}
+    before = list(device.wire_calls)
+    status = owner.get_status(11.0)
+    entry = status["handoff"]["cfs"][1]
+    assert entry == {
+        "supported": True, "configured": True, "session": 123,
+        "request": 9, "pending_capture_count": 2, "error": "capture pending"}
+    encoded = json.dumps(status)
+    assert secret.decode() not in encoded and raw_capture.decode() not in encoded
+    assert all(word not in entry for word in ("offers", "captures", "keys", "raw"))
+    assert device.wire_calls == before
+    entry["configured"] = False
+    assert unit["configured"] is True
+
+
+def test_status_shows_transient_per_cfs_error_without_querying_again(monkeypatch):
+    owner, box, geometry, stats, device, provider = setup()
+    owner.handoff._periodic(10.0)
+
+    def fail(address, method, *args):
+        raise rh.HandoffError("simulated POLL timeout")
+
+    monkeypatch.setattr(owner.handoff, "_exchange", fail)
+    owner.handoff._periodic(10.25)
+    status = owner.get_status(10.5)["handoff"]
+    assert status["cfs"][1]["supported"] is True
+    assert status["cfs"][1]["configured"] is True
+    assert status["cfs"][1]["error"] == "simulated POLL timeout"
+    assert status["last_error"] == "simulated POLL timeout"

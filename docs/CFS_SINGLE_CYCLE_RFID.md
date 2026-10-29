@@ -1,8 +1,7 @@
 # CFS vendor geometry and single-cycle RFID candidate
 
 This is an offline-tested host candidate for the paired CFS firmware SGF1
-with SLOT_LENGTH (INFO feature 0x10) and RH1. It has not been installed in
-the running Kalico checkout or qualified on the printer.
+with SLOT_LENGTH (INFO feature 0x10) and RH1. Hardware qualification of the paired single-cycle path is still pending.
 
 ## Configuration
 
@@ -145,4 +144,10 @@ Use a fresh valid measurement of the reference spool to establish calibration;
 the test constants must not be copied as measured Bambu geometry.
 
 Paired firmware source: https://github.com/MzTechnology97/k2-cfs-rfid-tools/pull/64
-Firmware candidate SHA-256: b7cd0ab36011af9cd5af8f1ae4932008110a8fbdd174086c1a0043f2f5010158
+Firmware candidate SHA-256: 27cd264f36a217a98552351578f37fb4060e3d631793cc801242c0deaa6ec046
+
+## Firmware negotiation diagnostics
+
+The Moonraker `box_spool_profiles.handoff` status is cached and passive. Its per-CFS entries expose `supported`, `configured`, `session`, `request`, `pending_capture_count` and `error`. Reading it sends no frame and does not renew a lease. `single_cycle_rfid=True` describes configuration; it alone does not establish that the CFS supports RH1. Unsupported INFO/CONFIG responses are retained in the per-CFS error. Keys, offers and raw capture data are never included in this status.
+
+Use the paired firmware **SGF1/RH1 R2**. The earlier `b7cd0ab3…` image is withdrawn because its handoff extension used nominal instead of physical native-call addresses. R2 corrects these calls without changing the host wire contract.
