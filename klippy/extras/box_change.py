@@ -148,7 +148,8 @@ class BoxChangeEngine:
         if self.mapping_filename is None:
             # K2-OpenHost: without a print map, keep the persistent HelixScreen
             # Tn -> slot assignment.
-            return self.change(gcmd, self.box._mapped_slot(tool), flush)
+            return self.change(gcmd, self._start_slot(gcmd, tool, self.box._mapped_slot(tool)),
+                               flush)
         if tool not in self.tool_map:
             reason = "T%d has no slot in this print's mapping" % tool
             if not self._is_print_file_command():
@@ -160,7 +161,21 @@ class BoxChangeEngine:
             self._warn(self.recovery_notice())
             self.box.pause_print()
             return False
-        return self.change(gcmd, self.tool_map[tool], flush, logical_tool=tool)
+        target = self._start_slot(gcmd, tool, self.tool_map[tool])
+        self.tool_map[tool] = target  # later Tn of this print stay on it
+        return self.change(gcmd, target, flush, logical_tool=tool)
+
+    def _start_slot(self, gcmd, tool, slot):
+        """K2-OpenHost: in a print, a slot with identical spools starts from the
+        loaded one or the first in the runout order (box.runout_start_slot),
+        whatever the slicer or the screen mapped."""
+        if not (self._is_print_file_command() or self._is_print_active()):
+            return slot
+        target = self.box.runout_start_slot(slot)
+        if target != slot:
+            self._info(gcmd, "T%d: %s instead of %s, following the runout order" % (
+                tool, self._slot_label(target), self._slot_label(slot)))
+        return target
 
     def _slot_label(self, slot, tool=None):
         """Physical slots get Box/slot names; mapped jobs also name the file tool."""

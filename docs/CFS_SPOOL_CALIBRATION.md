@@ -10,8 +10,10 @@ riferimento quando il CFS perde la RAM.
 
 Il file pronto all'uso è
 [`config/k2/macros/box_spool_profiles.cfg`](https://github.com/MzTechnology97/kalico-k2pro/blob/k2-pro-openhost/config/k2/macros/box_spool_profiles.cfg).
-Il profilo deriva dal cartone vuoto della refill Bambu con diametro esterno
-**circa 83 mm** e dalla circonferenza misurata sulla bobina nuova PETG HF da 1 kg.
+Il profilo usa la circonferenza piena misurata sulla PETG HF da 1 kg e un
+**nucleo effettivo corretto al primo esaurimento reale**. Il cartone vuoto
+misurato a circa 83 mm resta un riferimento fisico; non coincide con il
+coefficiente effettivo del modello CFS.
 
 ```ini
 [box_spool_profiles]
@@ -22,7 +24,7 @@ handoff_wait_ms: 3000
 handoff_lease_ms: 10000
 reconcile_interval: 5.0
 vendor_geometries:
-    bambu = 1, 260.8, 508.3
+    bambu = 1, 284.7, 508.3
 ```
 
 I parametri dopo l'ID sono **circonferenze in millimetri**:
@@ -30,7 +32,7 @@ I parametri dopo l'ID sono **circonferenze in millimetri**:
 | Parametro | Valore | Provenienza |
 |---|---:|---|
 | Diametro esterno del cartone vuoto | circa 83 mm | misura dell'operatore |
-| Circonferenza del nucleo | 260,8 mm | pi greco per 83 mm, arrotondato a 0,1 mm |
+| Circonferenza del nucleo effettivo | 284,7 mm | ricavata da 19,655 m consumati fino a esaurimento su 327 m nominali |
 | Circonferenza piena | 508,3 mm | misura CFS 508,253 mm sulla bobina nuova |
 
 Il valore pieno è un riferimento misurato, non il diametro della flangia.
@@ -128,8 +130,11 @@ filamento non certifica la geometria della bobina.
 Modificare `vendor_geometries` nel file attivo e riavviare Klipper a CFS
 inattivo. Non occorre riflashare il firmware per cambiare questi parametri.
 Kalico carica il catalogo in RAM, invia la lunghezza nominale per UID e usa
-BIND per ricalcolare una misura ancora valida. Se il CFS conserva quella
-misura, non serve ripetere il giro. Se ha perso la RAM, la cache continua a
+BIND per ricalcolare una misura ancora valida **solo se il runtime non ha
+ancora consumo protetto**. Una revisione diversa con consumo gia contato
+viene rifiutata con stato 7: non azzerare i contatori per aggirare il vincolo.
+In quel caso conservare la stima e acquisire una nuova misura a CFS inattivo.
+Se conserva la misura con used_mm=0, il ricalcolo non richiede un nuovo giro. Se ha perso la RAM, la cache continua a
 scalare il residuo con l'odometro fino a una successiva lettura valida.
 
 ### 4. Verificare il ricalcolo
@@ -155,24 +160,61 @@ request 0: il caricamento della nuova geometria non avviò un'altra scansione.
 Il residuo visualizzato dello slot 4 era 39,24 m, calcolato dal valore intero
 12%. Con misure approssimate va considerato una stima.
 
-## Formula e continuità del residuo
+## Correzione dopo un esaurimento reale
+
+La misura dello slot fisico 4 era 302,823 mm. Con C_nucleo=260,8 e
+C_pieno=508,3 il CFS assegnava il 12%. Al primo esaurimento il contatore
+CFS ha registrato used_mm=19655 su total_mm=327000, mentre mostrava ancora
+il 6%. Il cambio automatico allo slot 2 e riuscito. Questo conferma consumo
+e cambio su R3, ma mostra che il primo coefficiente sovrastimava il residuo.
+
+Per una misura iniziale conservata e un contatore che parte da quella misura:
 
 ```text
-percentuale = round(100 * (C_misurata^2 - C_nucleo^2)
-                        / (C_pieno^2 - C_nucleo^2))
+p_reale = lunghezza_consumata_fino_a_esaurimento / lunghezza_nominale
+C_nucleo_effettivo = sqrt((C_misurata^2 - p_reale * C_pieno^2) / (1 - p_reale))
+
+p_reale = 19655 / 327000 = 0,060107
+C_nucleo_effettivo = 284,681 mm -> 284,7 mm
 ```
 
-Il CFS limita il risultato a 1..100%. Il valore prima dell'arrotondamento per
-lo slot 4 era circa 12,44%. Una nuova identità RFID non significa bobina piena:
-la percentuale viene dalla misura, mentre il volume totale in metri resta per
-bobina. Durante stampa/retrazione i contatori protetti continuano a consumare
-il residuo. La cache evita una scansione forzata al solo scopo di ripristinare
-la quantità dopo lo spegnimento del CFS.
+Con questi coefficienti la vecchia misura iniziale corrisponde al 6,005%,
+mentre la bobina nuova resta al 100%. L'equivalente diametro di circa 90,62 mm
+e un parametro effettivo che assorbe lo scarto del modello: non sostituisce
+la misura fisica del cartone da 83 mm. La correzione e provvisoria, ricavata da
+un solo esaurimento e da un contatore CFS; verificare su altre bobine della
+stessa geometria e, se possibile, confrontare peso/consumo indipendente.
+
+Annotare sempre misura iniziale, UID, generazione, total_mm e used_mm alla
+partenza e al runout. Se il contatore non parte da zero, usare la differenza.
+Non usare soltanto il 6% arrotondato, non modificare C_pieno per correggere
+il limite inferiore e non avviare una scansione meccanica sulla bobina vuota
+per cercare il nucleo: la misura CFS richiede filamento trascinabile.
+
+Il file attivo sul riferimento e stato salvato con C_nucleo=284,7 durante la
+stampa; nessun riavvio ne ha applicato la modifica in RAM durante quella
+stampa. Alla successiva attivazione a CFS inattivo, verificare catalogo e
+associazione. Se una vecchia misura ha gia consumo protetto, occorre una
+nuova lettura valida prima che venga associata al nuovo profilo.
+
+## Formula e continuita del residuo
+
+```text
+percentuale_iniziale = round(100 * (C_misurata^2 - C_nucleo^2)
+                                / (C_pieno^2 - C_nucleo^2))
+```
+
+La quantizzazione CFS limita il valore a 1..100%: correggere la geometria
+non introduce uno zero nel protocollo. Il runout fisico resta la prova di
+esaurimento e Kalico puo azzerare la disponibilita dello slot rimosso.
+Una nuova identita RFID non significa bobina piena. La lunghezza nominale
+resta per UID; la cache e l'odometro mantengono la continuita dopo perdita RAM.
 
 ## Ambito della prova
 
-R3 è stata verificata per letture Bambu nei due slot, prova UID, caricamento
-RAM, associazione per UID e sostituzione del catalogo senza nuovo giro. I test
-offline coprono anche ulteriori percorsi. Consumo durante una stampa R3,
-inserimento automatico e scollegamento fisico restano prove hardware separate.
-Per dettagli sul coordinamento vedere [CFS single-cycle RFID](CFS_SINGLE_CYCLE_RFID.md).
+R3 verificata sul riferimento: letture manuali RH1 nei due slot, UID coerenti,
+geometria RAM e sostituzione catalogo senza nuova scansione quando used_mm=0,
+consumo dello slot 4 e cambio automatico a slot 2. La correzione a 284,7 mm
+e verificata offline e attende la prossima prova fisica. Inserimento RFID
+automatico, scollegamento fisico e misura diretta dello stack restano separati.
+Vedere [CFS single-cycle RFID](CFS_SINGLE_CYCLE_RFID.md).
