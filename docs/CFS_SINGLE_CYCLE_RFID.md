@@ -23,9 +23,9 @@ vendor_geometries:
     bambu = 1, 284.7, 508.3
 ```
 
-The core value is pi times the operator's approximate 83 mm empty refill
-cardboard outer diameter. The full value is the measured 508.253 mm new PETG
-HF spool, rounded to0.1mm. The generic K2 profile keeps this optional include
+The effective core284.7 mm was inferred from the first real runout. It is not
+the measured physical cardboard diameter of approximately83 mm. The full
+value is the measured508.253 mm new PETG HF spool, rounded to0.1 mm. The generic K2 profile keeps this optional include
 commented; the reference CM5 includes it. The standalone example contains the
 same numbers but remains disabled until enabled. Include exactly one copy.
 
@@ -182,7 +182,7 @@ Physical slots2/4 decoded Bambu PETG HF in24.60s/20.47s through RH1, each with o
 
 The first provisional calibration used the nearly-empty spool as a lower
 anchor. The operator then supplied the bare cardboard outer diameter of about
-83 mm, refining the active profile to `bambu = 1, 284.7, 508.3`. After a host
+83 mm, refining the historical revision2 profile to `bambu = 1, 260.8, 508.3`. After a host
 restart, catalog1/revision2 and both327000mm UID lengths were applied to the
 retained generation1 measurements, with RH1 request0 and no extra scan. Slot2
 reported100%/327m; slot4 reported12%/39.24m. Both retained flags0x13 and used0.
@@ -190,8 +190,8 @@ Brand text in a manually mapped filament profile alone did not assign Bambu
 geometry to another slot.
 
 The CFS returned to IDLE and all23 CFG6 overrides were applied without error.
-The core diameter is approximate. This run does not establish R3 print-time
-consumption or physical auto-insertion/reconnect behavior; their offline
-regressions remain part of the suite.
+The core diameter is approximate. The later runout observation below establishes
+one print-consumption and automatic-swap case. Physical auto-insertion/reconnect
+remains unverified; its offline regressions remain part of the suite.
 
 The effective core was subsequently refined to 284.7 mm after physical slot 4 ran out with 19655 mm counted and 6% still reported. The full reference remains 508.3 mm. See the calibration guide for derivation, uncertainty and protected-runtime restrictions; the new coefficient awaits another physical cycle.
