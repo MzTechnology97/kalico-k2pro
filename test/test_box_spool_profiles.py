@@ -662,3 +662,9 @@ def test_catalog_reassignment_waits_when_old_binding_cannot_be_unbound_safely():
     assert not mutations(fw, "set_catalog") and not mutations(fw, "bind")
     assert box.rfid_spools[0]["remaining_mm"] == 100000
     assert "consistent UID" in extra.last_error
+
+
+def test_sgf_snapshot_uses_existing_diag_envelope_and_exact_subcommand():
+    d, wire = driver(snapshot_bytes())
+    assert d.snapshot(0).slot == 0
+    assert wire.requests == [(bytes.fromhex("0105FF571700"), 0.5)]

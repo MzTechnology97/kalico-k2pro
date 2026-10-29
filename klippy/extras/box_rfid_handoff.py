@@ -205,7 +205,7 @@ class RfidHandoff:
                 "supported": None, "configured": False,
                 "session": secrets.randbits(32) or 1,
                 "request": 0, "offers": {}, "answered": set(), "answer_attempts": {},
-                "completed": {}, "captures": {}, "pending": {},
+                "completed": {}, "captures": {}, "pending": {}, "error": None,
             }
         return self.units[address]
 
@@ -245,8 +245,9 @@ class RfidHandoff:
         if unit["supported"] is None:
             try:
                 self._exchange(address, "info")
-            except HandoffUnsupported:
+            except HandoffUnsupported as exc:
                 unit["supported"] = False
+                unit["error"] = str(exc)
                 return None
             unit["supported"] = True
         if not unit["configured"]:
@@ -255,14 +256,17 @@ class RfidHandoff:
             try:
                 self._exchange(address, "configure", unit["session"], True,
                                self.wait_ms, self.lease_ms)
-            except HandoffUnsupported:
+            except HandoffUnsupported as exc:
                 # RHI1 INFO may exist on a secure backend on which the
                 # legacy/API7 handoff is deliberately unavailable.
                 unit["supported"] = False
+                unit["error"] = str(exc)
                 return None
             unit["configured"] = True
         # CONFIG alone does not arm the lease.
-        return self._exchange(address, "poll", unit["session"])
+        state = self._exchange(address, "poll", unit["session"])
+        unit["error"] = None
+        return state
 
     def _provider(self, uid):
         box = self.owner._box()
@@ -574,4 +578,25 @@ class RfidHandoff:
                 if self.last_error != str(exc):
                     logging.info("box_rfid_handoff: %s", exc)
                 self.last_error = str(exc)
+                unit = self.units.get(address)
+                if unit is not None:
+                    unit["error"] = str(exc)
         return eventtime + 0.25
+
+    def get_status(self, eventtime):
+        """Cached negotiation state only: no exchange, poll or lease renewal."""
+        return {
+            "enabled": self.enabled,
+            "cfs": {
+                address: {
+                    "supported": unit.get("supported"),
+                    "configured": bool(unit.get("configured", False)),
+                    "session": unit.get("session"),
+                    "request": unit.get("request", 0),
+                    "pending_capture_count": len(unit.get("pending", {})),
+                    "error": unit.get("error"),
+                }
+                for address, unit in self.units.items()
+            },
+            "last_error": self.last_error,
+        }
