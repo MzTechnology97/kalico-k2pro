@@ -2,7 +2,7 @@
 
 Snapshot of the configuration running on the K2-OpenHost reference machine
 (Creality K2 Pro, one CFS, Raspberry Pi CM5 host) on **2026-10-18**, with
-Kalico at `k2-pro-openhost` `6185d828` and the CFS on K2-OpenHost firmware
+Kalico at `k2-pro-openhost` `83756e97` and the CFS on K2-OpenHost firmware
 `v323-cfg5t` (live type-4 remaining).
 
 It is kept for reproducibility: the generic profile in `config/k2/` is the
