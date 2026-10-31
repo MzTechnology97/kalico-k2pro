@@ -2,8 +2,6 @@
 
 This branch is the current integrated Kalico target for the K2-OpenHost project.
 
-Last updated: **2026-10-04**.
-
 ## Upstream attribution
 
 The code base is inherited from `Jacob10383/kalico`, itself based on `KalicoCrew/kalico` and ultimately `Klipper3d/klipper`. K2-specific extra implementations are inherited from Jacob/Jacobean's public K2 custom-firmware work. Those upstream authorship references remain intact.
@@ -26,17 +24,17 @@ The code base is inherited from `Jacob10383/kalico`, itself based on `KalicoCrew
 ## Current transport
 
 ```text
-Main MCU   -> /dev/serial/by-id/...Gadget_Serial-if00-port0 -> T113 ttyGS0 -> ttyS2
-Nozzle MCU -> /dev/serial/by-id/...Gadget_Serial-if01-port0 -> T113 ttyGS1 -> ttyS3
-RS-485/CFS -> /dev/serial/by-id/...Gadget_Serial-if02-port0 -> T113 ttyGS2 -> ttyS5
-Cartographer -> direct USB on CM5 (preferred target)
+Main MCU     -> /dev/k2-main   -> T113 ttyGS0 -> ttyS2
+Nozzle MCU   -> /dev/k2-nozzle -> T113 ttyGS1 -> ttyS3
+RS-485/CFS   -> /dev/k2-rs485  -> T113 ttyGS2 -> ttyS5
+Cartographer -> direct USB on the CM5
 ```
 
-Use the `by-id` names (full form in `config/k2/printer.cfg`), not `/dev/ttyUSB0/1/2`.
-The Klipper start gate (`scripts/install-k2-openhost-systemd-gate.sh`) waits for the same names by default.
+The installer helper's udev rule creates the `/dev/k2-*` names (vendor `0525:a4a6`, interfaces 00/01/02), the same with the T113 on slot A or slot B. `config/k2/printer.cfg` ships slot A's `by-id` names and the installer switches them. Never use `/dev/ttyUSB0/1/2`.
+The Klipper start gate (`scripts/install-k2-openhost-systemd-gate.sh`) waits for the transport devices before Klipper starts.
 
 - When the gadget reconnects (USB glitch, T113 bridge restart with a rebind) while Klipper still holds the old ports, the new ports come up as `ttyUSB2/3/4`.
-- With `ttyUSBn` names, `FIRMWARE_RESTART` then fails until Klipper is stopped and the gadget re-enumerated. With `by-id`, it reconnects.
+- With `ttyUSBn` names, `FIRMWARE_RESTART` then fails until Klipper is stopped and the gadget re-enumerated. With the udev or `by-id` names, it reconnects.
 - Measured in the [USB bridge tests](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/USB_BRIDGE.md).
 
 ### CFS discovery when RS-485 is down at startup
@@ -52,29 +50,12 @@ When a unit answers, the console says `CFS found after the RS-485 link came back
 
 Keep this patch when syncing `box.py` from upstream: look for `REDISCOVERY_MIN`, `_rediscover` and `_link_restored`. Tests are in `test/test_box_openhost_fixes.py`.
 
-On the printer side the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) runs these three bridges from the T113's slot B at every boot, installed from the [K2-OpenHost Installer Helper](https://github.com/MzTechnology97/k2-openhost-installer-helper). It was prepared on stock firmware 1.1.0.94 and is not yet hardware-validated.
-
-The earlier Cartographer MUX/DEMUX experiment is not the final topology. It carried live Cartographer MCU traffic, but reset/re-enumeration and PTY lifecycle add unnecessary complexity. The three gadget serial channels are now reserved for the original K2 buses.
+On the printer side the [T113 bootstrap](https://github.com/MzTechnology97/k2-openhost-t113-bootstrap) runs these three bridges from the T113's slot B at every boot, installed from the [K2-OpenHost Installer Helper](https://github.com/MzTechnology97/k2-openhost-installer-helper). It runs on the reference printer since 2026-10-06.
 
 ## Hardware validation completed
 
-The real K2 Pro has now been run from this external Kalico branch with the following validated:
+The reference K2 Pro prints every day from this branch. The verified features, with dates, and the open tests are in the [K2-OpenHost test status](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/TEST_STATUS.md).
 
-- native AArch64 `c_helper.so` build/runtime;
-- Main and Nozzle MCU simultaneous sessions;
-- RS-485 transport and closed-loop X/Y controller communication;
-- motor-control startup recovery across transient first-attempt discovery failures;
-- normal CoreXY motion;
-- X/Y sensorless/stall homing;
-- correct Z direction;
-- complete `G28` using the stock **PRTouch** Z-probe path;
-- bed, nozzle and chamber heater operation;
-- heater PID tuning;
-- emergency shutdown with active heater loads removed correctly;
-- successful Klippain-ShakeTune resonance test;
-- protected CFS observation stack on the shared RS-485 bus;
-- operational CFS Box mode (`observation_mode: false`) with persistent RFID inventory, `BOX_PRINT_INFO` on real sliced files and backend auto-mapping;
-- Moonraker visibility of normalized Box/CFS slot and filament-path state.
 
 ## CFS observation mode
 
@@ -705,14 +686,11 @@ A failed poll never shuts the printer down by itself. The policies on confirmed 
 
 ## Probe baseline and Cartographer
 
-The current known-good Z-homing baseline is the stock PRTouch stack. Full homing has been tested successfully with Cartographer disabled.
+PRTouch homes Z. The Cartographer uses the official [Cartographer3D plugin](https://github.com/Cartographer3D/cartographer3d-plugin) (see the [K2-OpenHost Cartographer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/CARTOGRAPHER.md)):
 
-Cartographer uses the official [Cartographer3D plugin](https://github.com/Cartographer3D/cartographer3d-plugin) (see the [K2-OpenHost Cartographer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/CARTOGRAPHER.md)). It supports:
+- `register_as_probe: False` is mixed mode: PRTouch stays the Z probe and the Cartographer scans the bed mesh. Verified on 2026-10-26. `klippy/extras/homing.py` asks for the scan model only when the Cartographer homes Z (`_scanner_homes_z`), and the `BED_MESH_CALIBRATE` wrapper in `macros/print.cfg` adds `PROBE=cartographer` so the mesh does not fall back to PRTouch.
+- `register_as_probe: True` makes the Cartographer the only probe. Not verified yet.
 
-- `register_as_probe: true` for standalone Cartographer-as-probe operation;
-- `register_as_probe: false` as the basis for optional mixed mode, where PRTouch remains the primary Z-reference probe and Cartographer is used for scanning/mesh work.
-
-Direct-USB Cartographer validation on the CM5 is the next probe milestone. Mixed mode is optional and should only be enabled after standalone Cartographer is stable.
 
 ## Power-loss recovery on the K2 Pro
 
@@ -751,15 +729,10 @@ The K2 extras, CFS stack included, are maintained here. They used to be mirrored
 
 Upstream changes from Jacob10383 are reviewed directly against [Jacob10383/k2-plus-custom-firmware](https://github.com/Jacob10383/k2-plus-custom-firmware) (`extras/`) and [Jacob10383/kalico](https://github.com/Jacob10383/kalico), then ported here as before.
 
-## Next milestones
+## Open tests
 
-1. controlled single-tool `BOX_PRINT_START`, then a mapped multimaterial tool change with purge matrix and temperatures;
-2. hardware-validate the upstream Box pause/resume flow (`_BOX_PAUSE_CAPTURE` / `_BOX_RESUME_PREPARE` / `_BOX_RESUME_COMMIT`), integrated with the 071c813 `box.py`;
-3. direct-USB Cartographer cold boot, reset/reconnect and persistent by-id path;
-4. controlled Cartographer probe/touch/scan and bed mesh;
-5. first complete supervised print path, including a supervised power cut with `PLR_RECOVER`;
-6. optional mixed PRTouch + Cartographer validation;
-7. T113 bootstrap on the real printer: slot B trial boot, gadget/bridges, HelixScreen, `k2oh-mcu-fw`.
+The open tests (two-colour print, pause with a slot change, power-loss recovery, Cartographer as the only probe, the RS-485 watchdog during a print) are listed in the [K2-OpenHost test status](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/TEST_STATUS.md#open).
+
 
 ## Canonical project documentation
 
