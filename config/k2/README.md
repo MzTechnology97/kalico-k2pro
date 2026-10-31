@@ -46,18 +46,18 @@ Moonraker, Mainsail, webcam and integration files stay in the config root.
 
 ## OpenHost host paths
 
-The current stable T113 bridge mapping is:
+The three T113 bridges and the Cartographer:
 
 ```text
-[mcu]              -> /dev/ttyUSB0
-[mcu nozzle_mcu]   -> /dev/ttyUSB1
-[serial_485 ...]   -> /dev/ttyUSB2
-Cartographer       -> direct USB on CM5, preferably /dev/serial/by-id/...
+[mcu]              -> /dev/k2-main    (T113 ttyGS0 -> ttyS2)
+[mcu nozzle_mcu]   -> /dev/k2-nozzle  (T113 ttyGS1 -> ttyS3)
+[serial_485 ...]   -> /dev/k2-rs485   (T113 ttyGS2 -> ttyS5)
+Cartographer       -> direct USB on the host, /dev/serial/by-id/usb-Cartographer_...
 ```
 
-Cartographer is **not** planned as `/dev/ttyUSB3` anymore. A fourth gadget/MUX path was prototyped and carried real Cartographer traffic, but direct USB is now preferred because it handles native MCU reset/re-enumeration without adding a PTY/MUX/DEMUX layer.
+The `/dev/k2-*` names come from the installer helper's udev rule and are the same with the T113 on slot A or slot B. `printer.cfg` in this folder ships the `by-id` names of slot A's stock gadget; the installer switches them to the udev names. Never use `/dev/ttyUSBn`: the numbers change when the gadget reconnects. The G-code folder is the CM5's `~/printer_data/gcodes`.
 
-`printer.cfg` in this folder already uses these `/dev/ttyUSB*` paths and the CM5 `~/printer_data/gcodes` layout. `[z_align]` drives the K2 Pro bottom photoelectric switch (`PA15`, as in the Creality F012 stock config). Integrated `G28` uses it when Z is unknown, and `power_loss_recovery` (`z_reference: z_align`) uses it to re-reference Z after a power loss (see `docs/K2_PRO_OPENHOST.md`).
+`[z_align]` drives the K2 Pro bottom photoelectric switch (`PA15`, as in the Creality F012 stock config). Integrated `G28` uses it when Z is unknown, and `power_loss_recovery` (`z_reference: z_align`) uses it to re-reference Z after a power loss (see `docs/K2_PRO_OPENHOST.md`).
 
 The tuned configuration of the reference K2 Pro + CM5 machine is kept in [`reference/k2pro-cm5/`](reference/k2pro-cm5/README.md).
 
@@ -65,7 +65,7 @@ The tuned configuration of the reference K2 Pro + CM5 machine is kept in [`refer
 
 The branch contains the K2 Pro X/Y/E closed-loop topology and the hardware-tested tuned `motor_control.cfg` baseline used by OpenHost. Startup logic includes delay/retry handling because the external CM5 can become ready before the K2 motor controllers.
 
-Exactly one bridge/process must own the RS-485 gadget/UART path. A duplicate GS2 bridge discovered during experimental multiplexing caused motor communication failures; returning to one `ttyGS2 <-> ttyS5` bridge restored stable operation.
+Exactly one bridge process may own the RS-485 path (`ttyGS2 <-> ttyS5`): a second one on the same port caused motor communication failures.
 
 ## CFS print mapping
 
@@ -101,14 +101,10 @@ The current K2-OpenHost Box contract deliberately keeps `api_version: 1` and add
 
 ## Probe configuration
 
-The current known-good homing baseline uses **PRTouch** with Cartographer disabled. Full homing has been verified in that state.
+PRTouch homes Z. The official Cartographer3D plugin adds the Cartographer ([K2-OpenHost Cartographer guide](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/CARTOGRAPHER.md)):
 
-The official Cartographer3D plugin supports:
-
-- `register_as_probe: true` for normal Cartographer-as-probe mode;
-- `register_as_probe: false` for future optional mixed mode with PRTouch retaining the canonical Z-reference probe.
-
-Do not enable mixed mode until direct-USB Cartographer has first been validated independently.
+- `register_as_probe: False`, mixed mode: PRTouch stays the Z probe and the Cartographer scans the bed mesh. Verified on the reference K2 Pro on 2026-10-26. The `BED_MESH_CALIBRATE` wrapper in `macros/print.cfg` adds `PROBE=cartographer` when the call names no probe, so a mesh never falls back to nozzle touches.
+- `register_as_probe: True`: the Cartographer is the only probe. Not verified yet.
 
 ### Nozzle cleaning and axis twist at print start
 
@@ -135,7 +131,7 @@ The chamber exhaust fans keep their temperature control. `generic_fan: True` on 
 - K2 Pro baseline adaptation: luketot.
 - K2-OpenHost integration: MzTechnology97 project work validated on the actual K2 Pro.
 
-K2 Plus dimensions, service coordinates and hardware mappings must not be assumed to apply unchanged to K2 Pro. The repository remains experimental until the mapped CFS print path, direct-USB Cartographer and a complete supervised print path are validated.
+K2 Plus dimensions, service coordinates and hardware mappings must not be assumed to apply unchanged to K2 Pro. The reference K2 Pro prints every day on this profile; the open tests are in the [K2-OpenHost test status](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/TEST_STATUS.md#open).
 
 ## CFS R3 vendor geometry
 

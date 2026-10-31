@@ -24,17 +24,17 @@ The code base is inherited from `Jacob10383/kalico`, itself based on `KalicoCrew
 ## Current transport
 
 ```text
-Main MCU   -> /dev/serial/by-id/...Gadget_Serial-if00-port0 -> T113 ttyGS0 -> ttyS2
-Nozzle MCU -> /dev/serial/by-id/...Gadget_Serial-if01-port0 -> T113 ttyGS1 -> ttyS3
-RS-485/CFS -> /dev/serial/by-id/...Gadget_Serial-if02-port0 -> T113 ttyGS2 -> ttyS5
+Main MCU     -> /dev/k2-main   -> T113 ttyGS0 -> ttyS2
+Nozzle MCU   -> /dev/k2-nozzle -> T113 ttyGS1 -> ttyS3
+RS-485/CFS   -> /dev/k2-rs485  -> T113 ttyGS2 -> ttyS5
 Cartographer -> direct USB on the CM5
 ```
 
-Use the `by-id` names (full form in `config/k2/printer.cfg`), not `/dev/ttyUSB0/1/2`.
-The Klipper start gate (`scripts/install-k2-openhost-systemd-gate.sh`) waits for the same names by default.
+The installer helper's udev rule creates the `/dev/k2-*` names (vendor `0525:a4a6`, interfaces 00/01/02), the same with the T113 on slot A or slot B. `config/k2/printer.cfg` ships slot A's `by-id` names and the installer switches them. Never use `/dev/ttyUSB0/1/2`.
+The Klipper start gate (`scripts/install-k2-openhost-systemd-gate.sh`) waits for the transport devices before Klipper starts.
 
 - When the gadget reconnects (USB glitch, T113 bridge restart with a rebind) while Klipper still holds the old ports, the new ports come up as `ttyUSB2/3/4`.
-- With `ttyUSBn` names, `FIRMWARE_RESTART` then fails until Klipper is stopped and the gadget re-enumerated. With `by-id`, it reconnects.
+- With `ttyUSBn` names, `FIRMWARE_RESTART` then fails until Klipper is stopped and the gadget re-enumerated. With the udev or `by-id` names, it reconnects.
 - Measured in the [USB bridge tests](https://github.com/MzTechnology97/K2-OpenHost/blob/main/docs/en/USB_BRIDGE.md).
 
 ### CFS discovery when RS-485 is down at startup
