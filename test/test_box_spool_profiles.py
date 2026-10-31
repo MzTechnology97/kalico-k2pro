@@ -282,6 +282,10 @@ class Firmware:
             revision or self.catalogs[profile_id].high_water_revision)
         return self.catalogs[profile_id]
 
+    def precise_snapshot(self, slot):
+        self.calls.append(("precision_unsupported", slot))
+        raise sg.SpoolGeometryUnsupported("legacy firmware fixture")
+
     def snapshot(self, slot):
         self.calls.append(("snapshot", slot))
         return self.samples.get(slot, sg.decode_snapshot(
