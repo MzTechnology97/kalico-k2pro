@@ -14,6 +14,12 @@
     }
   ],
   "decisions": {
+    "083874ce89c0ab1e4c41e40d6a09e2e31c6d7441": {
+      "decision": "ported",
+      "note": "only the CFS offline pause + reconnect, hub lane conflict pause and snapped-piece warning, adapted to our box.py; the rest of the rewrite and print_control/line_purge not taken",
+      "date": "2026-11-21",
+      "pr": 112
+    },
     "1289bd3af209d1bc75025de0cd7387e9bf1bd3f8": {
       "decision": "taken",
       "note": "pa_params leak fix, cherry-picked",
