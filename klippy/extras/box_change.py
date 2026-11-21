@@ -57,6 +57,7 @@ class ResumeRecovery:
     target: object
     reason: str
     automatic: bool
+    action: object = None
 
 
 @dataclass(frozen=True)
@@ -586,7 +587,7 @@ class BoxChangeEngine:
             "resume_recovery": self.recovery_status(),
         }
 
-    def block_resume(self, reason, target=None, automatic=None):
+    def block_resume(self, reason, target=None, automatic=None, action=None):
         request = self.pending
         if request is not None and request.print_context:
             target = request.target
@@ -603,6 +604,7 @@ class BoxChangeEngine:
             target=target,
             reason=str(reason),
             automatic=bool(automatic),
+            action=action,
         )
 
     def clear_resume_recovery(self):
@@ -766,6 +768,9 @@ class BoxChangeEngine:
             reason, pause_state, self._recovery_action(status))
 
     def _recovery_action(self, status):
+        recovery = self.resume_recovery
+        if recovery is not None and recovery.action:
+            return recovery.action
         target = status["target"]
         if status["automatic"] and target is not None:
             return "RESUME retries %s" % self._slot_label(target)
