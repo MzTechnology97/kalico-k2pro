@@ -13,5 +13,24 @@
       "via": "jacob"
     }
   ],
-  "decisions": {}
+  "decisions": {
+    "1289bd3af209d1bc75025de0cd7387e9bf1bd3f8": {
+      "decision": "taken",
+      "note": "pa_params leak fix, cherry-picked",
+      "date": "2026-11-21",
+      "pr": 111
+    },
+    "28032b4950c48b0560e175dd0ca5597c3cd4cdb9": {
+      "decision": "taken",
+      "note": "PLR max_print_z on travel Z-hop, cherry-picked",
+      "date": "2026-11-21",
+      "pr": 111
+    },
+    "854125397304fa32f2d026fe872130a85cb3d14e": {
+      "decision": "ported",
+      "note": "accelerometer reconnect guard; lis2dw.py adapted to our older SPI driver",
+      "date": "2026-11-21",
+      "pr": 111
+    }
+  }
 }

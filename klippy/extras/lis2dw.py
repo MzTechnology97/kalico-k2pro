@@ -103,6 +103,12 @@ class LIS2DW:
             cq=cmdqueue,
         )
 
+    def check_connected(self):
+        if self.mcu.non_critical_disconnected or self.mcu._reconnecting:
+            raise self.printer.command_error(
+                f"LIS2DW: {self.name} could not connect because mcu: {self.mcu.get_name()} is non_critical_disconnected!"
+            )
+
     # -- SPI register helpers -------------------------------------------------
     def read_reg(self, reg):
         params = self.spi.spi_transfer([reg | REG_MOD_READ, 0x00])
@@ -161,6 +167,7 @@ class LIS2DW:
 
     # -- Measurement lifecycle ------------------------------------------------
     def _start_measurements(self):
+        self.check_connected()
         # Validate chip ID
         dev_id = self.read_reg(REG_LIS2DW_WHO_AM_I_ADDR)
         logging.info("lis2dw_dev_id: %x", dev_id)
