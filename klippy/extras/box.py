@@ -107,6 +107,13 @@ TOPOLOGY_POLL = 15.0
 REDISCOVERY_MIN = 30.0
 REDISCOVERY_MAX = 300.0
 ERROR_BACKOFF = 10.0
+# Consecutive missed status reads before a CFS counts as offline; one dropped
+# RS-485 frame must not flicker a box offline.
+OFFLINE_POLLS = 3
+# A CFS that lost power answers only discovery: retry re-addressing it this
+# often while no print is moving.
+RECONNECT_INTERVAL = 15.0
+PATH_CONFLICT_TITLE = "Filament in more than one hub lane"
 STATE_TIMEOUT = 5.0
 STATE_POLL = 0.1
 STATE_EVENT_DRAIN = 4
@@ -1334,6 +1341,14 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
         self.fault_generation = 0
         self.last_fatal_reason = None
         self.fault_episodes = {}
+        self.box_ids = {}  # address -> UniID of each box online at enumeration
+        self.box_misses = {}
+        self.offline_handled = set()  # boxes whose outage paused a print
+        self.last_reconnect = 0.0
+        self.reconnect_noted = set()  # reconnect errors already logged
+        self.path_conflict = None  # (addresses, message) or None
+        self.conflict_paused = None
+        self.snapped = None
         self._init_rfid_state()
         self.box_replies = {}
         self.last_rfid_refresh = 0.0
@@ -1552,6 +1567,8 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             address: box_protocol.BoxDriver(self.serial, address)
             for address in sorted(result.online)
         }
+        self.box_ids = dict(result.online)
+        self.box_misses = {address: 0 for address in self.drivers}
         self.drivers_ready = True
         self._initialize_rfid()
         self._register_t_commands()
@@ -3462,70 +3479,73 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             return
 
         for address, driver in sorted(self.drivers.items()):
-            try:
-                reply = driver.set_rfid_insert_reading(
-                    self.rfid_insert_reading_enabled, timeout=1.0)
-                self._require_reply(reply, "box %d RFID insertion policy" % address)
-                slots = self._require_reply(
-                    driver.query_slot_mask(timeout=0.5),
-                    "box %d RFID presence baseline" % address)
-                local_mask = slots.value & 0x0F
-                self.rfid_presence[address] = local_mask
-
-                # Restore persisted slot state without scanning every tag.
-                # One slot-mask query is enough to know which bays are still
-                # occupied. Occupied RFID bays reuse their saved profile and
-                # remaining estimate until an insertion event or explicit
-                # reread supplies fresh tag data. Empty bays are only cleaned
-                # after repeated topology confirmation below, never from one
-                # potentially transient startup sample. Their CFS remaining
-                # percentage is polled again, as after a tag read.
-                for local in range(SLOTS_PER_BOX):
-                    bit = 1 << local
-                    slot = self._global_slot(address, local)
-                    if local_mask & bit:
-                        self._restore_cached_rfid_slot(slot)
-                        self._resume_rfid_polling(slot)
-
-                if self.rfid_startup_reading_enabled and local_mask:
-                    cached = self._require_reply(
-                        driver.query_rfid_records(
-                            local_mask, timeout=0.5),
-                        "box %d cached RFID query" % address)
-                    pending = []
-                    for local, name in enumerate(
-                            box_protocol.RFID_SLOT_NAMES):
-                        bit = 1 << local
-                        if not local_mask & bit:
-                            continue
-                        slot = self._global_slot(address, local)
-                        record = cached.records.get(
-                            name, "").strip("\x00")
-                        fields = cached.fields.get(name)
-                        sample = (record, fields)
-                        if self._rfid_record_ready(sample):
-                            if self._apply_rfid_record(slot, record, fields):
-                                self.rfid_live_slots.add(slot)
-                                self._read_rfid_remaining(slot)
-                            continue
-                        # Do not make printer startup wait tens of seconds for
-                        # marginal/self-programmed tags. Keep watching the
-                        # CFS cache and expose the per-slot manual reread action.
-                        self.rfid_pending.add(slot)
-                        self.rfid_snapshot[slot] = self._rfid_cache_key(sample)
-                        if record.lower() != "busy":
-                            self.rfid_seen_invalid.add(slot)
-                        pending.append(slot)
-                    if pending:
-                        self._warn(
-                            "Startup RFID cache is not ready for %s; "
-                            "use the per-slot reread action if it does not recover"
-                            % ",".join("T%d" % slot for slot in pending))
-            except Exception as exc:
-                self._warn("RFID initialization failed on box %d: %s" % (
-                    address, exc))
+            self._initialize_box_rfid(address, driver)
         self.snapshot = replace(
             self.snapshot, slot_mask=self._presence_mask())
+
+    def _initialize_box_rfid(self, address, driver):
+        try:
+            reply = driver.set_rfid_insert_reading(
+                self.rfid_insert_reading_enabled, timeout=1.0)
+            self._require_reply(reply, "box %d RFID insertion policy" % address)
+            slots = self._require_reply(
+                driver.query_slot_mask(timeout=0.5),
+                "box %d RFID presence baseline" % address)
+            local_mask = slots.value & 0x0F
+            self.rfid_presence[address] = local_mask
+
+            # Restore persisted slot state without scanning every tag.
+            # One slot-mask query is enough to know which bays are still
+            # occupied. Occupied RFID bays reuse their saved profile and
+            # remaining estimate until an insertion event or explicit
+            # reread supplies fresh tag data. Empty bays are only cleaned
+            # after repeated topology confirmation below, never from one
+            # potentially transient startup sample. Their CFS remaining
+            # percentage is polled again, as after a tag read.
+            for local in range(SLOTS_PER_BOX):
+                bit = 1 << local
+                slot = self._global_slot(address, local)
+                if local_mask & bit:
+                    self._restore_cached_rfid_slot(slot)
+                    self._resume_rfid_polling(slot)
+
+            if self.rfid_startup_reading_enabled and local_mask:
+                cached = self._require_reply(
+                    driver.query_rfid_records(
+                        local_mask, timeout=0.5),
+                    "box %d cached RFID query" % address)
+                pending = []
+                for local, name in enumerate(
+                        box_protocol.RFID_SLOT_NAMES):
+                    bit = 1 << local
+                    if not local_mask & bit:
+                        continue
+                    slot = self._global_slot(address, local)
+                    record = cached.records.get(
+                        name, "").strip("\x00")
+                    fields = cached.fields.get(name)
+                    sample = (record, fields)
+                    if self._rfid_record_ready(sample):
+                        if self._apply_rfid_record(slot, record, fields):
+                            self.rfid_live_slots.add(slot)
+                            self._read_rfid_remaining(slot)
+                        continue
+                    # Do not make printer startup wait tens of seconds for
+                    # marginal/self-programmed tags. Keep watching the
+                    # CFS cache and expose the per-slot manual reread action.
+                    self.rfid_pending.add(slot)
+                    self.rfid_snapshot[slot] = self._rfid_cache_key(sample)
+                    if record.lower() != "busy":
+                        self.rfid_seen_invalid.add(slot)
+                    pending.append(slot)
+                if pending:
+                    self._warn(
+                        "Startup RFID cache is not ready for %s; "
+                        "use the per-slot reread action if it does not recover"
+                        % ",".join("T%d" % slot for slot in pending))
+        except Exception as exc:
+            self._warn("RFID initialization failed on box %d: %s" % (
+                address, exc))
 
     def _presence_mask(self):
         mask = 0
@@ -4728,7 +4748,7 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             if (reply.status != box_protocol.STATUS_OK
                     or reply.box_state != box_protocol.BOX_STATE_PRINT):
                 continue
-            local = self._local_from_mask(reply.downstream_mask or 0)
+            local = self._local_from_mask((reply.downstream_mask or 0) & 0x0F)
             if local >= 0:
                 candidates.append((address, self._global_slot(address, local)))
 
@@ -4914,12 +4934,18 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
     def _address_slot(global_slot):
         return global_slot // SLOTS_PER_BOX + 1, global_slot % SLOTS_PER_BOX
 
-    def read_live_state(self, include_topology=True):
-        """Read one coherent safety snapshot; callers never mix cache epochs."""
+    def read_live_state(self, include_topology=True, strict=True):
+        """Read one coherent safety snapshot; callers never mix cache epochs.
+
+        With filament at more than one hub lane the snapshot is still built
+        and published; strict callers (loads, unloads, changes) then get a
+        BoxError, the status poll does not.
+        """
         detected, sensor_error = self.get_filament_sensor_state()
         loaded = -1
         loaded_mask = 0
         replies = {}
+        lanes = {}
         for address, driver in sorted(self.drivers.items()):
             try:
                 reply = self._query_box_snapshot(
@@ -4931,21 +4957,23 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             if reply is None:
                 continue
             replies[address] = reply
-            local = self._local_from_mask(reply.downstream_mask or 0)
-            if local >= 0:
-                candidate = self._global_slot(address, local)
-                if loaded >= 0:
-                    raise BoxError(
-                        "Multiple CFS boxes report loaded paths: %s and %s"
-                        % (self.slot_label(loaded), self.slot_label(candidate)))
-                loaded = candidate
-                loaded_mask |= 1 << candidate
+            mask = (reply.downstream_mask or 0) & 0x0F
+            if mask:
+                lanes[address] = mask
         self.box_replies = replies
-        if loaded >= 0:
-            self.path_owner = loaded
-        elif detected is False:
-            self.path_owner = None
-        self._reconcile_tracking_owner(replies)
+        self._count_misses(replies)
+        conflict = self._update_path_conflict(lanes, replies)
+        if conflict is None:
+            for address, mask in lanes.items():
+                loaded = self._global_slot(address, mask.bit_length() - 1)
+                loaded_mask = 1 << loaded
+            if loaded >= 0:
+                self.path_owner = loaded
+            elif detected is False:
+                self.path_owner = None
+            self._reconcile_tracking_owner(replies)
+        # With a conflict nothing is inferred from the ambiguous path:
+        # ownership and tracking keep what they had until it clears.
         for address, reply in replies.items():
             self._observe_fault(address, reply)
 
@@ -5002,7 +5030,197 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             buffer_state=buffer_reply.value if buffer_reply else None,
         )
         self.snapshot = snap
+        if strict and conflict is not None:
+            raise BoxError(conflict[1])
         return snap
+
+    def _box_online(self, address):
+        return (address in self.drivers
+                and self.box_misses.get(address, 0) < OFFLINE_POLLS)
+
+    def _count_misses(self, replies):
+        for address in self.drivers:
+            if address in replies:
+                if self.box_misses.get(address, 0) >= OFFLINE_POLLS:
+                    self._info(self.gcode, "CFS box %d is back online" % address)
+                self.box_misses[address] = 0
+                self.offline_handled.discard(address)
+                continue
+            self.box_misses[address] = self.box_misses.get(address, 0) + 1
+            if self.box_misses[address] == OFFLINE_POLLS:
+                self._warn("CFS box %d disconnected" % address)
+
+    def _update_path_conflict(self, lanes, replies):
+        """Filament at more than one hub lane, across every box.
+
+        Returns (addresses, message) or None and keeps it in path_conflict.
+        A box in the conflict that missed this reply says nothing about it,
+        so the conflict holds until every box in it answers.
+        """
+        previous = self.path_conflict
+        lit = sorted(lanes.items())
+        conflict = None
+        if len(lit) > 1 or (lit and lit[0][1] & (lit[0][1] - 1)):
+            slots = [self._global_slot(address, local)
+                     for address, mask in lit
+                     for local in range(SLOTS_PER_BOX) if mask & (1 << local)]
+            conflict = (
+                tuple(address for address, _mask in lit),
+                "%s: %s" % (PATH_CONFLICT_TITLE,
+                            " and ".join(self.slot_label(s) for s in slots)))
+        elif previous is not None and any(
+                address not in replies and self._box_online(address)
+                for address in previous[0]):
+            conflict = previous
+        self.path_conflict = conflict
+        if conflict is not None and (
+                previous is None or previous[1] != conflict[1]):
+            self._warn("%s. Loads and unloads are refused until then."
+                       % conflict[1])
+        elif conflict is None and previous is not None:
+            self._info(self.gcode, "Hub lane conflict cleared")
+            # Its pause changed no slot: RESUME continues as after any pause.
+            recovery = self.change_engine.resume_recovery
+            if (recovery is not None
+                    and recovery.reason.startswith(PATH_CONFLICT_TITLE)):
+                self.change_engine.clear_resume_recovery()
+        if conflict is None:
+            self.conflict_paused = None
+        return conflict
+
+    def _print_job(self):
+        stats = self.printer.lookup_object("print_stats")
+        if stats.state not in ("printing", "paused"):
+            return None, stats.state
+        return stats.print_start_time, stats.state
+
+    def _pause_for_path_conflict(self):
+        """Pause a print while filament is at more than one hub lane.
+
+        The next tool change would refuse and end the print. Once per print
+        and conflict; the recovery clears with the conflict.
+        """
+        job, state = self._print_job()
+        if self.path_conflict is None or job is None:
+            return
+        if self.conflict_paused == job:
+            return
+        self.conflict_paused = job
+        # A recovery already waiting keeps its own instructions.
+        if self.change_engine.resume_recovery is None:
+            self.change_engine.block_resume(
+                self.path_conflict[1], automatic=False,
+                action="pull out the filament that should not be there, "
+                       "then RESUME")
+            self._warn(self.change_engine.recovery_notice())
+        if state == "printing":
+            self.pause_print()
+
+    def _watch_loaded_box_offline(self, snap):
+        """Pause when the box feeding a print goes offline.
+
+        Nothing feeds the filament or watches for clogs while it is gone.
+        RESUME retries the slot, which needs the box back online.
+        """
+        slot = snap.loaded_slot
+        if not self.is_physical_slot(slot):
+            return
+        address, _local = self._address_slot(slot)
+        if self._box_online(address) or address in self.offline_handled:
+            return
+        job, state = self._print_job()
+        if job is None:
+            return
+        self.offline_handled.add(address)
+        if self.change_engine.resume_recovery is None:
+            self.change_engine.block_resume(
+                "CFS box %d went offline with %s loaded"
+                % (address, self.slot_label(slot)),
+                target=slot, automatic=True,
+                action="wait for CFS box %d to reconnect; RESUME then "
+                       "retries %s" % (address, self.slot_label(slot)))
+            self._warn(self.change_engine.recovery_notice())
+        if state == "printing":
+            self.pause_print()
+
+    def _homing(self):
+        homing = self.printer.lookup_object("homing", None)
+        return homing is not None and (
+            homing.has_active_homing_session()
+            or homing.is_homing_abort_in_progress())
+
+    def _reconnect_lost_boxes(self, eventtime):
+        """Re-address a box that lost power, without a Klipper restart.
+
+        A CFS that keeps power keeps its address and the poll finds it again
+        by itself; one that was power-cycled answers only discovery. Never
+        while a print moves or while homing: discovery is a bus broadcast.
+        """
+        if eventtime - self.last_reconnect < RECONNECT_INTERVAL:
+            return
+        lost = {
+            address: self.box_ids[address]
+            for address in self.drivers
+            if address in self.box_ids and not self._box_online(address)}
+        if (not lost or self.serial is None or self.observation_mode
+                or self._print_job()[1] == "printing" or self._homing()):
+            return
+        self.last_reconnect = eventtime
+        reactor = self.reactor
+        address, errors = self.address_manager.reclaim(
+            box_protocol.AutoAddressClient(self.serial), lost,
+            pause=lambda delay: reactor.pause(reactor.monotonic() + delay))
+        for error in errors:
+            if error in self.reconnect_noted:
+                continue
+            self.reconnect_noted.add(error)
+            _klog("box reconnect: %s", error, level=logging.warning)
+            if error == ADDRESS_WEDGE_WARNING:
+                self._warn(error)
+        if address is not None:
+            self._box_reconnected(address)
+
+    def _box_reconnected(self, address):
+        """A power-cycled CFS answers again: forget what it had before."""
+        self.box_misses[address] = 0
+        self.offline_handled.discard(address)
+        self.fault_episodes.pop(address, None)
+        self.reconnect_noted.clear()
+        self._clear_tracking_owner(address)
+        # It restarted with its default reader policy and no RFID records.
+        first = (address - 1) * SLOTS_PER_BOX
+        for slot in range(first, first + SLOTS_PER_BOX):
+            self._clear_rfid_watch(slot)
+        self.rfid_presence.pop(address, None)
+        if not self.observation_mode:
+            self._initialize_box_rfid(address, self.drivers[address])
+        self.snapshot = replace(
+            self.snapshot, slot_mask=self._presence_mask())
+        self._info(self.gcode, "CFS box %d reconnected" % address)
+
+    def _watch_snapped(self, snap):
+        """Warn when only a broken-off piece is left of the loaded slot.
+
+        The CFS still sees filament in the slot's hub lane, but the slot's
+        inlet and the printhead sensor see none. The CFS refuses to pull that
+        piece back and the extruder cannot reach it.
+        """
+        slot = snap.loaded_slot
+        snapped = None
+        if (snap.filament_detected is False
+                and self.path_conflict is None
+                and self.is_physical_slot(slot)
+                and not snap.slot_mask & (1 << slot)):
+            address, _local = self._address_slot(slot)
+            if (address in self.box_replies
+                    and address in self.rfid_presence):
+                snapped = slot
+        if snapped is not None and snapped != self.snapped:
+            self._warn(
+                "Filament piece stuck in the hub lane of %s: its inlet and "
+                "the printhead sensor see no filament. Pull it out by hand."
+                % self.slot_label(snapped))
+        self.snapped = snapped
 
     def _poll(self, eventtime):
         if self.operation_depth:
@@ -5022,7 +5240,12 @@ class Box(BoxRfidEstimates, BoxRfidVendors):
             return eventtime + IDLE_POLL
         include_topology = eventtime - self.last_topology_refresh >= TOPOLOGY_POLL
         try:
-            snap = self.read_live_state(include_topology=include_topology)
+            snap = self.read_live_state(
+                include_topology=include_topology, strict=False)
+            self._pause_for_path_conflict()
+            self._watch_loaded_box_offline(snap)
+            self._watch_snapped(snap)
+            self._reconnect_lost_boxes(eventtime)
             self._track_rfid_usage(eventtime, snap)
             lane_data = getattr(self, "lane_data", None)
             if lane_data is not None:
